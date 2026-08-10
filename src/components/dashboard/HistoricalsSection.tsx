@@ -289,10 +289,10 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                         <td key={w}
                           className={`hist-cell p-0 border-b border-b-slate-100 ${isFirst ? 'border-l-2 border-l-slate-200' : 'border-l border-l-slate-100'} ${isMissing ? 'bg-amber-50' : ''} ${isSaving ? 'opacity-50' : ''}`}>
                           <div className="flex flex-col">
-                            <input type="number" min="0"
+                            <input type="number" min="0" step="0.01"
                               value={e.orders > 0 ? e.orders : ''}
                               placeholder=""
-                              onChange={ev => handleEdit(w, name, 'orders', parseInt(ev.target.value) || 0)}
+                              onChange={ev => handleEdit(w, name, 'orders', parseFloat(ev.target.value) || 0)}
                               className={`hist-input w-full px-2 py-1 text-center text-[11px] font-semibold bg-transparent border-none outline-none focus:bg-indigo-50 ${isMissing && !hasData ? 'text-amber-400' : 'text-indigo-700'}`}
                             />
                             <input type="number" min="0" step="0.5"
