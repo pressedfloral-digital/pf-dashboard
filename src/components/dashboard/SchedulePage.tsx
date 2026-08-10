@@ -56,9 +56,10 @@ const DEFAULT_INTAKE_MULTIPLIER = 1.2;
 // Calibration for the designed-to-date anchor: frames designed before design-historicals
 // coverage began (Dec 29, 2025). Can be negative — it also absorbs frames-vs-bouquet unit
 // differences. Utah calibrated Jun 10, 2026 so the queue front = Mar 16 intake week.
-// Georgia recalibrated Aug 4, 2026 (design team confirmed front = May 4 intake week)
-// after drifting ~2 weeks ahead of reality.
-const DESIGNED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: -636, Georgia: -40 };
+// Georgia recalibrated Aug 10, 2026 (design team confirmed front = May 18 intake
+// week; the Aug 4 calibration to May 4 was based on a bad update and drifted
+// ~2 weeks behind reality).
+const DESIGNED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: -636, Georgia: 51 };
 
 const UTAH_HISTORICAL_INTAKE: { weekOf: string; actual: number }[] = [
   { weekOf: '2025-09-29', actual: 187 },
