@@ -17,6 +17,7 @@ import { getMondayDate, isoMonday, getWeekLabel, getMonthKey } from '@/lib/weekD
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
 import { distributeHours, resolveDayHours, resolveWeekHours, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
 import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './BloomUpdateModal';
+import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -249,7 +250,7 @@ function simulateDesignTurnaroundsUnclamped(startQueue: number, graduatingByWeek
 
 // ─── RosterEditor ──────────────────────────────────────────────────────────────
 
-function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, location, standardWeeklyHoursById, onTemplateChange, onResetToTemplate }: {
+function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, location, standardWeeklyHoursById, onTemplateChange, onResetToTemplate, employmentById, onEmploymentChange }: {
   designers: Designer[];
   onChange:  (id: string, field: keyof Designer, value: string) => void;
   onAdd:     () => void;
@@ -259,6 +260,8 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
   standardWeeklyHoursById: Record<string, number[] | undefined>;
   onTemplateChange: (id: string, dayIdx: number, value: number) => void;
   onResetToTemplate?: (id: string) => void;
+  employmentById: Record<string, { startDate?: string; endDate?: string } | undefined>;
+  onEmploymentChange: (id: string, field: 'startDate' | 'endDate', value: string) => void;
 }) {
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
 
@@ -346,6 +349,15 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
                   ↺ Reset to template
                 </button>
               )}
+            </div>
+            <div className="flex items-center gap-1.5 pl-1">
+              <span className="text-[10px] text-slate-400 w-32 shrink-0">Employment dates</span>
+              <EmploymentDatesEditor
+                startDate={employmentById[d.id]?.startDate}
+                endDate={employmentById[d.id]?.endDate}
+                onStartDateChange={val => onEmploymentChange(d.id, 'startDate', val)}
+                onEndDateChange={val => onEmploymentChange(d.id, 'endDate', val)}
+              />
             </div>
           </div>
           );
@@ -1276,8 +1288,8 @@ function useDraggableOrder<T extends { id: string }>(
 // ─── PresRosterEditor ─────────────────────────────────────────────────────────
 function PresRosterEditor({ team, presRoster, onUpdateRoster, onRemove, onReorder, onRefreshRatio, deptLocation, employeeRates = {}, onTemplateChange, onResetToTemplate }: {
   team: (Omit<PresTeamMember, 'hours'> & { hours: unknown })[];
-  presRoster: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; role?: string; _removed?: boolean; standardWeeklyHours?: number[] }>;
-  onUpdateRoster: (id: string, field: 'ratio' | 'rate' | 'name' | 'payType' | 'annualSalary' | 'role' | 'excludeFromCost', val: string | number | boolean) => void;
+  presRoster: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; role?: string; _removed?: boolean; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }>;
+  onUpdateRoster: (id: string, field: 'ratio' | 'rate' | 'name' | 'payType' | 'annualSalary' | 'role' | 'excludeFromCost' | 'startDate' | 'endDate', val: string | number | boolean) => void;
   onRemove: (id: string) => void;
   onReorder: (newOrder: string[]) => void;
   onRefreshRatio: (id: string, name: string) => void;
@@ -1375,6 +1387,15 @@ function PresRosterEditor({ team, presRoster, onUpdateRoster, onRemove, onReorde
                 </button>
               )}
             </div>
+            <div className="ml-6 flex items-center gap-1.5">
+              <span className="text-[10px] text-slate-400 w-32 shrink-0">Employment dates</span>
+              <EmploymentDatesEditor
+                startDate={presRoster[m.id]?.startDate}
+                endDate={presRoster[m.id]?.endDate}
+                onStartDateChange={val => onUpdateRoster(m.id, 'startDate', val)}
+                onEndDateChange={val => onUpdateRoster(m.id, 'endDate', val)}
+              />
+            </div>
           </div>
           );
         })}
@@ -1387,10 +1408,10 @@ function PresRosterEditor({ team, presRoster, onUpdateRoster, onRemove, onReorde
 // ─── FfRosterEditor ────────────────────────────────────────────────────────────
 function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove, onReorder, onRefreshRatio, deptLocation, onTemplateChange, onResetToTemplate }: {
   team: (Omit<FfTeamMember, 'hours'> & { hours: unknown })[];
-  ffRoster: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[] }>;
+  ffRoster: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }>;
   employeeRates?:       Record<string, { hourlyRate: number; annualSalary: number; payType: 'hourly'|'salary' }>;
   onUpdateName: (id: string, name: string) => void;
-  onUpdateRoster: (mi: number, field: 'ratio' | 'rate' | 'payType' | 'annualSalary' | 'role', val: number | string) => void;
+  onUpdateRoster: (mi: number, field: 'ratio' | 'rate' | 'payType' | 'annualSalary' | 'role' | 'startDate' | 'endDate', val: number | string) => void;
   onRemove: (id: string) => void;
   onReorder: (newOrder: string[]) => void;
   onRefreshRatio: (id: string, name: string) => void;
@@ -1471,6 +1492,15 @@ function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove
                 </button>
               )}
             </div>
+            <div className="flex items-center gap-1.5 pl-6 mt-1.5">
+              <span className="text-[10px] text-slate-400 w-32 shrink-0">Employment dates</span>
+              <EmploymentDatesEditor
+                startDate={ffRoster[m.id]?.startDate}
+                endDate={ffRoster[m.id]?.endDate}
+                onStartDateChange={val => onUpdateRoster(mi, 'startDate', val)}
+                onEndDateChange={val => onUpdateRoster(mi, 'endDate', val)}
+              />
+            </div>
           </div>
           );
         })}
@@ -1492,13 +1522,13 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   presCheckHours:        DailyHoursMap;
   onPresDailyHoursChange:(h: DailyHoursMap) => void;
   onPresCheckHoursChange:(h: DailyHoursMap) => void;
-  presRoster:            Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[] }>;
+  presRoster:            Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }>;
   employeeRates?:         Record<string, { hourlyRate: number; annualSalary: number; payType: 'hourly'|'salary' }>;
   presSettings:          { dateFrom?: string; dateTo?: string; weekOverrides?: Record<string, { ut: number; ga: number }>; dayPcts?: number[]; dayOverrides?: Record<string, { ut: number; ga: number }>; dailyReceived?: Record<string, number>; checkSettings?: { c1Min?: number; c1Max?: number; c2Min?: number; c2Max?: number; c3Min?: number; c3Max?: number; c1Mins?: number; c2Mins?: number; c3Mins?: number } };
   mgrTotalHours:         Record<string, Record<string, number>>;
   mgrTotalDailyHours:    DailyHoursMap;
   onPresHoursChange:     (h: Record<string, Record<string, number>>) => void;
-  onPresRosterChange:    (r: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; standardWeeklyHours?: number[] }>) => void;
+  onPresRosterChange:    (r: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }>) => void;
   onPresSettingsChange:  (s: { dateFrom?: string; dateTo?: string; weekOverrides?: Record<string, { ut: number; ga: number }>; dayPcts?: number[]; dayOverrides?: Record<string, { ut: number; ga: number }>; dailyReceived?: Record<string, number>; checkSettings?: { c1Min?: number; c1Max?: number; c2Min?: number; c2Max?: number; c3Min?: number; c3Max?: number; c1Mins?: number; c2Mins?: number; c3Mins?: number } }) => void;
   onMgrTotalHoursChange: (h: Record<string, Record<string, number>>) => void;
   onMgrTotalDailyHoursChange: (h: DailyHoursMap) => void;
@@ -1859,14 +1889,15 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
       for (let day = 0; day < 7; day++) {
         const override = dailyOverrides[day];
         sum += override != null ? override
-          : resolveDayHours(presDailyHours, `${weekIso}-${memberId}`, day, presRoster[memberId]?.standardWeeklyHours).hours;
+          : resolveDayHours(presDailyHours, `${weekIso}-${memberId}`, day, presRoster[memberId]?.standardWeeklyHours,
+              { weekIso, startDate: presRoster[memberId]?.startDate, endDate: presRoster[memberId]?.endDate }).hours;
       }
       return sum;
     }
     return mgrTotalHours[memberId]?.[weekIso] ?? productionHrs;
   }
 
-  function updateRoster(memberId: string, field: 'ratio' | 'rate' | 'name' | 'payType' | 'annualSalary' | 'role' | 'excludeFromCost', val: string | number | boolean) {
+  function updateRoster(memberId: string, field: 'ratio' | 'rate' | 'name' | 'payType' | 'annualSalary' | 'role' | 'excludeFromCost' | 'startDate' | 'endDate', val: string | number | boolean) {
     const existing = presRoster[memberId] ?? { ratio: 1, rate: 0, name: 'Team Member', payType: 'hourly' as const, annualSalary: 0 };
     onPresRosterChange({ ...presRoster, [memberId]: { ...existing, [field]: val } });
   }
@@ -1915,11 +1946,13 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   }
 
   // Per-day hours (index 0–4 = Mon–Fri of current week)
-  const dayTotals = Array.from({ length: 7 }, (_, di) =>
-    team.reduce((s, m) => s + (m.ratio > 0
-      ? resolveDayHours(presDailyHours, `${isoMonday(presThisWeekOffset)}-${m.id}`, di, presRoster[m.id]?.standardWeeklyHours).hours / m.ratio
-      : 0), 0)
-  );
+  const dayTotals = Array.from({ length: 7 }, (_, di) => {
+    const weekIso = isoMonday(presThisWeekOffset);
+    return team.reduce((s, m) => s + (m.ratio > 0
+      ? resolveDayHours(presDailyHours, `${weekIso}-${m.id}`, di, presRoster[m.id]?.standardWeeklyHours,
+          { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate }).hours / m.ratio
+      : 0), 0);
+  });
   // Total check hours scheduled per day — no standard template for checks
   const checkDayTotals = Array.from({ length: 7 }, (_, di) =>
     team.reduce((s, m) => s + (presCheckHours[`${isoMonday(presThisWeekOffset)}-${m.id}`]?.[di] ?? 0), 0)
@@ -1934,6 +1967,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
       legacyWeeklyValue: m.hours[weekIso],
       standardWeeklyHours: presRoster[m.id]?.standardWeeklyHours,
       hardcodedDefault: m.defaultHrs,
+      employment: { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate },
     }) / m.ratio : 0), 0);
   });
 
@@ -2210,8 +2244,10 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           </div>
                         </td>
                         {fiveDays.map((_, di) => {
-                          const dailyKey = `${isoMonday(presThisWeekOffset)}-${m.id}`;
-                          const { hours: prodH, isOverride } = resolveDayHours(presDailyHours, dailyKey, di, presRoster[m.id]?.standardWeeklyHours);
+                          const weekIso = isoMonday(presThisWeekOffset);
+                          const dailyKey = `${weekIso}-${m.id}`;
+                          const { hours: prodH, isOverride } = resolveDayHours(presDailyHours, dailyKey, di, presRoster[m.id]?.standardWeeklyHours,
+                            { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate });
                           const checkH = presCheckHours[dailyKey]?.[di] ?? 0;
                           const totalProdH = prodH + checkH;
                           const totalH = m.isManager ? (mgrTotalDailyHours[dailyKey]?.[di] ?? totalProdH) : totalProdH;
@@ -2272,14 +2308,20 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                         const dayCost = team.reduce((s, m) => {
                           if (m.rate === 0 && m.annualSalary === 0) return s;
                           if ((presRoster[m.id] as {excludeFromCost?: boolean})?.excludeFromCost) return s;
-                          const dailyKey = `${isoMonday(presThisWeekOffset)}-${m.id}`;
-                          const prodH = resolveDayHours(presDailyHours, dailyKey, di, presRoster[m.id]?.standardWeeklyHours).hours;
+                          const weekIso = isoMonday(presThisWeekOffset);
+                          const dailyKey = `${weekIso}-${m.id}`;
+                          const prodH = resolveDayHours(presDailyHours, dailyKey, di, presRoster[m.id]?.standardWeeklyHours,
+                            { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate }).hours;
                           const chkH  = presCheckHours[dailyKey]?.[di] ?? 0;
                           const totalH = m.isManager ? (mgrTotalDailyHours[dailyKey]?.[di] ?? (prodH + chkH)) : (prodH + chkH);
                           return s + (m.payType === 'salary' ? m.annualSalary / 260 : totalH * m.rate);
                         }, 0);
                         const dayCPO = cap > 0 && dayCost > 0 ? dayCost / cap : null;
-                        const dayHours = team.reduce((s, m) => s + resolveDayHours(presDailyHours, `${isoMonday(presThisWeekOffset)}-${m.id}`, di, presRoster[m.id]?.standardWeeklyHours).hours, 0);
+                        const dayHours = team.reduce((s, m) => {
+                          const weekIso = isoMonday(presThisWeekOffset);
+                          return s + resolveDayHours(presDailyHours, `${weekIso}-${m.id}`, di, presRoster[m.id]?.standardWeeklyHours,
+                            { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate }).hours;
+                        }, 0);
                         const dayRatio = cap > 0 ? dayHours / cap : null;
                         return (
                           <td key={di} className={`px-2 py-2 text-center ${di === 0 ? 'bg-indigo-50/50' : ''}`}>
@@ -2441,6 +2483,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                               legacyWeeklyValue: m.hours[weekIso],
                               standardWeeklyHours: presRoster[m.id]?.standardWeeklyHours,
                               hardcodedDefault: m.defaultHrs,
+                              employment: { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate },
                             });
                             const totalH = m.isManager ? resolvePresMgrTotalWeekHours(w, m.id, prodH) : prodH;
                             const orders = m.ratio > 0 ? prodH / m.ratio : 0;
@@ -2474,6 +2517,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                               legacyWeeklyValue: m.hours[weekIso],
                               standardWeeklyHours: presRoster[m.id]?.standardWeeklyHours,
                               hardcodedDefault: m.defaultHrs,
+                              employment: { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate },
                             });
                             const totalH = m.isManager ? resolvePresMgrTotalWeekHours(w, m.id, prodH) : prodH;
                             return s + (m.payType === 'salary' ? m.annualSalary / 52 : totalH * m.rate);
@@ -2596,11 +2640,11 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   teamActuals:     { department: string; week_of: string; member_name: string; actual_hours: number; actual_orders: number }[];
   onActualsSaved:  () => void;
   ffHours:              Record<string, Record<string, number>>;
-  ffRoster:             Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[] }>;
+  ffRoster:             Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }>;
   mgrTotalHours:        Record<string, Record<string, number>>;
   mgrTotalDailyHours:   DailyHoursMap;
   onFfHoursChange:      (h: Record<string, Record<string, number>>) => void;
-  onFfRosterChange:     (r: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; standardWeeklyHours?: number[] }>) => void;
+  onFfRosterChange:     (r: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }>) => void;
   onMgrTotalHoursChange:(h: Record<string, Record<string, number>>) => void;
   onMgrTotalDailyHoursChange: (h: DailyHoursMap) => void;
   employeeRates?:        Record<string, { hourlyRate: number; annualSalary: number; payType: 'hourly'|'salary' }>;
@@ -2675,13 +2719,14 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
       for (let day = 0; day < 7; day++) {
         const override = dailyOverrides[day];
         sum += override != null ? override
-          : resolveDayHours(ffDailyHours, `${weekIso}-${memberId}`, day, ffRoster[memberId]?.standardWeeklyHours).hours;
+          : resolveDayHours(ffDailyHours, `${weekIso}-${memberId}`, day, ffRoster[memberId]?.standardWeeklyHours,
+              { weekIso, startDate: ffRoster[memberId]?.startDate, endDate: ffRoster[memberId]?.endDate }).hours;
       }
       return sum;
     }
     return mgrTotalHours[memberId]?.[weekIso] ?? productionHrs;
   }
-  function updateRoster(mi: number, field: 'ratio' | 'rate' | 'payType' | 'annualSalary' | 'role', val: number | string) {
+  function updateRoster(mi: number, field: 'ratio' | 'rate' | 'payType' | 'annualSalary' | 'role' | 'startDate' | 'endDate', val: number | string) {
     const id = team[mi]?.id;
     if (!id) return;
     const existing = ffRoster[id] ?? { ratio: team[mi].ratio, rate: team[mi].rate, name: team[mi].name, payType: 'hourly' as const, annualSalary: 0 };
@@ -2729,10 +2774,14 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
       {ffTab === 'thisweek' && (() => {
         const days = getWeekdays(ffThisWeekOffset);
         function getFFH(id: string, di: number) {
-          return resolveDayHours(ffDailyHours, `${isoMonday(ffThisWeekOffset)}-${id}`, di, ffRoster[id]?.standardWeeklyHours).hours;
+          const weekIso = isoMonday(ffThisWeekOffset);
+          return resolveDayHours(ffDailyHours, `${weekIso}-${id}`, di, ffRoster[id]?.standardWeeklyHours,
+            { weekIso, startDate: ffRoster[id]?.startDate, endDate: ffRoster[id]?.endDate }).hours;
         }
         function isFFHOverride(id: string, di: number) {
-          return resolveDayHours(ffDailyHours, `${isoMonday(ffThisWeekOffset)}-${id}`, di, ffRoster[id]?.standardWeeklyHours).isOverride;
+          const weekIso = isoMonday(ffThisWeekOffset);
+          return resolveDayHours(ffDailyHours, `${weekIso}-${id}`, di, ffRoster[id]?.standardWeeklyHours,
+            { weekIso, startDate: ffRoster[id]?.startDate, endDate: ffRoster[id]?.endDate }).isOverride;
         }
         function setFFH(id: string, di: number, val: number) {
           const weekIso = isoMonday(ffThisWeekOffset);
@@ -2952,6 +3001,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                           legacyWeeklyValue: ffHours[m.id]?.[weekIso],
                           standardWeeklyHours: ffRoster[m.id]?.standardWeeklyHours,
                           hardcodedDefault: m.defaultHrs,
+                          employment: { weekIso, startDate: ffRoster[m.id]?.startDate, endDate: ffRoster[m.id]?.endDate },
                         });
                         const totalH = m.isManager ? resolveFfMgrTotalWeekHours(w, m.id, prodH) : prodH;
                         const o = m.ratio > 0 ? prodH / m.ratio : 0;
@@ -2983,6 +3033,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         legacyWeeklyValue: ffHours[m.id]?.[weekIso],
                         standardWeeklyHours: ffRoster[m.id]?.standardWeeklyHours,
                         hardcodedDefault: m.defaultHrs,
+                        employment: { weekIso, startDate: ffRoster[m.id]?.startDate, endDate: ffRoster[m.id]?.endDate },
                       });
                       const c = team.reduce((s, m) => s + (m.ratio > 0 ? prodHours(m) / m.ratio : 0), 0);
                       const cost = team.reduce((s, m) => {
@@ -3100,8 +3151,8 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
   ffHours:              Record<string, Record<string, number>>;
   resinHours:           Record<string, Record<string, number>>;
   designRoster:         Record<string, { ratio: number; name: string }>;
-  presRoster:           Record<string, { ratio: number; name: string; standardWeeklyHours?: number[] }>;
-  ffRoster:             Record<string, { ratio: number; name: string; standardWeeklyHours?: number[] }>;
+  presRoster:           Record<string, { ratio: number; name: string; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }>;
+  ffRoster:             Record<string, { ratio: number; name: string; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }>;
   ffDailyHours:         DailyHoursMap;
   presDailyHours:       DailyHoursMap;
   resinRoster:          ResinMember[];
@@ -3123,22 +3174,28 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
     const dHrs = designSchedule[weekIdx]?.[person.id] ?? 0;
     // Preservation: This Week overrides -> standard template -> legacy weekly value
     const weekIso = isoMonday(weekIdx);
+    const pMember = presRoster[person.id];
     const pHrs = resolveWeekHours({
       dailyMap: presDailyHours, weekKey: `${weekIso}-${person.id}`,
       legacyWeeklyValue: presHours[person.id]?.[weekIso],
-      standardWeeklyHours: presRoster[person.id]?.standardWeeklyHours,
+      standardWeeklyHours: pMember?.standardWeeklyHours,
+      employment: { weekIso, startDate: pMember?.startDate, endDate: pMember?.endDate },
     });
+    const fMember = ffRoster[person.id];
     const fHrs = resolveWeekHours({
       dailyMap: ffDailyHours, weekKey: `${weekIso}-${person.id}`,
       legacyWeeklyValue: ffHours[person.id]?.[weekIso],
-      standardWeeklyHours: ffRoster[person.id]?.standardWeeklyHours,
+      standardWeeklyHours: fMember?.standardWeeklyHours,
+      employment: { weekIso, startDate: fMember?.startDate, endDate: fMember?.endDate },
     });
     // Resin: This Week overrides -> standard template -> legacy weekly value
     // (stored week-of-first, opposite nesting from design/ff)
+    const rMember = resinRoster.find(m => m.id === person.id);
     const rHrs = resolveWeekHours({
       dailyMap: resinDailyHours, weekKey: `${weekIso}-${person.id}`,
       legacyWeeklyValue: resinHours[weekIso]?.[person.id],
-      standardWeeklyHours: resinRoster.find(m => m.id === person.id)?.standardWeeklyHours,
+      standardWeeklyHours: rMember?.standardWeeklyHours,
+      employment: { weekIso, startDate: rMember?.startDate, endDate: rMember?.endDate },
     });
     return { design: dHrs, preservation: pHrs, fulfillment: fHrs, resin: rHrs, total: dHrs + pHrs + fHrs + rHrs };
   }
@@ -3573,6 +3630,7 @@ export function SchedulePage({
         legacyWeeklyValue: settings.designHours[d.id]?.[weekKey],
         standardWeeklyHours: settings.designRoster[d.id]?.standardWeeklyHours,
         hardcodedDefault: defaultSchedule[w]?.[d.id] ?? 0,
+        employment: { weekIso: weekKey, startDate: settings.designRoster[d.id]?.startDate, endDate: settings.designRoster[d.id]?.endDate },
       });
     });
     return weekObj;
@@ -3719,6 +3777,12 @@ export function SchedulePage({
     currentRoster[id] = { ...existing, standardWeeklyHours: nextTemplate } as typeof currentRoster[string];
     update('designRoster', currentRoster);
   }
+  function handleDesignerEmploymentChange(id: string, field: 'startDate' | 'endDate', value: string) {
+    const currentRoster = { ...settings.designRoster };
+    const existing = currentRoster[id] ?? designers.find(d => d.id === id) ?? {};
+    currentRoster[id] = { ...existing, [field]: value || undefined } as typeof currentRoster[string];
+    update('designRoster', currentRoster);
+  }
   // Clears every frozen day/week override for this designer from the current
   // week forward (never touches already-elapsed weeks) so they fall back to
   // following whatever the standard schedule template says. Without this,
@@ -3785,7 +3849,8 @@ export function SchedulePage({
       for (let day = 0; day < 7; day++) {
         const override = dailyOverrides[day];
         sum += override != null ? override
-          : resolveDayHours(designDailyHours, `${weekIso}-${designerId}`, day, settings.designRoster[designerId]?.standardWeeklyHours).hours;
+          : resolveDayHours(designDailyHours, `${weekIso}-${designerId}`, day, settings.designRoster[designerId]?.standardWeeklyHours,
+              { weekIso, startDate: settings.designRoster[designerId]?.startDate, endDate: settings.designRoster[designerId]?.endDate }).hours;
       }
       return sum;
     }
@@ -4314,6 +4379,8 @@ export function SchedulePage({
                   standardWeeklyHoursById={Object.fromEntries(designers.map(d => [d.id, settings.designRoster[d.id]?.standardWeeklyHours]))}
                   onTemplateChange={handleDesignerTemplateChange}
                   onResetToTemplate={handleResetDesignerToTemplate}
+                  employmentById={Object.fromEntries(designers.map(d => [d.id, { startDate: settings.designRoster[d.id]?.startDate, endDate: settings.designRoster[d.id]?.endDate }]))}
+                  onEmploymentChange={handleDesignerEmploymentChange}
                 />
                 {deletedStack.length > 0 && (
                   <button onClick={handleUndo}
@@ -4352,10 +4419,14 @@ export function SchedulePage({
           {activeTab === 'thisweek' && (() => {
             const days = getWeekdays(designThisWeekOffset);
             function getDH(id: string, di: number) {
-              return resolveDayHours(designDailyHours, `${isoMonday(designThisWeekOffset)}-${id}`, di, settings.designRoster[id]?.standardWeeklyHours).hours;
+              const weekIso = isoMonday(designThisWeekOffset);
+              return resolveDayHours(designDailyHours, `${weekIso}-${id}`, di, settings.designRoster[id]?.standardWeeklyHours,
+                { weekIso, startDate: settings.designRoster[id]?.startDate, endDate: settings.designRoster[id]?.endDate }).hours;
             }
             function isDHOverride(id: string, di: number) {
-              return resolveDayHours(designDailyHours, `${isoMonday(designThisWeekOffset)}-${id}`, di, settings.designRoster[id]?.standardWeeklyHours).isOverride;
+              const weekIso = isoMonday(designThisWeekOffset);
+              return resolveDayHours(designDailyHours, `${weekIso}-${id}`, di, settings.designRoster[id]?.standardWeeklyHours,
+                { weekIso, startDate: settings.designRoster[id]?.startDate, endDate: settings.designRoster[id]?.endDate }).isOverride;
             }
             function setDH(id: string, di: number, val: number) {
               const weekIso = isoMonday(designThisWeekOffset);
