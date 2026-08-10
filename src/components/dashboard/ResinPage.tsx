@@ -7,6 +7,7 @@ import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './Inpu
 import { resolveDayHours, resolveWeekHours, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
 import { HistoricalsSection } from './HistoricalsSection';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
+import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -21,6 +22,9 @@ export interface ResinMember {
   role?:       'specialist' | 'senior' | 'master';
   // Standard Mon-Sun hours (index 0=Monday..6=Sunday) — see src/lib/scheduleResolution.ts.
   standardWeeklyHours?: number[];
+  // Employment window, both ISO 'YYYY-MM-DD' and inclusive — see scheduleResolution.ts.
+  startDate?: string;
+  endDate?:   string;
 }
 
 interface CohortRow {
@@ -139,6 +143,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
       dailyMap: resinDailyHours, weekKey: `${weekIso}-${m.id}`,
       legacyWeeklyValue: hours[weekIso]?.[m.id],
       standardWeeklyHours: m.standardWeeklyHours,
+      employment: { weekIso, startDate: m.startDate, endDate: m.endDate },
     });
   }
 
@@ -156,7 +161,8 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
       let sum = 0;
       for (let day = 0; day < 7; day++) {
         const override = dailyOverrides[day];
-        sum += override != null ? override : resolveDayHours(resinDailyHours, weekKey, day, m.standardWeeklyHours).hours;
+        sum += override != null ? override : resolveDayHours(resinDailyHours, weekKey, day, m.standardWeeklyHours,
+          { weekIso, startDate: m.startDate, endDate: m.endDate }).hours;
       }
       return sum;
     }
@@ -225,13 +231,17 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
   // ── Handlers ──────────────────────────────────────────────────────────────
 
   function getDH(memberId: string, weekIdx: number, di: number): number {
-    const template = roster.find(m => m.id === memberId)?.standardWeeklyHours;
-    return resolveDayHours(resinDailyHours, `${isoMonday(weekIdx)}-${memberId}`, di, template).hours;
+    const m = roster.find(m => m.id === memberId);
+    const weekIso = isoMonday(weekIdx);
+    return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate }).hours;
   }
 
   function isDHOverride(memberId: string, weekIdx: number, di: number): boolean {
-    const template = roster.find(m => m.id === memberId)?.standardWeeklyHours;
-    return resolveDayHours(resinDailyHours, `${isoMonday(weekIdx)}-${memberId}`, di, template).isOverride;
+    const m = roster.find(m => m.id === memberId);
+    const weekIso = isoMonday(weekIdx);
+    return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate }).isOverride;
   }
 
   function setDH(memberId: string, weekIdx: number, di: number, val: number) {
@@ -538,6 +548,15 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
                     className="text-[10px] text-slate-400 hover:text-indigo-600 whitespace-nowrap ml-1">
                     ↺ Reset to template
                   </button>
+                </div>
+                <div className="flex items-center gap-1.5 pl-1">
+                  <span className="text-[10px] text-slate-400 w-32 shrink-0">Employment dates</span>
+                  <EmploymentDatesEditor
+                    startDate={m.startDate}
+                    endDate={m.endDate}
+                    onStartDateChange={val => updateRosterField(m.id, 'startDate', val)}
+                    onEndDateChange={val => updateRosterField(m.id, 'endDate', val)}
+                  />
                 </div>
                 </div>
               ))}

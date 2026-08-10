@@ -18,6 +18,11 @@ export interface DesignerRoster {
     // falls back to wherever no explicit daily override exists. See
     // src/lib/scheduleResolution.ts.
     standardWeeklyHours?: number[];
+    // Employment window, both ISO 'YYYY-MM-DD' and inclusive. When set,
+    // scheduled hours resolve to 0 for any day outside [startDate, endDate]
+    // regardless of template/override — see resolveDayHours/resolveWeekHours.
+    startDate?: string;
+    endDate?:   string;
   };
 }
 
@@ -38,6 +43,9 @@ export interface TeamRoster {
     isManager?: boolean; role?: 'specialist'|'senior'|'master'; _removed?: boolean;
     // Standard Mon-Sun hours (index 0=Monday..6=Sunday) — see DesignerRoster.
     standardWeeklyHours?: number[];
+    // Employment window — see DesignerRoster.
+    startDate?: string;
+    endDate?:   string;
   };
 }
 
