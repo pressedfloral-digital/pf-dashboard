@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { DEPARTMENT_MANAGERS } from '@/lib/managers';
 
 export interface ActualRow {
@@ -10,7 +10,8 @@ export interface ActualRow {
   location:      string;
   actual_hours:  number;
   actual_orders: number;
-  hours_source?: string;
+  hours_source?:  string;
+  orders_source?: string;
 }
 
 export interface WeeklyLaborRow {
@@ -190,11 +191,20 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
     });
   }
 
+  // Memoized: HistoricalsSection's "auto-update roster ratios" effect keys off
+  // this array's identity (via deptActuals -> useMemo), and Resin's page passes
+  // an onRatioUpdate that calls setState in the parent. Recomputing a fresh
+  // array here on every render (as this used to) made that identity change
+  // every render, so the ratio effect re-fired every render, calling
+  // setState every render, forcing another render — an infinite loop that
+  // pegs the tab and makes the Resin historicals table unresponsive to typing.
+  const enrichedActuals = useMemo(() => enrich(actuals), [actuals, laborRows]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return {
     actuals,
     laborRows,
     salaryMgrs,
-    enrichedActuals: enrich(actuals),
+    enrichedActuals,
     getWeekCosts,
     getWeekCPO,
     loading,
