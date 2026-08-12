@@ -40,6 +40,11 @@ interface QueueSummary {
   georgiaOrigin: number;
   unknownOrigin: number;
   cohorts:       { weekOf: string; units: number }[];
+  // Oldest event date still sitting in the queue — a live "what we're
+  // currently working through" reading, no manual calibration needed since
+  // resin_queue only ever holds genuinely-outstanding line items.
+  oldestEventDate: string | null;
+  offsetDays: number;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -280,6 +285,32 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
       const prevTemplate = m.standardWeeklyHours ?? [0, 0, 0, 0, 0, 0, 0];
       return { ...m, standardWeeklyHours: prevTemplate.map((h, j) => j === dayIdx ? value : h) };
     }));
+
+    // Legacy per-week values (hours, date-keyed) predate the standard-schedule
+    // template and outrank it in resolveWeekHours — nothing writes new ones
+    // (see useResinSettings' setHours comment), so any left on a future week
+    // are stale pre-template leftovers silently shadowing the template.
+    // Release just those (current week forward, past weeks kept as
+    // historical record) so a template edit actually takes effect. A week
+    // genuinely touched via "This Week" has a real resinDailyHours entry —
+    // untouched here, so intentional day-level overrides never get wiped.
+    const nextWeekly: Record<string, Record<string, number>> = {};
+    let changed = false;
+    const currentWeekIso = isoMonday(0);
+    for (let w = 0; w < WEEKS; w++) {
+      const weekIso = isoMonday(w);
+      const weekEntry = hours[weekIso];
+      if (!weekEntry || weekEntry[id] === undefined) continue;
+      if (weekIso < currentWeekIso || resinDailyHours[`${weekIso}-${id}`]) {
+        nextWeekly[weekIso] = weekEntry;
+        continue;
+      }
+      const rest = { ...weekEntry };
+      delete rest[id];
+      nextWeekly[weekIso] = rest;
+      changed = true;
+    }
+    if (changed) setHours({ ...hours, ...nextWeekly });
   }
   // Clears every frozen day/week override for this member from the current
   // week forward (past weeks untouched) so they fall back to the template.
@@ -839,11 +870,15 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
           {/* Turnaround bars */}
           <div className="bg-white border border-slate-100 rounded-xl p-5">
             <h3 className="text-sm font-semibold text-slate-700 mb-1">
-              Turnaround — by order intake week
+              Turnaround — by event-date intake week
             </h3>
             <p className="text-xs text-slate-400 mb-4">
               Based on {(queueSummary?.totalUnits ?? 0).toLocaleString()} units in queue
-              · {avgWeeklyCapacity.toFixed(0)} units/week avg capacity · FIFO sort
+              · {avgWeeklyCapacity.toFixed(0)} units/week avg capacity · FIFO sort.
+              Intake week = event date + {queueSummary?.offsetDays ?? 4} days (falls back to order date when an order has no event-date tag).
+              {queueSummary?.oldestEventDate && (
+                <> Oldest still-open order has an event date of <strong>{new Date(queueSummary.oldestEventDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</strong> — check the table below if that looks like a stuck straggler rather than the real front of the queue.</>
+              )}
             </p>
 
             {cohortRows.length === 0 ? (

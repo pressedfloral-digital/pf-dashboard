@@ -59,6 +59,12 @@ const FF_TARGET_WEEKS = 2;
 // performers on the real rosters), not the team's blended average, for the
 // same reason as NEW_HIRE_RATIO above.
 const FF_NEW_HIRE_RATIO = 0.5;
+// Preservation should ideally receive/log each week's bouquets within that
+// same week — any week that isn't fully caught up by the following week is
+// already a meaningful red flag, so the target here is tight relative to
+// Design/Fulfillment's multi-week targets.
+const PRES_TARGET_WEEKS = 1;
+const PRES_NEW_HIRE_RATIO = 0.6;
 
 // ─── Historical Utah intake (actual received by week) ─────────────────────────
 // Calibration for the designed-to-date anchor: frames designed before design-historicals
@@ -207,6 +213,14 @@ function fulfillmentTurnaroundColors(totalWeeks: number | null) {
   if (totalWeeks <= 1)     return { bar: 'bg-green-400', text: 'text-green-700', label: `~${totalWeeks}wk — on pace` };
   if (totalWeeks <= FF_TARGET_WEEKS) return { bar: 'bg-amber-400', text: 'text-amber-700', label: `~${totalWeeks}wks — at ${FF_TARGET_WEEKS}wk target` };
   return                          { bar: 'bg-red-600',    text: 'text-red-800',   label: `~${totalWeeks}wks — over ${FF_TARGET_WEEKS}wk target` };
+}
+
+// Same idea, banded around Preservation's tighter same-week target.
+function preservationTurnaroundColors(totalWeeks: number | null) {
+  if (totalWeeks === null)  return { bar: 'bg-red-600',   text: 'text-red-800',   label: 'queue not cleared in 52 wks' };
+  if (totalWeeks <= 0)      return { bar: 'bg-green-400', text: 'text-green-700', label: 'keeping pace' };
+  if (totalWeeks <= PRES_TARGET_WEEKS) return { bar: 'bg-amber-400', text: 'text-amber-700', label: `~${totalWeeks}wk behind` };
+  return                           { bar: 'bg-red-600',   text: 'text-red-800',   label: `~${totalWeeks}wks behind — backlog building` };
 }
 
 // Pure FIFO simulation: given a starting designable queue, a per-week inflow of
@@ -1528,7 +1542,8 @@ function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove
 }
 
 function PreservationSection({ location, preservationQueue, countsLoading, teamActuals, onActualsSaved,
-  presHours, presDailyHours, presCheckHours, onPresDailyHoursChange, onPresCheckHoursChange, presRoster, presSettings, mgrTotalHours, mgrTotalDailyHours, onPresHoursChange, onPresRosterChange, onPresSettingsChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {}, weeklyEstimates = {}, presActuals = {}, onReceivedSaved, canViewCPO = true, userRole = 'admin' }: {
+  presHours, presDailyHours, presCheckHours, onPresDailyHoursChange, onPresCheckHoursChange, presRoster, presSettings, mgrTotalHours, mgrTotalDailyHours, onPresHoursChange, onPresRosterChange, onPresSettingsChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {}, weeklyEstimates = {}, presActuals = {}, onReceivedSaved, canViewCPO = true, userRole = 'admin',
+  bouquetsReceivedByWeek, presNewHireHours, onPresNewHireHoursChange }: {
   location:              'Utah' | 'Georgia';
   preservationQueue:     number;
   countsLoading:         boolean;
@@ -1554,6 +1569,12 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   onReceivedSaved?:      () => void;
   canViewCPO?:           boolean;
   userRole?:             string;
+  // Same "Bouquets received" estimate stream shown on Design's Queue &
+  // Turnaround tab (52 weeks) — Preservation's own turnaround uses this as
+  // its arrivals, rather than a separately-edited estimate.
+  bouquetsReceivedByWeek: number[];
+  presNewHireHours:        Record<string, number>;
+  onPresNewHireHoursChange:(h: Record<string, number>) => void;
 }) {
   const today    = new Date();
   const monday   = new Date(today);
@@ -1561,7 +1582,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   const mondayIso = monday.toISOString().split('T')[0];
   const sundayIso = addDays(mondayIso, 6);
 
-  const [presTab,       setPresTab]      = useState<'schedule' | 'historicals'>('schedule');
+  const [presTab,       setPresTab]      = useState<'schedule' | 'queue' | 'historicals'>('schedule');
   const [showRoster,    setShowRoster]   = useState(false);
   const [weekOffset,    setWeekOffset]   = useState(0);
   const [presInputMode, setPresInputMode] = useState<InputMode>('hours');
@@ -1880,6 +1901,60 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   const team = buildPresTeam(false);
   const fullTeam = buildPresTeam(true);
 
+  // ── Weekly Preservation capacity (orders/bouquets), 52 weeks ───────────────
+  // Same resolveWeekHours chain the 52-week planner reads per-cell, summed
+  // across the team, so the Queue & Turnaround simulation can't disagree
+  // with what the schedule actually shows.
+  const presCapacityByWeek = useMemo(() => Array.from({ length: WEEKS }, (_, w) => {
+    const weekIso = isoMonday(w);
+    let totalOrders = 0, totalHours = 0;
+    team.forEach(m => {
+      const prodH = resolveWeekHours({
+        dailyMap: presDailyHours, weekKey: `${weekIso}-${m.id}`,
+        legacyWeeklyValue: presHours[m.id]?.[weekIso],
+        standardWeeklyHours: presRoster[m.id]?.standardWeeklyHours,
+        hardcodedDefault: m.defaultHrs,
+        employment: { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate },
+      });
+      totalOrders += m.ratio > 0 ? prodH / m.ratio : 0;
+      totalHours  += prodH;
+    });
+    return { totalOrders, totalHours };
+  }), [team, presDailyHours, presHours, presRoster]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Hiring / what-if plan ────────────────────────────────────────────────────
+  // Mirrors Design's/Fulfillment's hiringPlan. Arrivals are the shared
+  // bouquetsReceivedByWeek estimate (same numbers as Design's "Bouquets
+  // received" column), starting queue is the live count of orders already
+  // sitting in Preservation right now. No fixed floor before Preservation can
+  // act on a bouquet, so this reuses the unclamped FIFO simulator directly.
+  const presHiringPlan = useMemo(() => {
+    const baseCapacity = presCapacityByWeek.map(t => t.totalOrders);
+    const baseHours    = presCapacityByWeek.map(t => t.totalHours);
+
+    let cumulativeHireHours = 0;
+    const hireHoursByWeek: number[] = [];
+    for (let w = 0; w < WEEKS; w++) {
+      cumulativeHireHours += presNewHireHours[isoMonday(w)] ?? 0;
+      hireHoursByWeek.push(cumulativeHireHours);
+    }
+
+    const scheduledHours = baseHours;
+    const plannedHours   = baseHours.map((h, w) => h + hireHoursByWeek[w]);
+    const planCapacity   = baseCapacity.map((c, w) => c + hireHoursByWeek[w] / PRES_NEW_HIRE_RATIO);
+
+    const scheduledTurnaround = simulateDesignTurnaroundsUnclamped(preservationQueue, bouquetsReceivedByWeek, baseCapacity);
+    const planTurnaround      = simulateDesignTurnaroundsUnclamped(preservationQueue, bouquetsReceivedByWeek, planCapacity);
+
+    return { scheduledHours, plannedHours, hireHoursByWeek, scheduledTurnaround, planTurnaround };
+  }, [presCapacityByWeek, presNewHireHours, preservationQueue, bouquetsReceivedByWeek]);
+
+  function setPresNewHireHours(weekIso: string, hours: number) {
+    const next = { ...presNewHireHours };
+    if (hours > 0) next[weekIso] = hours; else delete next[weekIso];
+    onPresNewHireHoursChange(next);
+  }
+
   function updateDailyHours(memberId: string, dayIdx: number, val: number) {
     const weekIso = isoMonday(presThisWeekOffset);
     const key = `${weekIso}-${memberId}`;
@@ -2058,14 +2133,14 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
         )}
       </div>
 
-      {/* Tabs: Schedule | Historicals */}
+      {/* Tabs: Schedule | Queue & Turnaround | Historicals */}
       {userRole !== 'viewer' && (
         <div className="flex border-b border-slate-200">
-          {(['schedule', 'historicals'] as const).map(t => (
+          {(['schedule', 'queue', 'historicals'] as const).map(t => (
             <button key={t} onClick={() => setPresTab(t)}
               className={`px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
                 presTab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}>{t === 'schedule' ? 'Schedule' : 'Historicals'}</button>
+              }`}>{t === 'schedule' ? 'Schedule' : t === 'queue' ? 'Queue & Turnaround' : 'Historicals'}</button>
           ))}
         </div>
       )}
@@ -2651,6 +2726,131 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
             </div>
           )}
 
+        </div>
+      )}
+
+      {/* ── QUEUE & TURNAROUND TAB ── */}
+      {presTab === 'queue' && (
+        <div className="space-y-6">
+          <div className="bg-white border border-slate-100 rounded-xl p-5">
+            <div className="flex items-start justify-between gap-2 flex-wrap mb-1">
+              <h2 className="text-sm font-semibold text-slate-700">Future turnaround — bouquets arriving each week</h2>
+            </div>
+            <p className="text-xs text-slate-400 mb-4">
+              Estimated weeks to receive/log each week&apos;s bouquets, using the same estimates as Design&apos;s &quot;Bouquets received&quot; column.
+              Currently {preservationQueue.toLocaleString()}{countsLoading ? '…' : ''} bouquets waiting in Preservation right now (live count).
+              Add a hypothetical hire below to see how Planned turnaround responds, for that week and every week after.
+            </p>
+            {(() => {
+              const maxWeeksScale = Math.max(
+                ...presHiringPlan.scheduledTurnaround.filter((t): t is number => t !== null),
+                ...presHiringPlan.planTurnaround.filter((t): t is number => t !== null),
+                PRES_TARGET_WEEKS,
+              ) * 1.05;
+              return (
+                <div className="overflow-x-auto -mx-1">
+                  <table className="min-w-full text-xs border-separate" style={{ borderSpacing: 0 }}>
+                    <thead>
+                      <tr className="text-slate-400">
+                        <th className="text-left font-medium px-2 py-1.5 sticky left-0 bg-white whitespace-nowrap">Week</th>
+                        <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Bouquets received (est.)</th>
+                        <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">New hire</th>
+                        <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Preservation hours</th>
+                        <th className="text-left font-medium px-2 py-1.5 min-w-[220px]">Turnaround</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {presHiringPlan.planTurnaround.map((total, w) => {
+                        const schedTotal = presHiringPlan.scheduledTurnaround[w];
+                        const { bar, text, label } = preservationTurnaroundColors(total);
+                        const schedColors = preservationTurnaroundColors(schedTotal);
+                        const weekIso = isoMonday(w);
+                        const scheduledH = presHiringPlan.scheduledHours[w];
+                        const plannedH   = presHiringPlan.plannedHours[w];
+                        const hireCum    = presHiringPlan.hireHoursByWeek[w];
+                        return (
+                          <tr key={w} className={`border-b border-slate-50 align-top ${w % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
+                            <td className="px-2 py-2 sticky left-0 bg-inherit whitespace-nowrap text-slate-500">
+                              {getWeekLabel(w)}
+                              {w === 0 && <span className="ml-1 text-[9px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
+                            </td>
+                            <td className="px-2 py-2 whitespace-nowrap text-slate-600">
+                              {Math.round(bouquetsReceivedByWeek[w])} bq
+                            </td>
+                            <td className="px-2 py-2">
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="number" min="0" step="1" placeholder="0"
+                                  value={presNewHireHours[weekIso] ?? ''}
+                                  onChange={e => setPresNewHireHours(weekIso, parseFloat(e.target.value) || 0)}
+                                  className="w-14 border border-slate-200 rounded px-1.5 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-emerald-300"
+                                  title="Hours/wk a hypothetical new hire starting this week would average"
+                                />
+                                <span className="text-[10px] text-slate-300">h/wk</span>
+                              </div>
+                              {hireCum > 0 && (
+                                <div className="text-[10px] text-emerald-600 mt-0.5 whitespace-nowrap">+{Math.round(hireCum)}h/wk running</div>
+                              )}
+                            </td>
+                            <td className="px-2 py-2 whitespace-nowrap">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-slate-400 w-14 shrink-0">Scheduled</span>
+                                <span className="text-slate-700 font-medium">{Math.round(scheduledH)}h</span>
+                              </div>
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <span className="text-emerald-600 w-14 shrink-0">Planned</span>
+                                <span className="text-emerald-700 font-medium">{Math.round(plannedH)}h</span>
+                              </div>
+                            </td>
+                            <td className="px-2 py-2">
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-slate-400 w-14 shrink-0">Scheduled</span>
+                                  {schedTotal !== null ? (
+                                    <>
+                                      <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
+                                        <div className={`h-2 rounded-full ${schedColors.bar}`} style={{ width: `${Math.min(100, (schedTotal / maxWeeksScale) * 100)}%` }} />
+                                      </div>
+                                      <span className={`text-[10px] font-medium w-14 text-right shrink-0 ${schedColors.text}`}>{schedTotal}w</span>
+                                    </>
+                                  ) : (
+                                    <span className="text-[10px] text-red-500 italic">52wk+</span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-slate-400 w-14 shrink-0">Planned</span>
+                                  {total !== null ? (
+                                    <>
+                                      <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
+                                        <div className={`h-2 rounded-full ${bar}`} style={{ width: `${Math.min(100, (total / maxWeeksScale) * 100)}%` }} />
+                                      </div>
+                                      <span className={`text-[10px] font-semibold w-14 text-right shrink-0 ${text}`}>{total}w</span>
+                                    </>
+                                  ) : (
+                                    <span className="text-[10px] text-red-600 italic">52wk+</span>
+                                  )}
+                                </div>
+                              </div>
+                              {total !== null && (
+                                <div className={`text-[10px] mt-0.5 ${text}`}>{label}</div>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+            <div className="flex gap-4 mt-4 pt-3 border-t border-slate-100 flex-wrap">
+              <span className="text-[10px] text-slate-500">Bouquets received: same estimate shown on Design&apos;s Queue &amp; Turnaround tab — edit it there, it updates here too.</span>
+              <span className="text-[10px] text-slate-500 border-l border-slate-200 pl-4">Preservation hours: Scheduled = the real 52-week planner. Planned = Scheduled + any new hire above.</span>
+              <span className="flex items-center gap-1.5 text-[10px] text-slate-500 border-l border-slate-200 pl-4"><span className="w-2.5 h-2.5 rounded-full bg-green-400 inline-block" /> keeping pace</span>
+              <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> ≤{PRES_TARGET_WEEKS} wk behind</span>
+              <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-red-600 inline-block" /> &gt;{PRES_TARGET_WEEKS} wk behind</span>
+            </div>
+          </div>
         </div>
       )}
 
@@ -4224,6 +4424,20 @@ export function SchedulePage({
     return Math.round(lastYearActual * getIntakeMultiplier(weekOf));
   }
 
+  // The exact "Bouquets received" estimate shown per week on Design's Queue &
+  // Turnaround tab (manual weeklyEstimates override, else last-year×multiplier
+  // projection, else avgIntake) — reused as-is for Preservation's own arrivals
+  // stream, so both tabs can never disagree about how many bouquets are
+  // expected in a given week.
+  const bouquetsReceivedByWeek = useMemo(() => Array.from({ length: WEEKS }, (_, w) => {
+    const weekIso = isoMonday(w);
+    const weVal = weeklyEstimates[weekIso];
+    if (weVal !== undefined) return location === 'Utah' ? weVal.ut : weVal.ga;
+    const projected = getProjectedIntake(weekIso);
+    if (projected !== undefined) return projected;
+    return avgIntake;
+  }), [weeklyEstimates, location, actualIntakeByWeek, weeklyMultipliers, avgIntake]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Graduating cohorts (preservation → designable, per week) ────────────────
   const graduatingCohorts = useMemo(() => {
     const taByWeek: Record<string, number> = {};
@@ -4578,6 +4792,9 @@ export function SchedulePage({
           employeeRates={employeeRates}
           weeklyEstimates={weeklyEstimates}
           presActuals={presActuals}
+          bouquetsReceivedByWeek={bouquetsReceivedByWeek}
+          presNewHireHours={settings.presNewHireHours}
+          onPresNewHireHoursChange={(h) => update('presNewHireHours', h)}
           onReceivedSaved={() => {
             fetch(`/api/actuals?location=${location}&type=preservation&weeks=52`)
               .then(r => r.json())

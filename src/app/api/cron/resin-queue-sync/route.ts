@@ -75,6 +75,10 @@ export async function GET(req: NextRequest) {
         for (const order of orders) {
           const orderTags = (order.tags ?? '').split(',').map((t: string) => t.trim());
           const pipelineStatus = PIPELINE_STATUSES.find(s => orderTags.includes(s)) ?? status;
+          // Event-date tag convention shared with /api/event-date-orders and
+          // /api/event-date-forecast: a plain YYYY-MM-DD tag = the customer's
+          // event (e.g. wedding) date.
+          const eventDateTag = orderTags.find((t: string) => /^\d{4}-\d{2}-\d{2}$/.test(t)) ?? null;
 
           for (const li of order.line_items) {
             if (!RESIN_PRODUCT_IDS.has(String(li.product_id))) continue;
@@ -92,6 +96,7 @@ export async function GET(req: NextRequest) {
               fulfillmentStatus:  li.fulfillment_status ?? null,
               productId:          String(li.product_id),
               orderCreatedAt:     order.created_at,
+              eventDate:          eventDateTag,
               pipelineStatus,
             });
           }
@@ -132,6 +137,8 @@ export async function GET(req: NextRequest) {
           );
           if (!hasPhotoVariant) continue;
 
+          const eventDateTag = orderTags.find((t: string) => /^\d{4}-\d{2}-\d{2}$/.test(t)) ?? null;
+
           for (const li of order.line_items) {
             if (!RESIN_PRODUCT_IDS.has(String(li.product_id))) continue;
             if (li.fulfillment_status === 'fulfilled') continue;
@@ -148,6 +155,7 @@ export async function GET(req: NextRequest) {
               fulfillmentStatus:  li.fulfillment_status ?? null,
               productId:          String(li.product_id),
               orderCreatedAt:     order.created_at,
+              eventDate:          eventDateTag,
               pipelineStatus:     'recreation',
             });
           }
@@ -205,6 +213,7 @@ export async function GET(req: NextRequest) {
         pf_status_rank:             STATUS_RANK[cache?.status ?? li.pipelineStatus] ?? 99,
         origin_location:            cache?.location ?? null,
         order_date:                 cache?.order_date ?? li.orderCreatedAt?.split('T')[0] ?? null,
+        event_date:                 li.eventDate,
         synced_at:                  new Date().toISOString(),
       };
     });
@@ -246,6 +255,7 @@ interface ResinLineItem {
   fulfillmentStatus:  string | null;
   productId:          string;
   orderCreatedAt:     string;
+  eventDate:          string | null;
   pipelineStatus:     string;
 }
 
