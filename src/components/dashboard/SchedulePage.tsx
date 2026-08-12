@@ -76,6 +76,13 @@ const PRES_OVERSTAFF_PCT = 0.10;
 // ~2 weeks behind reality).
 const DESIGNED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: -636, Georgia: 51 };
 
+// Same idea as DESIGNED_BASELINE, one stage downstream: an offset added to
+// actual logged Fulfillment output so the cumulative total lands on the
+// real front of the Fulfillment queue. Calibrated Aug 12, 2026 against the
+// team's own read of where they are: Utah working through orders received
+// 4/28–5/24, Georgia working through 4/8–4/29.
+const FULFILLED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: -1082, Georgia: -602 };
+
 const UTAH_HISTORICAL_INTAKE: { weekOf: string; actual: number }[] = [
   { weekOf: '2025-09-29', actual: 187 },
   { weekOf: '2025-10-06', actual: 167 },
@@ -2596,7 +2603,8 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
 function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamActuals, onActualsSaved,
   ffHours, ffRoster, mgrTotalHours, mgrTotalDailyHours, onFfHoursChange, onFfRosterChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {},
   ffDailyHoursProp, onFfDailyHoursChange, canViewCPO = true, userRole = 'admin',
-  designWeeklyFrames, ffNewHireHours, onFfNewHireHoursChange }: {
+  designWeeklyFrames, ffNewHireHours, onFfNewHireHoursChange, ffCohortIntake,
+  fullPipelineRemaining }: {
   location:        'Utah' | 'Georgia';
   fulfillmentQueue: number;
   countsLoading:   boolean;
@@ -2621,6 +2629,22 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   designWeeklyFrames:    number[];
   ffNewHireHours:        Record<string, number>;
   onFfNewHireHoursChange:(h: Record<string, number>) => void;
+  // Cohorts that have already left Design — the pool Fulfillment's own
+  // "Weeks remaining until fulfilled" table walks through.
+  ffCohortIntake: { totalDesigned: number; alreadyFulfilled: number; ffQueueCohorts: { weekOf: string; count: number; remaining: number }[] };
+  // Computed once at the SchedulePage level (not locally) so this table and
+  // Design's own "Total w/ fulfillment" column can never disagree — see the
+  // fullPipelineRemaining definition up there for the full reasoning.
+  fullPipelineRemaining: {
+    weekOf: string; count: number;
+    stage: 'fulfilled' | 'in_fulfillment' | 'in_design_queue' | 'still_drying' | 'not_yet_received';
+    weeksFromNow: number | null;
+    weeksInFulfillment: number | null;
+    designCompleteWeek: number | null;
+    ffOnlyWeeks: number | null;
+    totalFulfillmentWeeks: number | null;
+    weeksElapsed: number;
+  }[];
 }) {
   const [ffTab,      setFfTab]      = useState<'thisweek' | 'schedule' | 'queue' | 'historicals'>('thisweek');
   const [ffInputMode, setFfInputMode] = useState<InputMode>('hours');
@@ -2700,6 +2724,17 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   // driving the Planned turnaround bar. Unlike Design there's no fixed
   // drying-time floor before Fulfillment can act on an order, so this reuses
   // the unclamped FIFO simulator directly (no PRESERVATION_WEEKS offset).
+  // Backlog: uses the same actuals-derived figure as ffCohortIntake/"Weeks
+  // remaining until fulfilled" (design output history + FULFILLED_BASELINE),
+  // NOT the live fulfillmentQueue PF-status snapshot — same reasoning Design
+  // uses for its own queue math: a live status count answers a different
+  // question (current order state) than the FIFO backlog derived from actual
+  // throughput, and the two easily disagree (verified: live snapshot and the
+  // derived figure differed by 3-4x on real data). Keeping both "Future
+  // turnaround" and "Weeks remaining until fulfilled" on the same number
+  // means they can never contradict each other the way they did before.
+  const ffDerivedBacklog = ffCohortIntake.totalDesigned - ffCohortIntake.alreadyFulfilled;
+
   const ffHiringPlan = useMemo(() => {
     const baseCapacity = ffWeeklyTotals.map(t => t.totalOrders);
     const baseHours    = ffWeeklyTotals.map(t => t.totalHours);
@@ -2715,11 +2750,13 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
     const plannedHours   = baseHours.map((h, w) => h + hireHoursByWeek[w]);
     const planCapacity   = baseCapacity.map((c, w) => c + hireHoursByWeek[w] / FF_NEW_HIRE_RATIO);
 
-    const scheduledTurnaround = simulateDesignTurnaroundsUnclamped(fulfillmentQueue, designOutputByWeek, baseCapacity);
-    const planTurnaround      = simulateDesignTurnaroundsUnclamped(fulfillmentQueue, designOutputByWeek, planCapacity);
+    const scheduledTurnaround = simulateDesignTurnaroundsUnclamped(ffDerivedBacklog, designOutputByWeek, baseCapacity);
+    const planTurnaround      = simulateDesignTurnaroundsUnclamped(ffDerivedBacklog, designOutputByWeek, planCapacity);
 
     return { scheduledHours, plannedHours, hireHoursByWeek, scheduledTurnaround, planTurnaround };
-  }, [ffWeeklyTotals, ffNewHireHours, fulfillmentQueue, designOutputByWeek]);
+  }, [ffWeeklyTotals, ffNewHireHours, ffDerivedBacklog, designOutputByWeek]);
+
+  const [showDoneFfCohorts, setShowDoneFfCohorts] = useState(false);
 
   function setFfNewHireHours(weekIso: string, hours: number) {
     const next = { ...ffNewHireHours };
@@ -3128,8 +3165,9 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
             </div>
             <p className="text-xs text-slate-400 mb-4">
               Estimated weeks from an order leaving Design to shipping out of Fulfillment. Target is {FF_TARGET_WEEKS} weeks or less.
-              Currently {fulfillmentQueue.toLocaleString()}{countsLoading ? '…' : ''} orders waiting in Fulfillment right now (live count).
+              Based on {location} fulfillment backlog of {ffDerivedBacklog.toLocaleString()} orders (from actual design output) — same backlog as &quot;Weeks remaining until fulfilled&quot; below.
               Add a hypothetical hire below to see how Planned turnaround responds, for that week and every week after.
+              {!countsLoading && <> Live PF status snapshot currently shows {fulfillmentQueue.toLocaleString()} — for reference only, not used in this math.</>}
             </p>
             {(() => {
               const maxWeeksScale = Math.max(
@@ -3240,6 +3278,123 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
               <span className="flex items-center gap-1.5 text-[10px] text-slate-500 border-l border-slate-200 pl-4"><span className="w-2.5 h-2.5 rounded-full bg-green-400 inline-block" /> ≤1 wk ideal</span>
               <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> ≤{FF_TARGET_WEEKS} wks at target</span>
               <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-red-600 inline-block" /> &gt;{FF_TARGET_WEEKS} wks over target</span>
+            </div>
+          </div>
+
+          <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
+            <div className="px-5 py-3 border-b border-slate-100 flex items-start justify-between gap-3 flex-wrap">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-700">Weeks remaining until fulfilled — every intake week</h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Every intake week, received or not: estimated weeks from today until that cohort ships, chaining Design&apos;s own queue estimate
+                  into Fulfillment&apos;s for whatever hasn&apos;t reached Fulfillment yet. Based on {location} fulfillment backlog of{' '}
+                  {ffDerivedBacklog.toLocaleString()} orders (from actual design output) and scheduled capacity at both stages.
+                </p>
+              </div>
+              {(() => {
+                const doneCount = fullPipelineRemaining.filter(r => r.stage === 'fulfilled').length;
+                return doneCount > 0 ? (
+                  <button onClick={() => setShowDoneFfCohorts(v => !v)}
+                    className="text-xs px-2.5 py-1 border border-slate-200 rounded text-slate-500 hover:bg-slate-50 whitespace-nowrap shrink-0">
+                    {showDoneFfCohorts ? `Hide ${doneCount} completed ▲` : `Show ${doneCount} completed ▼`}
+                  </button>
+                ) : null;
+              })()}
+            </div>
+            <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+              <table className="min-w-full text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-100 sticky top-0">
+                    <th className="px-4 py-2 text-left font-medium text-slate-500 whitespace-nowrap">Intake week</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-500">Orders</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-500">Status</th>
+                    <th className="px-3 py-2 text-left font-medium text-slate-500">Weeks until fulfilled</th>
+                    <th className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap">Total to fulfill</th>
+                    <th className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap" title={`Total time in the Fulfillment stage, start to finish — actual + remaining for orders already there, projected for orders still upstream. Red if over ${FF_TARGET_WEEKS} weeks.`}>Time in Fulfillment</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {fullPipelineRemaining.filter(row => showDoneFfCohorts || row.stage !== 'fulfilled').map((row, i) => {
+                    const weeksLeft = row.weeksFromNow;
+                    const totalToFulfill = row.stage !== 'fulfilled' && weeksLeft !== null ? row.weeksElapsed + weeksLeft : null;
+                    const done = row.stage === 'fulfilled';
+                    return (
+                      <tr key={i} className={`border-b border-slate-50 ${
+                        done ? 'bg-slate-50 opacity-50' : weeksLeft === 0 ? 'bg-indigo-50/40' : row.stage === 'not_yet_received' ? 'bg-slate-50/40' : 'hover:bg-slate-50'
+                      }`}>
+                        <td className="px-4 py-2 font-medium text-slate-700 whitespace-nowrap">
+                          {fmtDate(row.weekOf)}
+                          {done && <span className="ml-2 text-[10px] bg-slate-200 text-slate-500 rounded px-1 py-px">✓ fulfilled</span>}
+                          {row.stage === 'not_yet_received' && <span className="ml-2 text-[10px] bg-slate-100 text-slate-400 rounded px-1 py-px">est.</span>}
+                        </td>
+                        <td className="px-3 py-2 text-right text-slate-600">{Math.round(row.count)}</td>
+                        <td className="px-3 py-2 text-right">
+                          {done ? (
+                            <span className="text-slate-400 text-[10px]">complete</span>
+                          ) : row.stage === 'in_fulfillment' && weeksLeft === 0 ? (
+                            <span className="text-indigo-700 text-[10px] bg-indigo-100 rounded px-1.5 py-0.5">fulfilling now</span>
+                          ) : row.stage === 'in_fulfillment' ? (
+                            <span className="text-slate-500 text-[10px]">in fulfillment queue</span>
+                          ) : row.stage === 'in_design_queue' ? (
+                            <span className="text-violet-700 text-[10px] bg-violet-100 rounded px-1.5 py-0.5">in design queue</span>
+                          ) : row.stage === 'still_drying' ? (
+                            <span className="text-green-700 text-[10px] bg-green-100 rounded px-1.5 py-0.5">still drying</span>
+                          ) : (
+                            <span className="text-slate-400 text-[10px] bg-slate-100 rounded px-1.5 py-0.5">not yet received</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          {done ? (
+                            <span className="text-xs text-slate-400 italic">already fulfilled</span>
+                          ) : weeksLeft === null ? (
+                            <span className="text-xs text-red-400 italic">not cleared in 52 wks</span>
+                          ) : weeksLeft === 0 ? (
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 bg-indigo-200 rounded-full h-1.5 max-w-32">
+                                <div className="h-1.5 rounded-full bg-indigo-500 w-full" />
+                              </div>
+                              <span className="text-xs font-semibold text-indigo-700">this week</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 bg-slate-100 rounded-full h-1.5 max-w-32">
+                                <div className={`h-1.5 rounded-full ${weeksLeft <= 12 ? 'bg-green-400' : weeksLeft <= 18 ? 'bg-amber-400' : 'bg-red-500'}`}
+                                  style={{ width: `${Math.min(100, (weeksLeft / 24) * 100)}%` }} />
+                              </div>
+                              <span className={`text-xs font-medium whitespace-nowrap ${weeksLeft <= 12 ? 'text-green-700' : weeksLeft <= 18 ? 'text-amber-700' : 'text-red-700'}`}>
+                                ~{weeksLeft} wk{weeksLeft !== 1 ? 's' : ''} from now
+                              </span>
+                            </div>
+                          )}
+                          {row.designCompleteWeek !== null && row.designCompleteWeek > 0 && row.ffOnlyWeeks !== null && (
+                            <div className="text-[10px] text-slate-400 mt-0.5">
+                              ~{row.designCompleteWeek}w to design, then ~{row.ffOnlyWeeks}w in fulfillment
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          {totalToFulfill !== null ? (
+                            <span className={`text-xs font-semibold ${totalToFulfill <= 14 ? 'text-green-700' : totalToFulfill <= 20 ? 'text-amber-700' : 'text-red-700'}`}>
+                              ~{totalToFulfill} wks
+                            </span>
+                          ) : done ? <span className="text-xs text-slate-300">—</span>
+                                   : <span className="text-xs text-slate-400">TBD</span>}
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          {row.totalFulfillmentWeeks !== null ? (
+                            <span className={`text-xs font-semibold ${row.totalFulfillmentWeeks > FF_TARGET_WEEKS ? 'text-red-700' : 'text-slate-600'}`}
+                              title={row.totalFulfillmentWeeks > FF_TARGET_WEEKS ? `Over the ${FF_TARGET_WEEKS}-week target` : undefined}>
+                              ~{row.totalFulfillmentWeeks} wk{row.totalFulfillmentWeeks !== 1 ? 's' : ''}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-slate-300">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -4236,6 +4391,43 @@ export function SchedulePage({
     return { designableCohorts, inPreservationCohorts, totalFromHistory, alreadyDesigned, remainingQueue };
   }, [location, presActuals, teamActuals]);
 
+  // ── Designed cohorts (orders that have left Design, waiting on Fulfillment) ──
+  // Complement of cohortIntake's own trim: whichever cohorts (or partial
+  // cohort, at the boundary) got consumed by cohortIntake.alreadyDesigned are
+  // the ones that have actually left Design and are eligible for Fulfillment.
+  // Same real received-bouquet cohorts throughout — an order's "intake week"
+  // identity never changes as it moves through the pipeline.
+  const designedCohorts = useMemo(() => {
+    let trim = cohortIntake.alreadyDesigned;
+    const pool: { weekOf: string; count: number }[] = [];
+    for (const c of cohortIntake.designableCohorts) {
+      if (trim >= c.count) { pool.push({ weekOf: c.weekOf, count: c.count }); trim -= c.count; }
+      else if (trim > 0) { pool.push({ weekOf: c.weekOf, count: trim }); trim = 0; }
+    }
+    return pool;
+  }, [cohortIntake]);
+
+  // ── Fulfillment cohort intake — one stage downstream of cohortIntake ───────
+  // Same FIFO-trim pattern: designedCohorts trimmed by what's actually been
+  // fulfilled so far (FULFILLED_BASELINE + real logged Fulfillment output),
+  // oldest cohort first, leaving each cohort's still-outstanding remainder.
+  const ffCohortIntake = useMemo(() => {
+    const totalDesigned = designedCohorts.reduce((s, c) => s + c.count, 0);
+    const fulfilledActualsTotal = teamActuals
+      .filter(r => r.department === 'fulfillment')
+      .reduce((s, r) => s + (r.actual_orders ?? 0), 0);
+    const alreadyFulfilled = Math.max(0, Math.min(totalDesigned,
+      (FULFILLED_BASELINE[location] ?? 0) + fulfilledActualsTotal));
+    let trim = alreadyFulfilled;
+    const ffQueueCohorts = designedCohorts.map(c => {
+      if (trim >= c.count) { trim -= c.count; return { weekOf: c.weekOf, count: c.count, remaining: 0 }; }
+      const row = { weekOf: c.weekOf, count: c.count, remaining: c.count - trim };
+      trim = 0;
+      return row;
+    });
+    return { totalDesigned, alreadyFulfilled, ffQueueCohorts };
+  }, [designedCohorts, teamActuals, location]);
+
   // ── Hiring / what-if plan ────────────────────────────────────────────────────
   // Powers the Design hours columns on the Queue & Turnaround tab. The only
   // manager-editable lever is a hypothetical new hire's hours/wk, which carries
@@ -4388,6 +4580,191 @@ export function SchedulePage({
     }
     return allRows.sort((a, b) => a.weekOf.localeCompare(b.weekOf));
   }, [cohortIntake, weeklyTotals]);
+
+  // ── Fulfillment capacity + queue walk, computed here (not just inside
+  // FulfillmentSection) so Design's own "Total w/ fulfillment" column and
+  // Fulfillment's "Weeks remaining until fulfilled" table read from the
+  // exact same numbers — previously Design's column was a flat +2wk guess
+  // that couldn't possibly agree with Fulfillment's real per-cohort math. ──
+  const ffTeamForPipeline = useMemo(() => {
+    const defaultTeam = location === 'Utah' ? UTAH_FULFILLMENT_TEAM : GEORGIA_FULFILLMENT_TEAM;
+    const base = defaultTeam
+      .filter(m => !settings.ffRoster[m.id]?._removed)
+      .map(m => {
+        const roster = settings.ffRoster[m.id];
+        return { ...m, ratio: roster?.ratio ?? m.ratio, defaultHrs: m.hours[0] ?? 0 };
+      });
+    const defaultIds = new Set(defaultTeam.map(m => m.id));
+    Object.entries(settings.ffRoster).forEach(([id, r]) => {
+      if (!defaultIds.has(id) && !r._removed) {
+        base.push({ id, name: r.name ?? 'New Member', ratio: r.ratio ?? 1.0, pay: 'hourly' as const,
+          payType: r.payType ?? 'hourly' as const, annualSalary: r.annualSalary ?? 0,
+          rate: r.rate > 0 ? r.rate : 0, hours: [], defaultHrs: 0 });
+      }
+    });
+    return base;
+  }, [location, settings.ffRoster]);
+
+  const ffCapacityByWeekForPipeline = useMemo(() => Array.from({ length: WEEKS }, (_, w) => {
+    const weekIso = isoMonday(w);
+    let totalOrders = 0;
+    ffTeamForPipeline.forEach(m => {
+      const prodH = resolveWeekHours({
+        dailyMap: settings.ffDailyHours, weekKey: `${weekIso}-${m.id}`,
+        legacyWeeklyValue: settings.ffHours[m.id]?.[weekIso],
+        standardWeeklyHours: settings.ffRoster[m.id]?.standardWeeklyHours,
+        hardcodedDefault: m.defaultHrs,
+        employment: { weekIso, startDate: settings.ffRoster[m.id]?.startDate, endDate: settings.ffRoster[m.id]?.endDate },
+      });
+      totalOrders += m.ratio > 0 ? prodH / m.ratio : 0;
+    });
+    return totalOrders;
+  }), [ffTeamForPipeline, settings.ffDailyHours, settings.ffHours, settings.ffRoster]);
+
+  const designOutputByWeekForPipeline = useMemo(() => {
+    const actualByWeek: Record<string, number> = {};
+    teamActuals.filter(r => r.department === 'design').forEach(r => {
+      actualByWeek[r.week_of] = (actualByWeek[r.week_of] ?? 0) + (r.actual_orders ?? 0);
+    });
+    return Array.from({ length: WEEKS }, (_, w) => actualByWeek[isoMonday(w)] ?? weeklyTotals[w]?.totalFrames ?? 0);
+  }, [teamActuals, weeklyTotals]);
+
+  const ffDerivedBacklogForPipeline = ffCohortIntake.totalDesigned - ffCohortIntake.alreadyFulfilled;
+
+  const ffScheduledTurnaroundForPipeline = useMemo(() =>
+    simulateDesignTurnaroundsUnclamped(ffDerivedBacklogForPipeline, designOutputByWeekForPipeline, ffCapacityByWeekForPipeline),
+    [ffDerivedBacklogForPipeline, designOutputByWeekForPipeline, ffCapacityByWeekForPipeline]);
+
+  const ffHistoricalRemainingForPipeline = useMemo(() => {
+    const results = ffCohortIntake.ffQueueCohorts.map(c => ({
+      weekOf: c.weekOf, count: c.count, weeksFromNow: null as number | null, alreadyDone: c.remaining === 0, remaining: c.remaining,
+    }));
+    let idx = results.findIndex(r => r.remaining > 0);
+    if (idx === -1) idx = results.length;
+    let remainingInRow = results[idx]?.remaining ?? 0;
+    for (let w = 0; w < WEEKS && idx < results.length; w++) {
+      let capacity = ffCapacityByWeekForPipeline[w];
+      while (capacity > 0 && idx < results.length) {
+        if (remainingInRow <= capacity) {
+          results[idx].weeksFromNow = w;
+          capacity -= remainingInRow;
+          idx++;
+          remainingInRow = results[idx]?.remaining ?? 0;
+        } else {
+          remainingInRow -= capacity;
+          capacity = 0;
+        }
+      }
+    }
+    return results;
+  }, [ffCohortIntake, ffCapacityByWeekForPipeline]);
+
+  // Retrospective: which week each already-designed cohort actually entered
+  // Fulfillment, reconstructed from real historical design output — see
+  // ffEntryWeekByCohort's original comment in FulfillmentSection for the
+  // full reasoning (only meaningful within the actuals-tracked period).
+  const ffEntryWeekByCohortForPipeline = useMemo(() => {
+    const byWeek: Record<string, number> = {};
+    teamActuals.filter(r => r.department === 'design').forEach(r => {
+      byWeek[r.week_of] = (byWeek[r.week_of] ?? 0) + (r.actual_orders ?? 0);
+    });
+    const weeksSorted = Object.keys(byWeek).sort();
+    let cumulative = DESIGNED_BASELINE[location] ?? 0;
+    const cumulativeAtWeek: { weekOf: string; cumulative: number }[] = [];
+    for (const w of weeksSorted) {
+      cumulative += byWeek[w];
+      cumulativeAtWeek.push({ weekOf: w, cumulative });
+    }
+    let cumBefore = 0;
+    const result: Record<string, string | null> = {};
+    for (const c of ffCohortIntake.ffQueueCohorts) {
+      const cumEnd = cumBefore + c.count;
+      const match = cumulativeAtWeek.find(x => x.cumulative >= cumEnd);
+      result[c.weekOf] = match ? match.weekOf : null;
+      cumBefore += c.count;
+    }
+    return result;
+  }, [teamActuals, ffCohortIntake, location]);
+
+  // Single shared source for "how long, start to finish, will/did this
+  // cohort spend in Fulfillment" — used by both Design's "Total w/
+  // fulfillment" column and Fulfillment's own "Weeks remaining until
+  // fulfilled" table, so the two can never disagree.
+  const fullPipelineRemaining = useMemo(() => {
+    type Row = {
+      weekOf: string; count: number;
+      stage: 'fulfilled' | 'in_fulfillment' | 'in_design_queue' | 'still_drying' | 'not_yet_received';
+      weeksFromNow: number | null;
+      weeksInFulfillment: number | null;
+      designCompleteWeek: number | null;
+      ffOnlyWeeks: number | null;
+      totalFulfillmentWeeks: number | null;
+    };
+    const rows: Row[] = [];
+    const todayMs = getMondayDate(0).getTime();
+
+    for (const r of ffHistoricalRemainingForPipeline) {
+      const entryWeekOf = ffEntryWeekByCohortForPipeline[r.weekOf];
+      const weeksInFulfillment = !r.alreadyDone && entryWeekOf
+        ? Math.round((todayMs - new Date(entryWeekOf + 'T00:00:00').getTime()) / (7 * 24 * 60 * 60 * 1000))
+        : null;
+      rows.push({
+        weekOf: r.weekOf, count: r.count,
+        stage: r.alreadyDone ? 'fulfilled' : 'in_fulfillment',
+        weeksFromNow: r.alreadyDone ? null : r.weeksFromNow,
+        weeksInFulfillment,
+        designCompleteWeek: r.alreadyDone ? null : 0,
+        ffOnlyWeeks: r.alreadyDone ? null : r.weeksFromNow,
+        totalFulfillmentWeeks: (!r.alreadyDone && r.weeksFromNow !== null) ? (weeksInFulfillment ?? 0) + r.weeksFromNow : null,
+      });
+    }
+
+    for (const r of historicalRemaining) {
+      if ('alreadyDone' in r && r.alreadyDone) continue;
+      const designCompleteWeek = r.weeksFromNow;
+      const ffWait = designCompleteWeek !== null && designCompleteWeek < WEEKS
+        ? ffScheduledTurnaroundForPipeline[designCompleteWeek] : null;
+      rows.push({
+        weekOf: r.weekOf, count: r.remaining,
+        stage: 'inPreservation' in r && r.inPreservation ? 'still_drying' : 'in_design_queue',
+        weeksFromNow: (designCompleteWeek !== null && ffWait !== null) ? designCompleteWeek + ffWait : null,
+        weeksInFulfillment: null,
+        designCompleteWeek, ffOnlyWeeks: ffWait,
+        totalFulfillmentWeeks: ffWait,
+      });
+    }
+
+    const knownWeeks = new Set([...ffHistoricalRemainingForPipeline.map(r => r.weekOf), ...historicalRemaining.map(r => r.weekOf)]);
+    for (let w = 0; w < WEEKS; w++) {
+      const weekIso = isoMonday(w);
+      if (knownWeeks.has(weekIso)) continue;
+      const designTotal = hiringPlan.scheduledTurnaround[w];
+      const designCompleteWeek = designTotal !== null ? w + designTotal : null;
+      const ffWait = designCompleteWeek !== null && designCompleteWeek < WEEKS
+        ? ffScheduledTurnaroundForPipeline[designCompleteWeek] : null;
+      rows.push({
+        weekOf: weekIso, count: bouquetsReceivedByWeek[w],
+        stage: 'not_yet_received',
+        weeksFromNow: (designCompleteWeek !== null && ffWait !== null) ? designCompleteWeek + ffWait : null,
+        weeksInFulfillment: null,
+        designCompleteWeek, ffOnlyWeeks: ffWait,
+        totalFulfillmentWeeks: ffWait,
+      });
+    }
+
+    return rows
+      .map(r => ({ ...r, weeksElapsed: Math.round((todayMs - new Date(r.weekOf + 'T00:00:00').getTime()) / (7 * 24 * 60 * 60 * 1000)) }))
+      .sort((a, b) => a.weekOf.localeCompare(b.weekOf));
+  }, [ffHistoricalRemainingForPipeline, historicalRemaining, hiringPlan.scheduledTurnaround, bouquetsReceivedByWeek, ffScheduledTurnaroundForPipeline, ffEntryWeekByCohortForPipeline]);
+
+  // O(1) lookup for Design's own "Total w/ fulfillment" column below, keyed
+  // by intake week — same fullPipelineRemaining data Fulfillment's table
+  // reads, so the two numbers can never disagree.
+  const fullPipelineByWeek = useMemo(() => {
+    const map = new Map<string, (typeof fullPipelineRemaining)[number]>();
+    fullPipelineRemaining.forEach(r => map.set(r.weekOf, r));
+    return map;
+  }, [fullPipelineRemaining]);
 
   // ── Must design ───────────────────────────────────────────────────────────────
   // Minimum output each schedule week needs so no locked-in client promise
@@ -4572,6 +4949,8 @@ export function SchedulePage({
           designWeeklyFrames={weeklyTotals.map(t => t.totalFrames)}
           ffNewHireHours={settings.ffNewHireHours}
           onFfNewHireHoursChange={(h) => update('ffNewHireHours', h)}
+          ffCohortIntake={ffCohortIntake}
+          fullPipelineRemaining={fullPipelineRemaining}
           onActualsSaved={() => {
             fetch(`/api/actuals?location=${location}&type=team&weeks=52`)
               .then(r => r.json())
@@ -5167,7 +5546,12 @@ export function SchedulePage({
                           const weeksLeft = row.weeksFromNow;
                           const weeksElapsed = Math.round((getMondayDate(0).getTime() - new Date(row.weekOf + 'T12:00:00').getTime()) / (7 * 24 * 60 * 60 * 1000));
                           const totalToDesign        = (!done && weeksLeft !== null) ? weeksElapsed + weeksLeft : null;
-                          const totalWithFulfillment = totalToDesign !== null ? totalToDesign + 2 : null;
+                          // Real per-cohort Fulfillment queue math (same data
+                          // Fulfillment's "Weeks remaining until fulfilled"
+                          // table shows) — replaces the old flat +2wk guess.
+                          const pipelineMatch = fullPipelineByWeek.get(row.weekOf);
+                          const totalWithFulfillment = pipelineMatch && pipelineMatch.weeksFromNow !== null
+                            ? pipelineMatch.weeksElapsed + pipelineMatch.weeksFromNow : null;
                           // Received: same merged source as the "Bouquets received" row on the
                           // preservation Historicals tab — explicit presActuals override, else
                           // the team's logged order totals for that week, else hardcoded history.
