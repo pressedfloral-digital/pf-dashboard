@@ -250,9 +250,13 @@ function simulateDesignTurnarounds(startQueue: number, graduatingByWeek: number[
   return Array.from({ length: weeks }, (_, w) => {
     const graduateWeek = w + PRESERVATION_WEEKS;
     if (graduateWeek >= weeks) return null;
-    const queueAhead = queueAtStart[graduateWeek];
-    const cohortSize = graduatingByWeek[w] ?? 0;
-    let remaining    = queueAhead + cohortSize;
+    // queueAtStart[graduateWeek] already includes this cohort — it was added
+    // in by the recurrence above (queueAtStart[t] = afterDrain + graduatingByWeek[t]).
+    // Adding graduatingByWeek[w] on top double-counted the cohort using an
+    // unrelated week's number besides (w is PRESERVATION_WEEKS earlier than
+    // graduateWeek, not this cohort's own size), inflating every row's
+    // turnaround — worse the further out the row.
+    let remaining = queueAtStart[graduateWeek];
     for (let fw = graduateWeek; fw < weeks; fw++) {
       remaining -= frameCapacityByWeek[fw];
       if (remaining <= 0) return fw - w;
@@ -278,9 +282,13 @@ function simulateDesignTurnaroundsUnclamped(startQueue: number, graduatingByWeek
     queueAtStart.push(afterGraduate);
   }
   return Array.from({ length: weeks }, (_, w) => {
-    const queueAhead = queueAtStart[w];
-    const cohortSize = graduatingByWeek[w] ?? 0;
-    let remaining    = queueAhead + cohortSize;
+    // queueAtStart[w] already includes this week's own graduating cohort for
+    // every w >= 1 (added in by the recurrence above) — only queueAtStart[0]
+    // is the raw startQueue with week 0's cohort not yet folded in. Adding
+    // graduatingByWeek[w] unconditionally double-counted the cohort for
+    // every week after the first, inflating the "how overstaffed" read the
+    // same way the clamped version's turnaround was inflated.
+    let remaining = queueAtStart[w] + (w === 0 ? (graduatingByWeek[0] ?? 0) : 0);
     for (let fw = w; fw < weeks; fw++) {
       remaining -= frameCapacityByWeek[fw];
       if (remaining <= 0) return fw - w;
@@ -4202,7 +4210,14 @@ export function SchedulePage({
     const designableCohorts: { weekOf: string; count: number }[] = [];
     const inPreservationCohorts: { weekOf: string; count: number; weeksLeft: number }[] = [];
     historicalIntake.forEach(({ weekOf, actual }) => {
-      const intakeDate = new Date(weekOf + 'T12:00:00');
+      // Midnight-anchored, matching getMondayDate's anchor for `today` — using
+      // noon here (as elsewhere in this file, deliberately, for display-safe
+      // date parsing) shifts every cohort's age down by half a day, enough to
+      // misclassify one right at the 8-week boundary as still-drying a full
+      // week longer than graduatingCohorts' isoMonday-offset indexing thinks,
+      // so the "Future turnaround" and "Weeks remaining" tables disagreed
+      // about exactly when that cohort graduates.
+      const intakeDate = new Date(weekOf + 'T00:00:00');
       const ageWeeks   = Math.floor((today.getTime() - intakeDate.getTime()) / (7 * 24 * 60 * 60 * 1000));
       if (ageWeeks >= PRESERVATION_WEEKS) {
         designableCohorts.push({ weekOf, count: actual });
@@ -4928,7 +4943,7 @@ export function SchedulePage({
                             <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Bouquets received</th>
                             <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">New hire</th>
                             <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Design hours</th>
-                            <th className="text-left font-medium px-2 py-1.5 min-w-[220px]">Turnaround</th>
+                            <th className="text-left font-medium px-2 py-1.5 min-w-[220px]">Turnaround (design only)</th>
                           </tr>
                         </thead>
                         <tbody>
