@@ -72,6 +72,10 @@ export interface ScheduleSettings {
   // hypothetical new hire starting that week — carries forward into every
   // later week and adds directly onto Scheduled to produce Planned.
   newHireHours:          Record<string, number>;
+  // Same idea as newHireHours, but for the Fulfillment Queue & Turnaround
+  // tab's hiring what-if — kept separate so a hypothetical design hire and a
+  // hypothetical fulfillment hire don't collide under one key.
+  ffNewHireHours:        Record<string, number>;
   weeklyEstimates:    Record<string, { ut: number; ga: number }>;
   // Per-week multiplier applied to same-week-last-year intake to auto-project
   // future "bouquets received" when no manual weeklyEstimates override exists.
@@ -97,6 +101,7 @@ const DEFAULTS: ScheduleSettings = {
   masterAvailability: {},
   avgIntake: 45,
   newHireHours: {},
+  ffNewHireHours: {},
   weeklyEstimates: {},
   weeklyMultipliers: {},
   mgrTotalHours: {},
@@ -112,7 +117,7 @@ const DEFAULTS: ScheduleSettings = {
 
 const KEYS: (keyof ScheduleSettings)[] = [
   'designHours','designRoster','presHours','presRoster','presSettings',
-  'ffHours','ffRoster','masterAvailability','avgIntake','newHireHours','weeklyEstimates','weeklyMultipliers',
+  'ffHours','ffRoster','masterAvailability','avgIntake','newHireHours','ffNewHireHours','weeklyEstimates','weeklyMultipliers',
   'mgrTotalHours','mgrTotalDailyHours','designDailyHours','ffDailyHours','presDailyHours','presCheckHours',
   'resinRoster','resinHours','resinDailyHours',
 ];

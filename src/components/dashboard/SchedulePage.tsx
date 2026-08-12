@@ -52,6 +52,13 @@ const NEW_HIRE_RATIO = 2.0;
 // Default projection ratio for auto-filled "bouquets received" estimates:
 // same week last year × this multiplier. Editable per week.
 const DEFAULT_INTAKE_MULTIPLIER = 1.2;
+// Orders shouldn't sit in Fulfillment longer than this once they leave Design.
+const FF_TARGET_WEEKS = 2;
+// Pace assumed for a hypothetical new fulfillment hire on the Queue &
+// Turnaround planner — a fast specialist (see the 0.35–0.5 h/order
+// performers on the real rosters), not the team's blended average, for the
+// same reason as NEW_HIRE_RATIO above.
+const FF_NEW_HIRE_RATIO = 0.5;
 
 // ─── Historical Utah intake (actual received by week) ─────────────────────────
 // Calibration for the designed-to-date anchor: frames designed before design-historicals
@@ -190,6 +197,16 @@ function turnaroundColors(totalWeeks: number | null, overstaffed: boolean) {
   if (totalWeeks <= 10)    return { bar: 'bg-green-400',  text: 'text-green-700',  label: `~${totalWeeks} wks — ideal` };
   if (totalWeeks <= 18)    return { bar: 'bg-amber-400',  text: 'text-amber-700',  label: `~${totalWeeks} wks — backlog building` };
   return                          { bar: 'bg-red-600',    text: 'text-red-800',    label: `~${totalWeeks} wks — large backlog` };
+}
+
+// Same idea as turnaroundColors, but banded around the 2-week Fulfillment
+// target instead of Design's 10/18-week bands — amber kicks in a week before
+// the target is actually breached, so there's still time to react.
+function fulfillmentTurnaroundColors(totalWeeks: number | null) {
+  if (totalWeeks === null) return { bar: 'bg-red-600',   text: 'text-red-800',   label: 'queue not cleared in 52 wks' };
+  if (totalWeeks <= 1)     return { bar: 'bg-green-400', text: 'text-green-700', label: `~${totalWeeks}wk — on pace` };
+  if (totalWeeks <= FF_TARGET_WEEKS) return { bar: 'bg-amber-400', text: 'text-amber-700', label: `~${totalWeeks}wks — at ${FF_TARGET_WEEKS}wk target` };
+  return                          { bar: 'bg-red-600',    text: 'text-red-800',   label: `~${totalWeeks}wks — over ${FF_TARGET_WEEKS}wk target` };
 }
 
 // Pure FIFO simulation: given a starting designable queue, a per-week inflow of
@@ -1906,6 +1923,30 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
     const prevTemplate = existing.standardWeeklyHours ?? [0, 0, 0, 0, 0, 0, 0];
     const nextTemplate = prevTemplate.map((h, j) => j === dayIdx ? value : h);
     onPresRosterChange({ ...presRoster, [memberId]: { ...existing, standardWeeklyHours: nextTemplate } });
+
+    // Legacy per-week values (presHours) predate the standard-schedule
+    // template and outrank it in resolveWeekHours — nothing in the current
+    // UI writes new ones, so any left on a future week are stale
+    // pre-template leftovers silently shadowing the template. Release just
+    // those (current week forward, past weeks kept as historical record) so
+    // a template edit actually takes effect. A week the manager has
+    // genuinely touched via "This Week" has a real presDailyHours entry —
+    // untouched here, so intentional day-level overrides never get wiped.
+    const legacyForMember = presHours[memberId];
+    if (legacyForMember) {
+      const nextLegacy = { ...legacyForMember };
+      let changed = false;
+      const currentWeekIso = isoMonday(0);
+      for (let w = 0; w < WEEKS; w++) {
+        const weekIso = isoMonday(w);
+        if (weekIso < currentWeekIso) continue;
+        if (nextLegacy[weekIso] === undefined) continue;
+        if (presDailyHours[`${weekIso}-${memberId}`]) continue;
+        delete nextLegacy[weekIso];
+        changed = true;
+      }
+      if (changed) onPresHoursChange({ ...presHours, [memberId]: nextLegacy });
+    }
   }
   // Clears every frozen day/week override for this member from the current
   // week forward (past weeks untouched) so they fall back to the template.
@@ -2633,7 +2674,8 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
 
 function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamActuals, onActualsSaved,
   ffHours, ffRoster, mgrTotalHours, mgrTotalDailyHours, onFfHoursChange, onFfRosterChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {},
-  ffDailyHoursProp, onFfDailyHoursChange, canViewCPO = true, userRole = 'admin' }: {
+  ffDailyHoursProp, onFfDailyHoursChange, canViewCPO = true, userRole = 'admin',
+  designWeeklyFrames, ffNewHireHours, onFfNewHireHoursChange }: {
   location:        'Utah' | 'Georgia';
   fulfillmentQueue: number;
   countsLoading:   boolean;
@@ -2652,8 +2694,14 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   onFfDailyHoursChange?: (h: DailyHoursMap) => void;
   canViewCPO?:           boolean;
   userRole?:             string;
+  // Design's own scheduled weekly output (frames/week, 52 weeks) — the
+  // natural weekly "arrivals into Fulfillment" figure, since an order only
+  // reaches Fulfillment once Design finishes it.
+  designWeeklyFrames:    number[];
+  ffNewHireHours:        Record<string, number>;
+  onFfNewHireHoursChange:(h: Record<string, number>) => void;
 }) {
-  const [ffTab,      setFfTab]      = useState<'thisweek' | 'schedule' | 'historicals'>('thisweek');
+  const [ffTab,      setFfTab]      = useState<'thisweek' | 'schedule' | 'queue' | 'historicals'>('thisweek');
   const [ffInputMode, setFfInputMode] = useState<InputMode>('hours');
   const [ffThisWeekOffset, setFfThisWeekOffset] = useState(0);
   const maxFfThisWeekOffset = WEEKS - 1;
@@ -2689,6 +2737,74 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   };
   const team = buildFfTeam(false);
   const fullTeam = buildFfTeam(true);
+
+  // ── Weekly fulfillment capacity (orders), 52 weeks ──────────────────────────
+  // Same resolveWeekHours chain the Weekly Schedule tab reads per-cell, just
+  // summed across the whole team so the Queue & Turnaround simulation below
+  // can never disagree with what the schedule actually shows.
+  const ffWeeklyTotals = useMemo(() => Array.from({ length: WEEKS }, (_, w) => {
+    const weekIso = isoMonday(w);
+    let totalOrders = 0, totalHours = 0;
+    team.forEach(m => {
+      const prodH = resolveWeekHours({
+        dailyMap: ffDailyHours, weekKey: `${weekIso}-${m.id}`,
+        legacyWeeklyValue: ffHours[m.id]?.[weekIso],
+        standardWeeklyHours: ffRoster[m.id]?.standardWeeklyHours,
+        hardcodedDefault: m.defaultHrs,
+        employment: { weekIso, startDate: ffRoster[m.id]?.startDate, endDate: ffRoster[m.id]?.endDate },
+      });
+      totalOrders += m.ratio > 0 ? prodH / m.ratio : 0;
+      totalHours  += prodH;
+    });
+    return { totalOrders, totalHours };
+  }), [team, ffDailyHours, ffHours, ffRoster]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Weekly arrivals into Fulfillment (orders Design actually/plans to finish) ──
+  // Priority: actual design output logged for that week (Design historicals),
+  // else Design's own scheduled capacity for that week — the same numbers
+  // driving Design's Queue & Turnaround tab, so the two views can't disagree
+  // about how many orders are headed downstream.
+  const designOutputByWeek = useMemo(() => {
+    const actualByWeek: Record<string, number> = {};
+    teamActuals.filter(r => r.department === 'design').forEach(r => {
+      actualByWeek[r.week_of] = (actualByWeek[r.week_of] ?? 0) + (r.actual_orders ?? 0);
+    });
+    return Array.from({ length: WEEKS }, (_, w) => actualByWeek[isoMonday(w)] ?? designWeeklyFrames[w] ?? 0);
+  }, [teamActuals, designWeeklyFrames]);
+
+  // ── Hiring / what-if plan ────────────────────────────────────────────────────
+  // Mirrors Design's hiringPlan: the only manager-editable lever is a
+  // hypothetical new hire's hours/wk, carried forward once they'd start.
+  // "Planned" is always exactly Scheduled + those hire hours, same capacity
+  // driving the Planned turnaround bar. Unlike Design there's no fixed
+  // drying-time floor before Fulfillment can act on an order, so this reuses
+  // the unclamped FIFO simulator directly (no PRESERVATION_WEEKS offset).
+  const ffHiringPlan = useMemo(() => {
+    const baseCapacity = ffWeeklyTotals.map(t => t.totalOrders);
+    const baseHours    = ffWeeklyTotals.map(t => t.totalHours);
+
+    let cumulativeHireHours = 0;
+    const hireHoursByWeek: number[] = [];
+    for (let w = 0; w < WEEKS; w++) {
+      cumulativeHireHours += ffNewHireHours[isoMonday(w)] ?? 0;
+      hireHoursByWeek.push(cumulativeHireHours);
+    }
+
+    const scheduledHours = baseHours;
+    const plannedHours   = baseHours.map((h, w) => h + hireHoursByWeek[w]);
+    const planCapacity   = baseCapacity.map((c, w) => c + hireHoursByWeek[w] / FF_NEW_HIRE_RATIO);
+
+    const scheduledTurnaround = simulateDesignTurnaroundsUnclamped(fulfillmentQueue, designOutputByWeek, baseCapacity);
+    const planTurnaround      = simulateDesignTurnaroundsUnclamped(fulfillmentQueue, designOutputByWeek, planCapacity);
+
+    return { scheduledHours, plannedHours, hireHoursByWeek, scheduledTurnaround, planTurnaround };
+  }, [ffWeeklyTotals, ffNewHireHours, fulfillmentQueue, designOutputByWeek]);
+
+  function setFfNewHireHours(weekIso: string, hours: number) {
+    const next = { ...ffNewHireHours };
+    if (hours > 0) next[weekIso] = hours; else delete next[weekIso];
+    onFfNewHireHoursChange(next);
+  }
 
   function handleAddFfMember() {
     const id = `${location.toLowerCase()}-f-${Date.now()}`;
@@ -2737,6 +2853,30 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
     const prevTemplate = existing.standardWeeklyHours ?? [0, 0, 0, 0, 0, 0, 0];
     const nextTemplate = prevTemplate.map((h, j) => j === dayIdx ? value : h);
     onFfRosterChange({ ...ffRoster, [id]: { ...existing, standardWeeklyHours: nextTemplate } });
+
+    // Legacy per-week values (ffHours) predate the standard-schedule template
+    // and outrank it in resolveWeekHours — nothing in the current UI writes
+    // new ones, so any that remain on a future week are stale pre-template
+    // leftovers silently shadowing whatever the template says. Release just
+    // those (current week forward only, past weeks kept as historical
+    // record) so a template edit actually takes effect. Any week the manager
+    // has genuinely touched via "This Week" has a real ffDailyHours entry —
+    // untouched here, so intentional day-level overrides never get wiped.
+    const legacyForMember = ffHours[id];
+    if (legacyForMember) {
+      const nextLegacy = { ...legacyForMember };
+      let changed = false;
+      const currentWeekIso = isoMonday(0);
+      for (let w = 0; w < WEEKS; w++) {
+        const weekIso = isoMonday(w);
+        if (weekIso < currentWeekIso) continue;
+        if (nextLegacy[weekIso] === undefined) continue;
+        if (ffDailyHours[`${weekIso}-${id}`]) continue;
+        delete nextLegacy[weekIso];
+        changed = true;
+      }
+      if (changed) onFfHoursChange({ ...ffHours, [id]: nextLegacy });
+    }
   }
   // Clears every frozen day/week override for this member from the current
   // week forward (past weeks untouched) so they fall back to the template.
@@ -2763,11 +2903,11 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   return (
     <div className="space-y-4">
       <div className="flex border-b border-slate-200">
-        {(['thisweek', 'schedule', 'historicals'] as const).filter(t => userRole !== 'viewer').map(t => (
+        {(['thisweek', 'schedule', 'queue', 'historicals'] as const).filter(t => userRole !== 'viewer').map(t => (
           <button key={t} onClick={() => setFfTab(t)}
             className={`px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
               ffTab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}>{t === 'thisweek' ? 'This Week' : t === 'schedule' ? 'Weekly Schedule' : 'Historicals'}</button>
+            }`}>{t === 'thisweek' ? 'This Week' : t === 'schedule' ? 'Weekly Schedule' : t === 'queue' ? 'Queue & Turnaround' : 'Historicals'}</button>
         ))}
       </div>
 
@@ -3056,6 +3196,131 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
           </div>
           <p className="text-xs text-slate-400">Right-click any hours cell to apply that value to all 52 weeks for that team member.</p>
         </>
+      )}
+
+      {ffTab === 'queue' && (
+        <div className="space-y-6">
+          <div className="bg-white border border-slate-100 rounded-xl p-5">
+            <div className="flex items-start justify-between gap-2 flex-wrap mb-1">
+              <h2 className="text-sm font-semibold text-slate-700">Future turnaround — orders arriving from Design each week</h2>
+            </div>
+            <p className="text-xs text-slate-400 mb-4">
+              Estimated weeks from an order leaving Design to shipping out of Fulfillment. Target is {FF_TARGET_WEEKS} weeks or less.
+              Currently {fulfillmentQueue.toLocaleString()}{countsLoading ? '…' : ''} orders waiting in Fulfillment right now (live count).
+              Add a hypothetical hire below to see how Planned turnaround responds, for that week and every week after.
+            </p>
+            {(() => {
+              const maxWeeksScale = Math.max(
+                ...ffHiringPlan.scheduledTurnaround.filter((t): t is number => t !== null),
+                ...ffHiringPlan.planTurnaround.filter((t): t is number => t !== null),
+                FF_TARGET_WEEKS,
+              ) * 1.05;
+              return (
+                <div className="overflow-x-auto -mx-1">
+                  <table className="min-w-full text-xs border-separate" style={{ borderSpacing: 0 }}>
+                    <thead>
+                      <tr className="text-slate-400">
+                        <th className="text-left font-medium px-2 py-1.5 sticky left-0 bg-white whitespace-nowrap">Week</th>
+                        <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">From Design</th>
+                        <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">New hire</th>
+                        <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Fulfillment hours</th>
+                        <th className="text-left font-medium px-2 py-1.5 min-w-[220px]">Turnaround</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ffHiringPlan.planTurnaround.map((total, w) => {
+                        const schedTotal = ffHiringPlan.scheduledTurnaround[w];
+                        const { bar, text, label } = fulfillmentTurnaroundColors(total);
+                        const schedColors = fulfillmentTurnaroundColors(schedTotal);
+                        const categoryOf = (l: string) => l.split('—')[1]?.trim() ?? l;
+                        const weekIso = isoMonday(w);
+                        const scheduledH = ffHiringPlan.scheduledHours[w];
+                        const plannedH   = ffHiringPlan.plannedHours[w];
+                        const hireCum    = ffHiringPlan.hireHoursByWeek[w];
+                        return (
+                          <tr key={w} className={`border-b border-slate-50 align-top ${w % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
+                            <td className="px-2 py-2 sticky left-0 bg-inherit whitespace-nowrap text-slate-500">
+                              {getWeekLabel(w)}
+                              {w === 0 && <span className="ml-1 text-[9px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
+                            </td>
+                            <td className="px-2 py-2 whitespace-nowrap text-slate-600">
+                              {round2(designOutputByWeek[w])} ord
+                            </td>
+                            <td className="px-2 py-2">
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="number" min="0" step="1" placeholder="0"
+                                  value={ffNewHireHours[weekIso] ?? ''}
+                                  onChange={e => setFfNewHireHours(weekIso, parseFloat(e.target.value) || 0)}
+                                  className="w-14 border border-slate-200 rounded px-1.5 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-emerald-300"
+                                  title="Hours/wk a hypothetical new hire starting this week would average"
+                                />
+                                <span className="text-[10px] text-slate-300">h/wk</span>
+                              </div>
+                              {hireCum > 0 && (
+                                <div className="text-[10px] text-emerald-600 mt-0.5 whitespace-nowrap">+{Math.round(hireCum)}h/wk running</div>
+                              )}
+                            </td>
+                            <td className="px-2 py-2 whitespace-nowrap">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-slate-400 w-14 shrink-0">Scheduled</span>
+                                <span className="text-slate-700 font-medium">{Math.round(scheduledH)}h</span>
+                              </div>
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <span className="text-emerald-600 w-14 shrink-0">Planned</span>
+                                <span className="text-emerald-700 font-medium">{Math.round(plannedH)}h</span>
+                              </div>
+                            </td>
+                            <td className="px-2 py-2">
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-slate-400 w-14 shrink-0">Scheduled</span>
+                                  {schedTotal !== null ? (
+                                    <>
+                                      <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
+                                        <div className={`h-2 rounded-full ${schedColors.bar}`} style={{ width: `${Math.min(100, (schedTotal / maxWeeksScale) * 100)}%` }} />
+                                      </div>
+                                      <span className={`text-[10px] font-medium w-14 text-right shrink-0 ${schedColors.text}`}>{schedTotal}w</span>
+                                    </>
+                                  ) : (
+                                    <span className="text-[10px] text-red-500 italic">52wk+</span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-slate-400 w-14 shrink-0">Planned</span>
+                                  {total !== null ? (
+                                    <>
+                                      <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
+                                        <div className={`h-2 rounded-full ${bar}`} style={{ width: `${Math.min(100, (total / maxWeeksScale) * 100)}%` }} />
+                                      </div>
+                                      <span className={`text-[10px] font-semibold w-14 text-right shrink-0 ${text}`}>{total}w</span>
+                                    </>
+                                  ) : (
+                                    <span className="text-[10px] text-red-600 italic">52wk+</span>
+                                  )}
+                                </div>
+                              </div>
+                              {total !== null && (
+                                <div className={`text-[10px] mt-0.5 ${text}`}>{categoryOf(label)}</div>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+            <div className="flex gap-4 mt-4 pt-3 border-t border-slate-100 flex-wrap">
+              <span className="text-[10px] text-slate-500">From Design: that week&apos;s actual design output if logged, else Design&apos;s own scheduled capacity for that week.</span>
+              <span className="text-[10px] text-slate-500 border-l border-slate-200 pl-4">Fulfillment hours: Scheduled = the real Weekly Schedule. Planned = Scheduled + any new hire above.</span>
+              <span className="flex items-center gap-1.5 text-[10px] text-slate-500 border-l border-slate-200 pl-4"><span className="w-2.5 h-2.5 rounded-full bg-green-400 inline-block" /> ≤1 wk ideal</span>
+              <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> ≤{FF_TARGET_WEEKS} wks at target</span>
+              <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-red-600 inline-block" /> &gt;{FF_TARGET_WEEKS} wks over target</span>
+            </div>
+          </div>
+        </div>
       )}
 
       {ffTab === 'historicals' && (
@@ -3776,6 +4041,30 @@ export function SchedulePage({
     const nextTemplate = prevTemplate.map((h, j) => j === dayIdx ? value : h);
     currentRoster[id] = { ...existing, standardWeeklyHours: nextTemplate } as typeof currentRoster[string];
     update('designRoster', currentRoster);
+
+    // Legacy per-week values (designHours) predate the standard-schedule
+    // template and outrank it in resolveWeekHours — nothing in the current
+    // UI writes new ones, so any left on a future week are stale
+    // pre-template leftovers silently shadowing the template. Release just
+    // those (current week forward, past weeks kept as historical record) so
+    // a template edit actually takes effect. A week the manager has
+    // genuinely touched via "This Week" has a real designDailyHours entry —
+    // untouched here, so intentional day-level overrides never get wiped.
+    const legacyForDesigner = settings.designHours[id];
+    if (legacyForDesigner) {
+      const nextLegacy = { ...legacyForDesigner };
+      let changed = false;
+      const currentWeekIso = isoMonday(0);
+      for (let w = 0; w < WEEKS; w++) {
+        const weekIso = isoMonday(w);
+        if (weekIso < currentWeekIso) continue;
+        if (nextLegacy[weekIso] === undefined) continue;
+        if (designDailyHours[`${weekIso}-${id}`]) continue;
+        delete nextLegacy[weekIso];
+        changed = true;
+      }
+      if (changed) update('designHours', { ...settings.designHours, [id]: nextLegacy });
+    }
   }
   function handleDesignerEmploymentChange(id: string, field: 'startDate' | 'endDate', value: string) {
     const currentRoster = { ...settings.designRoster };
@@ -4334,6 +4623,9 @@ export function SchedulePage({
           onMgrTotalDailyHoursChange={(h) => update('mgrTotalDailyHours', h)}
           ffDailyHoursProp={settings.ffDailyHours}
           onFfDailyHoursChange={(h) => update('ffDailyHours', h)}
+          designWeeklyFrames={weeklyTotals.map(t => t.totalFrames)}
+          ffNewHireHours={settings.ffNewHireHours}
+          onFfNewHireHoursChange={(h) => update('ffNewHireHours', h)}
           onActualsSaved={() => {
             fetch(`/api/actuals?location=${location}&type=team&weeks=52`)
               .then(r => r.json())
