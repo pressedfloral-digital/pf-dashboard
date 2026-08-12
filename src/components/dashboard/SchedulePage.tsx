@@ -59,12 +59,13 @@ const FF_TARGET_WEEKS = 2;
 // performers on the real rosters), not the team's blended average, for the
 // same reason as NEW_HIRE_RATIO above.
 const FF_NEW_HIRE_RATIO = 0.5;
-// Preservation should ideally receive/log each week's bouquets within that
-// same week — any week that isn't fully caught up by the following week is
-// already a meaningful red flag, so the target here is tight relative to
-// Design/Fulfillment's multi-week targets.
-const PRES_TARGET_WEEKS = 1;
 const PRES_NEW_HIRE_RATIO = 0.6;
+// Overstaffed threshold for the Preservation staffing check — capacity more
+// than this far above the week's own estimate reads as overstaffed rather
+// than "correctly staffed". Below 0 (capacity short of the estimate) always
+// reads as understaffed, no tolerance band — the whole point is that
+// everything received in a week should get preserved that same week.
+const PRES_OVERSTAFF_PCT = 0.10;
 
 // ─── Historical Utah intake (actual received by week) ─────────────────────────
 // Calibration for the designed-to-date anchor: frames designed before design-historicals
@@ -215,12 +216,21 @@ function fulfillmentTurnaroundColors(totalWeeks: number | null) {
   return                          { bar: 'bg-red-600',    text: 'text-red-800',   label: `~${totalWeeks}wks — over ${FF_TARGET_WEEKS}wk target` };
 }
 
-// Same idea, banded around Preservation's tighter same-week target.
-function preservationTurnaroundColors(totalWeeks: number | null) {
-  if (totalWeeks === null)  return { bar: 'bg-red-600',   text: 'text-red-800',   label: 'queue not cleared in 52 wks' };
-  if (totalWeeks <= 0)      return { bar: 'bg-green-400', text: 'text-green-700', label: 'keeping pace' };
-  if (totalWeeks <= PRES_TARGET_WEEKS) return { bar: 'bg-amber-400', text: 'text-amber-700', label: `~${totalWeeks}wk behind` };
-  return                           { bar: 'bg-red-600',   text: 'text-red-800',   label: `~${totalWeeks}wks behind — backlog building` };
+// Preservation staffing check: how does a week's scheduled capacity compare
+// to that same week's own estimated bouquet volume? No backlog concept —
+// every week is judged only against itself.
+function preservationStaffingStatus(capacity: number, demand: number) {
+  const diff = capacity - demand;
+  if (demand <= 0) {
+    return { label: 'no bouquets expected', text: 'text-slate-500', bg: 'bg-slate-50', border: 'border-slate-200' };
+  }
+  if (diff < 0) {
+    return { label: `${Math.round(-diff)} short — understaffed`, text: 'text-red-700', bg: 'bg-red-50', border: 'border-red-200' };
+  }
+  if (diff / demand > PRES_OVERSTAFF_PCT) {
+    return { label: `+${Math.round(diff)} over — overstaffed`, text: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-200' };
+  }
+  return { label: 'correctly staffed', text: 'text-green-700', bg: 'bg-green-50', border: 'border-green-200' };
 }
 
 // Pure FIFO simulation: given a starting designable queue, a per-week inflow of
@@ -1576,27 +1586,14 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   presNewHireHours:        Record<string, number>;
   onPresNewHireHoursChange:(h: Record<string, number>) => void;
 }) {
-  const today    = new Date();
-  const monday   = new Date(today);
-  monday.setDate(today.getDate() - (today.getDay() === 0 ? 6 : today.getDay() - 1));
-  const mondayIso = monday.toISOString().split('T')[0];
-  const sundayIso = addDays(mondayIso, 6);
-
-  const [presTab,       setPresTab]      = useState<'schedule' | 'queue' | 'historicals'>('schedule');
+  const [presTab,       setPresTab]      = useState<'thisweek' | 'schedule' | 'queue' | 'historicals'>('thisweek');
   const [showRoster,    setShowRoster]   = useState(false);
   const [weekOffset,    setWeekOffset]   = useState(0);
   const [presInputMode, setPresInputMode] = useState<InputMode>('hours');
-  const [activePresTab, setActivePresTab] = useState<'weekly' | '52week'>('weekly');
   const [presThisWeekOffset, setPresThisWeekOffset] = useState(0);
   const maxPresThisWeekOffset = WEEKS - 1;
 
-  // Date range for the 7-day delivery estimates
-  const dateFrom = presSettings.dateFrom ?? mondayIso;
-  const dateTo   = presSettings.dateTo   ?? sundayIso;
   const weekOverrides = presSettings.weekOverrides ?? {};
-  const dayPcts = presSettings.dayPcts ?? [20, 25, 25, 20, 10];
-  const dayOverrides = presSettings.dayOverrides ?? {};
-  const dayNames = ['Monday','Tuesday','Wednesday','Thursday','Friday'];
 
   // ── Check settings + daily received ──────────────────────────────────────
   const dailyReceived: Record<string, number> = presSettings.dailyReceived ?? {};
@@ -1714,124 +1711,9 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
     return { c1: [c1, c1], c2: [c2, c2], c3: [c3, c3], sources: result };
   }
 
-  function setDayPct(i: number, val: number) {
-    const next = [...dayPcts]; next[i] = val;
-    onPresSettingsChange({ ...presSettings, dayPcts: next });
-  }
-  function setDayOverride(iso: string, locKey: 'ut' | 'ga', val: number | null) {
-    const next = { ...dayOverrides };
-    if (val === null) {
-      const existing = next[iso];
-      if (existing) {
-        next[iso] = { ...existing, [locKey]: 0 };
-      }
-    } else {
-      next[iso] = { ut: next[iso]?.ut ?? 0, ga: next[iso]?.ga ?? 0, [locKey]: val };
-    }
-    onPresSettingsChange({ ...presSettings, dayOverrides: next });
-  }
-
-  function setDateFrom(v: string) { onPresSettingsChange({ ...presSettings, dateFrom: v }); }
-  function setDateTo(v: string)   { onPresSettingsChange({ ...presSettings, dateTo: v }); }
-
-  // ── Shopify event-date fetch (replaces parseDateRange mock) ──────────────────
-  const [shopifyByDate, setShopifyByDate] = useState<Record<string, { count: number; gaCount: number; utahCount: number }>>({});
-  const [shopifyTotal,  setShopifyTotal]  = useState(0);
-  const [shopifyLoading, setShopifyLoading] = useState(false);
-  const [shopifyError,   setShopifyError]   = useState('');
-
-  // ── Forecast: expected final total based on days-after-event order curve ───────
-  const [forecastExpected,  setForecastExpected]  = useState<number | null>(null);
-  const [forecastStill,     setForecastStill]     = useState<number | null>(null);
-  const [forecastLoading,   setForecastLoading]   = useState(false);
-
-  function loadForecast(currentCount: number, from: string, to: string) {
-    if (currentCount === 0) { setForecastExpected(null); setForecastStill(null); return; }
-    setForecastLoading(true);
-    fetch(`/api/event-date-forecast?start=${from}&end=${to}&currentCount=${currentCount}`)
-      .then(r => r.json())
-      .then((d: { projection?: { expected: number; stillExpected: number } }) => {
-        if (d.projection) {
-          setForecastExpected(d.projection.expected);
-          setForecastStill(d.projection.stillExpected);
-        } else {
-          setForecastExpected(null);
-          setForecastStill(null);
-        }
-      })
-      .catch(() => {})
-      .finally(() => setForecastLoading(false));
-  }
-
-  function loadRange(from: string, to: string) {
-    setShopifyLoading(true);
-    setShopifyError('');
-    fetch(`/api/event-date-orders?start=${from}&end=${to}`)
-      .then(r => r.json())
-      .then((d: { byDate?: Record<string, { count: number; gaCount: number; utahCount: number }>; total?: number; error?: string }) => {
-        if (d.error) { setShopifyError(d.error); return; }
-        setShopifyByDate(d.byDate ?? {});
-        setShopifyTotal(d.total ?? 0);
-        loadForecast(d.total ?? 0, from, to);
-      })
-      .catch(e => setShopifyError(String(e)))
-      .finally(() => setShopifyLoading(false));
-  }
-
-  // Load on mount and when date range changes
-  useEffect(() => { loadRange(dateFrom, dateTo); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  function setQuick(mode: string) {
-    const d = new Date(); const dow = d.getDay();
-    const mon = new Date(d); mon.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1));
-    let from: Date, to: Date;
-    if (mode === 'thisweek')      { from = mon; to = new Date(mon); to.setDate(mon.getDate() + 6); }
-    else if (mode === 'nextweek') { from = new Date(mon); from.setDate(mon.getDate() + 7); to = new Date(from); to.setDate(from.getDate() + 6); }
-    else if (mode === 'next2')    { from = new Date(mon); from.setDate(mon.getDate() + 7); to = new Date(from); to.setDate(from.getDate() + 13); }
-    else { from = new Date(d.getFullYear(), d.getMonth(), 1); to = new Date(d.getFullYear(), d.getMonth() + 1, 0); }
-    const f = from.toISOString().split('T')[0]; const t = to.toISOString().split('T')[0];
-    setDateFrom(f); setDateTo(t); loadRange(f, t);
-  }
-
-  // Total Utah/Georgia from loaded Shopify range
-  const totalUtahLoaded = Object.values(shopifyByDate).reduce((s, d) => s + d.utahCount, 0);
-  const totalGaLoaded   = Object.values(shopifyByDate).reduce((s, d) => s + d.gaCount,   0);
-
-  // Build 5 weekdays starting from the loaded dateFrom
-  const fiveDays = (() => {
-    const days: { iso: string; utahEst: number; gaEst: number; utahDefault: number; gaDefault: number; label: string; dateStr: string }[] = [];
-    // Use presThisWeekOffset to support toggling forward through the end of the year
-    const _today = new Date();
-    _today.setHours(0, 0, 0, 0);
-    const _dow = _today.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
-    const _daysToMon = _dow === 0 ? -6 : 1 - _dow;
-    const _mon = new Date(_today);
-    _mon.setDate(_today.getDate() + _daysToMon + presThisWeekOffset * 7);
-    const d = new Date(_mon.getFullYear(), _mon.getMonth(), _mon.getDate(), 12, 0, 0);
-    let dayIdx = 0;
-    while (days.length < 7) {
-      const dow = d.getDay();
-      if (true || dow !== 0 && dow !== 6) { // include all 7 days
-        const iso = d.toISOString().split('T')[0];
-        const pct = (dayPcts[dayIdx] ?? 0) / 100;
-        const utahDefault = Math.round(totalUtahLoaded * pct);
-        const gaDefault   = Math.round(totalGaLoaded   * pct);
-        const override    = dayOverrides[iso];
-        days.push({
-          iso,
-          utahEst:     override?.ut !== undefined ? override.ut : utahDefault,
-          gaEst:       override?.ga !== undefined ? override.ga : gaDefault,
-          utahDefault,
-          gaDefault,
-          label:   d.toLocaleDateString('en-US', { weekday: 'short' }),
-          dateStr: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        });
-        dayIdx++;
-      }
-      d.setDate(d.getDate() + 1);
-    }
-    return days;
-  })();
+  // Day skeleton (Mon–Sun dates) for the This Week table — same helper
+  // Design/Fulfillment use, so behavior can't drift between departments.
+  const days = getWeekdays(presThisWeekOffset);
 
   // Compute per-WEEK Shopify-derived estimates for the 52-week grid
   // For each future week, sum event-date orders by ga tag within that Mon–Sun window
@@ -1865,6 +1747,12 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
       .catch(() => {})
       .finally(() => setWeeklyShopifyLoading(false));
   }
+
+  // Lazily fetch the first time Weekly Schedule is opened — same trigger the
+  // old "52-week planner" toggle button used to fire on click.
+  useEffect(() => {
+    if (presTab === 'schedule' && Object.keys(weeklyShopify).length === 0) loadWeeklyShopify();
+  }, [presTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Merge persisted roster + hours over defaults
   const defaultTeam = location === 'Utah' ? UTAH_PRESERVATION_TEAM : GEORGIA_PRESERVATION_TEAM;
@@ -1922,34 +1810,25 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
     return { totalOrders, totalHours };
   }), [team, presDailyHours, presHours, presRoster]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Hiring / what-if plan ────────────────────────────────────────────────────
-  // Mirrors Design's/Fulfillment's hiringPlan. Arrivals are the shared
-  // bouquetsReceivedByWeek estimate (same numbers as Design's "Bouquets
-  // received" column), starting queue is the live count of orders already
-  // sitting in Preservation right now. No fixed floor before Preservation can
-  // act on a bouquet, so this reuses the unclamped FIFO simulator directly.
-  const presHiringPlan = useMemo(() => {
-    const baseCapacity = presCapacityByWeek.map(t => t.totalOrders);
-    const baseHours    = presCapacityByWeek.map(t => t.totalHours);
+  // ── Weekly staffing check ────────────────────────────────────────────────────
+  // Preservation shouldn't carry a backlog at all — whatever's estimated to
+  // arrive in a week should get preserved that same week, so unlike Design/
+  // Fulfillment this isn't a FIFO queue simulation. Each week stands alone:
+  // scheduled capacity vs. that week's own bouquetsReceivedByWeek estimate.
+  // On-call support hours are one-off help called in for a single overloaded
+  // week — unlike Design's/Fulfillment's "new hire" lever, they do NOT carry
+  // forward into later weeks.
+  const presStaffingPlan = useMemo(() => {
+    const scheduledCapacity = presCapacityByWeek.map(t => t.totalOrders);
+    const scheduledHours    = presCapacityByWeek.map(t => t.totalHours);
+    const onCallHoursByWeek = Array.from({ length: WEEKS }, (_, w) => presNewHireHours[isoMonday(w)] ?? 0);
+    const plannedHours      = scheduledHours.map((h, w) => h + onCallHoursByWeek[w]);
+    const plannedCapacity   = scheduledCapacity.map((c, w) => c + onCallHoursByWeek[w] / PRES_NEW_HIRE_RATIO);
 
-    let cumulativeHireHours = 0;
-    const hireHoursByWeek: number[] = [];
-    for (let w = 0; w < WEEKS; w++) {
-      cumulativeHireHours += presNewHireHours[isoMonday(w)] ?? 0;
-      hireHoursByWeek.push(cumulativeHireHours);
-    }
+    return { scheduledHours, plannedHours, scheduledCapacity, plannedCapacity, onCallHoursByWeek };
+  }, [presCapacityByWeek, presNewHireHours]);
 
-    const scheduledHours = baseHours;
-    const plannedHours   = baseHours.map((h, w) => h + hireHoursByWeek[w]);
-    const planCapacity   = baseCapacity.map((c, w) => c + hireHoursByWeek[w] / PRES_NEW_HIRE_RATIO);
-
-    const scheduledTurnaround = simulateDesignTurnaroundsUnclamped(preservationQueue, bouquetsReceivedByWeek, baseCapacity);
-    const planTurnaround      = simulateDesignTurnaroundsUnclamped(preservationQueue, bouquetsReceivedByWeek, planCapacity);
-
-    return { scheduledHours, plannedHours, hireHoursByWeek, scheduledTurnaround, planTurnaround };
-  }, [presCapacityByWeek, presNewHireHours, preservationQueue, bouquetsReceivedByWeek]);
-
-  function setPresNewHireHours(weekIso: string, hours: number) {
+  function setPresOnCallHours(weekIso: string, hours: number) {
     const next = { ...presNewHireHours };
     if (hours > 0) next[weekIso] = hours; else delete next[weekIso];
     onPresNewHireHoursChange(next);
@@ -2101,171 +1980,64 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   return (
     <div className="space-y-4">
 
-      {/* Date range picker */}
-      <div className="bg-white border border-slate-100 rounded-xl p-4">
-        <div className="flex items-center gap-2 flex-wrap mb-3">
-          <span className="text-xs font-medium text-slate-500">Event date range</span>
-          {(['thisweek','nextweek','next2','thismonth'] as const).map((m, i) => (
-            <button key={m} onClick={() => setQuick(m)}
-              className="text-xs px-3 py-1 border border-slate-200 rounded-full text-slate-600 hover:bg-slate-50 transition-colors">
-              {['This week','Next week','Next 2 wks','This month'][i]}
+      {/* Roster editor — always visible regardless of tab, matching Design/Fulfillment */}
+      <div>
+        <button onClick={() => setShowRoster(r => !r)} className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">
+          {showRoster ? '▲ Hide' : '▼ Edit'} preservation roster, ratios &amp; pay rates
+        </button>
+        {showRoster && (
+          <div className="mt-3 bg-white border border-slate-100 rounded-xl p-5">
+            <PresRosterEditor
+              team={team}
+              presRoster={presRoster}
+              deptLocation={location}
+              onUpdateRoster={updateRoster}
+              onTemplateChange={updateTemplate}
+              onResetToTemplate={resetMemberToTemplate}
+              onRemove={handleRemoveMember}
+              employeeRates={employeeRates}
+              onRefreshRatio={async (id, name) => {
+                try {
+                  const res = await fetch(`/api/actuals?location=${location}&type=team&weeks=100`);
+                  const data = await res.json() as { teamActuals?: { department: string; week_of: string; member_name: string; actual_hours: number; actual_orders: number }[] };
+                  const rows = (data.teamActuals ?? []).filter(r => r.department === 'preservation' && r.member_name === name).sort((a, b) => b.week_of.localeCompare(a.week_of)).slice(0, 4);
+                  const h = rows.reduce((s, r) => s + r.actual_hours, 0);
+                  const o = rows.reduce((s, r) => s + r.actual_orders, 0);
+                  if (o > 0 && h > 0) updateRoster(id, 'ratio', Math.round(h / o * 100) / 100);
+                } catch {}
+              }}
+              onReorder={(newOrder) => {
+                const newRoster = { ...presRoster };
+                newOrder.forEach((id, i) => {
+                  newRoster[id] = { ...(newRoster[id] ?? { ratio: 1, rate: 0, name: '' }), _order: i } as typeof newRoster[string];
+                });
+                onPresRosterChange(newRoster);
+              }}
+            />
+            <button onClick={handleAddMember}
+              className="mt-4 text-xs px-3 py-1 border border-slate-200 rounded text-slate-500 hover:bg-slate-50 transition-colors">
+              + Add team member
             </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
-            className="border border-slate-200 rounded px-2 py-1.5 text-sm text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300" />
-          <span className="text-xs text-slate-400">to</span>
-          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
-            className="border border-slate-200 rounded px-2 py-1.5 text-sm text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300" />
-          <button onClick={() => loadRange(dateFrom, dateTo)} disabled={shopifyLoading}
-            className="px-4 py-1.5 text-xs font-medium bg-rose-700 text-white rounded hover:bg-rose-800 disabled:opacity-50 transition-colors">
-            {shopifyLoading ? 'Loading…' : 'Load'}
-          </button>
-          {shopifyError && <span className="text-xs text-red-500">{shopifyError}</span>}
-        </div>
-        {shopifyTotal > 0 && (
-          <div className="mt-3 pt-3 border-t border-slate-100 flex gap-6 flex-wrap">
-            <div><p className="text-xs text-slate-400">Total</p><p className="text-lg font-semibold text-slate-700">{shopifyTotal}</p></div>
-            <div><p className="text-xs text-slate-400">Utah (no ga tag)</p><p className="text-lg font-semibold text-indigo-700">{Object.values(shopifyByDate).reduce((s,d)=>s+d.utahCount,0)}</p></div>
-            <div><p className="text-xs text-slate-400">Georgia (ga tag)</p><p className="text-lg font-semibold text-indigo-700">{Object.values(shopifyByDate).reduce((s,d)=>s+d.gaCount,0)}</p></div>
+            <p className="mt-3 text-xs text-slate-400"><strong>Ratio:</strong> hours per order. e.g. 0.7 = 1 order takes 0.7 hrs.</p>
           </div>
         )}
       </div>
 
-      {/* Tabs: Schedule | Queue & Turnaround | Historicals */}
+      {/* Tabs: This Week | Weekly Schedule | Queue & Turnaround | Historicals */}
       {userRole !== 'viewer' && (
         <div className="flex border-b border-slate-200">
-          {(['schedule', 'queue', 'historicals'] as const).map(t => (
+          {(['thisweek', 'schedule', 'queue', 'historicals'] as const).map(t => (
             <button key={t} onClick={() => setPresTab(t)}
               className={`px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
                 presTab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}>{t === 'schedule' ? 'Schedule' : t === 'queue' ? 'Queue & Turnaround' : 'Historicals'}</button>
+              }`}>{t === 'thisweek' ? 'This Week' : t === 'schedule' ? 'Weekly Schedule' : t === 'queue' ? 'Queue & Turnaround' : 'Historicals'}</button>
           ))}
         </div>
       )}
 
-      {presTab === 'schedule' && (
+      {/* ── THIS WEEK TAB ── */}
+      {presTab === 'thisweek' && (
         <div className="space-y-4">
-
-          {/* Summary cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="bg-white border border-slate-100 rounded-xl p-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-slate-400 mb-1">Event-date orders loaded</p>
-              <p className="text-xs text-slate-400 mb-2">{dateFrom} → {dateTo}</p>
-              <div className="flex items-center gap-2 flex-wrap">
-                <p className="text-xl font-semibold text-rose-700">{shopifyLoading ? '…' : shopifyTotal}</p>
-                {shopifyTotal > 0 && <span className="text-[10px] bg-rose-100 text-rose-600 rounded px-1.5 py-0.5">live</span>}
-                {forecastLoading && <span className="text-xs text-slate-300 italic">forecasting…</span>}
-                {!forecastLoading && forecastExpected !== null && forecastExpected > shopifyTotal && (
-                  <span className="text-sm font-medium text-slate-500">
-                    ~{forecastExpected} expected
-                    {forecastStill !== null && forecastStill > 0 && (
-                      <span className="ml-1 text-xs text-slate-400">(+{forecastStill} more coming)</span>
-                    )}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Day % distribution + 5-day editable grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="bg-white border border-slate-100 rounded-xl p-4">
-              <h3 className="text-sm font-semibold text-slate-700 mb-1">Arrival % by day of week</h3>
-              <p className="text-xs text-slate-400 mb-3">% of orders arriving each day. Should total 100%.</p>
-              <div className="space-y-2">
-                {dayNames.map((name, i) => (
-                  <div key={name} className="flex items-center gap-3">
-                    <span className="text-xs text-slate-500 w-20">{name}</span>
-                    <input type="number" value={dayPcts[i]} min="0" max="100"
-                      onChange={e => setDayPct(i, parseFloat(e.target.value) || 0)}
-                      className="w-14 border border-slate-200 rounded px-2 py-1 text-sm text-center text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300" />
-                    <span className="text-xs text-slate-400">%</span>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-3 flex items-center gap-2">
-                <span className="text-xs text-slate-400">Total:</span>
-                <span className={`text-xs font-semibold ${dayPcts.reduce((a,b)=>a+b,0) === 100 ? 'text-green-700' : 'text-red-600'}`}>{dayPcts.reduce((a,b)=>a+b,0)}%</span>
-              </div>
-            </div>
-
-            <div className="bg-white border border-slate-100 rounded-xl p-4">
-              <h3 className="text-sm font-semibold text-slate-700 mb-1">Est. deliveries — {location}</h3>
-              <p className="text-xs text-slate-400 mb-3">
-                {shopifyTotal > 0
-                  ? `${location === 'Utah' ? totalUtahLoaded : totalGaLoaded} ${location} orders in range · edit any day to override`
-                  : 'Load an event date range above first.'}
-              </p>
-              <div className="space-y-2">
-                {fiveDays.map((d) => {
-                  const locKey = location === 'Utah' ? 'ut' : 'ga';
-                  const def = location === 'Utah' ? d.utahDefault : d.gaDefault;
-                  const est = location === 'Utah' ? d.utahEst     : d.gaEst;
-                  const isOverridden = dayOverrides[d.iso]?.[locKey] !== undefined;
-                  return (
-                    <div key={d.iso} className="flex items-center gap-2">
-                      <span className="text-xs text-slate-500 w-24">{d.label} <span className="text-slate-300 text-[10px]">{d.dateStr}</span></span>
-                      <input
-                        type="number" min="0"
-                        value={est}
-                        onChange={e => setDayOverride(d.iso, locKey, parseInt(e.target.value) || 0)}
-                        className="w-16 border border-slate-200 rounded px-2 py-1 text-sm text-center text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300"
-                      />
-                      {isOverridden && (
-                        <span className="text-[10px] text-slate-300">def: {def}</span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          {/* Roster editor */}
-          <div>
-            <button onClick={() => setShowRoster(r => !r)} className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">
-              {showRoster ? '▲ Hide' : '▼ Edit'} preservation roster, ratios &amp; pay rates
-            </button>
-            {showRoster && (
-              <div className="mt-3 bg-white border border-slate-100 rounded-xl p-5">
-                <PresRosterEditor
-                  team={team}
-                  presRoster={presRoster}
-                  deptLocation={location}
-                  onUpdateRoster={updateRoster}
-                  onTemplateChange={updateTemplate}
-                  onResetToTemplate={resetMemberToTemplate}
-                  onRemove={handleRemoveMember}
-                  employeeRates={employeeRates}
-                  onRefreshRatio={async (id, name) => {
-                    try {
-                      const res = await fetch(`/api/actuals?location=${location}&type=team&weeks=100`);
-                      const data = await res.json() as { teamActuals?: { department: string; week_of: string; member_name: string; actual_hours: number; actual_orders: number }[] };
-                      const rows = (data.teamActuals ?? []).filter(r => r.department === 'preservation' && r.member_name === name).sort((a, b) => b.week_of.localeCompare(a.week_of)).slice(0, 4);
-                      const h = rows.reduce((s, r) => s + r.actual_hours, 0);
-                      const o = rows.reduce((s, r) => s + r.actual_orders, 0);
-                      if (o > 0 && h > 0) updateRoster(id, 'ratio', Math.round(h / o * 100) / 100);
-                    } catch {}
-                  }}
-                  onReorder={(newOrder) => {
-                    const newRoster = { ...presRoster };
-                    newOrder.forEach((id, i) => {
-                      newRoster[id] = { ...(newRoster[id] ?? { ratio: 1, rate: 0, name: '' }), _order: i } as typeof newRoster[string];
-                    });
-                    onPresRosterChange(newRoster);
-                  }}
-                />
-                <button onClick={handleAddMember}
-                  className="mt-4 text-xs px-3 py-1 border border-slate-200 rounded text-slate-500 hover:bg-slate-50 transition-colors">
-                  + Add team member
-                </button>
-                <p className="mt-3 text-xs text-slate-400"><strong>Ratio:</strong> hours per order. e.g. 0.7 = 1 order takes 0.7 hrs.</p>
-              </div>
-            )}
-          </div>
-
           {/* Check settings accordion */}
           <div className="border border-slate-100 rounded-xl bg-white overflow-hidden">
             <button
@@ -2314,21 +2086,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
             )}
           </div>
 
-          {/* Weekly / 52-week toggle */}
-          <div className="flex gap-1">
-            {(['weekly', '52week'] as const).filter(t => userRole !== 'viewer').map(t => (
-              <button key={t} onClick={() => { setActivePresTab(t); if (t === '52week' && Object.keys(weeklyShopify).length === 0) loadWeeklyShopify(); }}
-                className={`px-4 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                  activePresTab === t ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
-                }`}>
-                {t === 'weekly' ? 'This week' : '52-week planner'}
-              </button>
-            ))}
-          </div>
-
-          {/* ── THIS WEEK VIEW ── */}
-          {activePresTab === 'weekly' && (
-            <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
+          <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
               <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
                 <h3 className="text-sm font-semibold text-slate-700">Hours per team member — {presThisWeekOffset === 0 ? 'this week' : presThisWeekOffset === 1 ? 'next week' : `week +${presThisWeekOffset}`}</h3>
                 <div className="flex items-center gap-2">
@@ -2343,7 +2101,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-100">
                       <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 min-w-[140px]">Team member</th>
-                      {fiveDays.map((d, i) => (
+                      {days.map((d, i) => (
                         <th key={i} className={`px-2 py-2 text-center font-medium min-w-[80px] whitespace-nowrap ${i === 0 ? 'bg-indigo-50 text-indigo-600' : 'text-slate-500'}`}>
                           {d.label}<br /><span className="font-normal text-[10px]">{d.dateStr}</span>
                         </th>
@@ -2359,7 +2117,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                             <span className={`ml-1.5 text-[10px] rounded px-1 py-px ${tagStyle[m.pay] ?? 'bg-slate-100 text-slate-600'}`}>{m.pay}</span>
                           </div>
                         </td>
-                        {fiveDays.map((_, di) => {
+                        {days.map((_, di) => {
                           const weekIso = isoMonday(presThisWeekOffset);
                           const dailyKey = `${weekIso}-${m.id}`;
                           const { hours: prodH, isOverride } = resolveDayHours(presDailyHours, dailyKey, di, presRoster[m.id]?.standardWeeklyHours,
@@ -2417,10 +2175,8 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                     ))}
                     <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
                       <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Daily capacity</td>
-                      {fiveDays.map((d, di) => {
+                      {days.map((d, di) => {
                         const cap = dayTotals[di];
-                        const est = location === 'Utah' ? d.utahEst : d.gaEst;
-                        const diff = cap - est;
                         const dayCost = team.reduce((s, m) => {
                           if (m.rate === 0 && m.annualSalary === 0) return s;
                           if ((presRoster[m.id] as {excludeFromCost?: boolean})?.excludeFromCost) return s;
@@ -2442,11 +2198,6 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                         return (
                           <td key={di} className={`px-2 py-2 text-center ${di === 0 ? 'bg-indigo-50/50' : ''}`}>
                             <div className="text-indigo-700">{Math.round(cap * 100) / 100} ord</div>
-                            {est > 0 && (
-                              <div className={`text-[10px] font-medium ${diff > 0 ? 'text-green-700' : diff < 0 ? 'text-red-600' : 'text-amber-600'}`}>
-                                {diff > 0 ? '+' : ''}{Math.round(diff * 100) / 100} vs est.
-                              </div>
-                            )}
                             {(() => {
                               const checksData = checksOnDay(d.iso);
                               const checkHrsNeeded = ((checksData.c1[0] * c1Mins) + (checksData.c2[0] * c2Mins) + (checksData.c3[0] * c3Mins)) / 60;
@@ -2472,20 +2223,13 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                         );
                       })}
                     </tr>
-                    <tr className="bg-slate-50/50">
-                      <td className="sticky left-0 bg-slate-50/50 px-4 py-1.5 text-[10px] text-slate-400">Est. deliveries</td>
-                      {fiveDays.map((d, di) => {
-                        const est = location === 'Utah' ? d.utahEst : d.gaEst;
-                        return <td key={di} className="px-2 py-1.5 text-center text-[10px] text-slate-400">{est || '—'}</td>;
-                      })}
-                    </tr>
                     {/* ── Actual received row ── */}
                     <tr className="bg-emerald-50/40 border-t border-slate-100">
                       <td className="sticky left-0 bg-emerald-50/40 px-4 py-1.5">
                         <div className="text-[10px] font-medium text-emerald-700">Actual received</div>
                         <div className="text-[9px] text-slate-400">bouquets delivered</div>
                       </td>
-                      {fiveDays.map((d, di) => {
+                      {days.map((d, di) => {
                         const val = dailyReceived[d.iso] ?? '';
                         return (
                           <td key={di} className="px-2 py-1.5 text-center">
@@ -2510,7 +2254,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           <div className={`text-[10px] font-medium ${color}`}>{label}</div>
                           <div className="text-[9px] text-slate-400">day {min}–{max} · {mins} min ea</div>
                         </td>
-                        {fiveDays.map((d, di) => {
+                        {days.map((d, di) => {
                           const dow = new Date(d.iso + 'T12:00:00').getDay();
                           const isWeekend = dow === 0 || dow === 6;
                           if (isWeekend) return <td key={di} className="px-2 py-1.5 text-center"><span className="text-[10px] text-slate-100">—</span></td>;
@@ -2550,12 +2294,13 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                 </table>
               </div>
             </div>
-          )}
+        </div>
+      )}
 
-          {/* ── 52-WEEK PLANNER ── */}
-          {activePresTab === '52week' && (
-            <div className="space-y-3">
-              <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
+      {/* ── WEEKLY SCHEDULE TAB ── */}
+      {presTab === 'schedule' && (
+        <div className="space-y-3">
+          <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 flex-wrap gap-2">
                   <div className="flex items-center gap-3">
                     <h3 className="text-sm font-semibold text-slate-700">Hours per team member per week</h3>
@@ -2724,131 +2469,99 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
               </div>
               <p className="text-xs text-slate-400">Right-click any hours cell to apply that value to all 52 weeks for that team member.</p>
             </div>
-          )}
-
-        </div>
       )}
 
-      {/* ── QUEUE & TURNAROUND TAB ── */}
+      {/* ── STAFFING CHECK TAB ── */}
       {presTab === 'queue' && (
         <div className="space-y-6">
           <div className="bg-white border border-slate-100 rounded-xl p-5">
             <div className="flex items-start justify-between gap-2 flex-wrap mb-1">
-              <h2 className="text-sm font-semibold text-slate-700">Future turnaround — bouquets arriving each week</h2>
+              <h2 className="text-sm font-semibold text-slate-700">Weekly staffing check — are we staffed for what&apos;s arriving?</h2>
             </div>
             <p className="text-xs text-slate-400 mb-4">
-              Estimated weeks to receive/log each week&apos;s bouquets, using the same estimates as Design&apos;s &quot;Bouquets received&quot; column.
-              Currently {preservationQueue.toLocaleString()}{countsLoading ? '…' : ''} bouquets waiting in Preservation right now (live count).
-              Add a hypothetical hire below to see how Planned turnaround responds, for that week and every week after.
+              Preservation shouldn&apos;t carry a backlog — whatever&apos;s estimated to arrive in a week should get preserved that same week.
+              Each row compares that week&apos;s scheduled capacity against its own bouquet estimate (same numbers as Design&apos;s &quot;Bouquets received&quot; column).
+              On-call support is one-off help for a single overloaded week — it does not carry into later weeks.
             </p>
-            {(() => {
-              const maxWeeksScale = Math.max(
-                ...presHiringPlan.scheduledTurnaround.filter((t): t is number => t !== null),
-                ...presHiringPlan.planTurnaround.filter((t): t is number => t !== null),
-                PRES_TARGET_WEEKS,
-              ) * 1.05;
-              return (
-                <div className="overflow-x-auto -mx-1">
-                  <table className="min-w-full text-xs border-separate" style={{ borderSpacing: 0 }}>
-                    <thead>
-                      <tr className="text-slate-400">
-                        <th className="text-left font-medium px-2 py-1.5 sticky left-0 bg-white whitespace-nowrap">Week</th>
-                        <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Bouquets received (est.)</th>
-                        <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">New hire</th>
-                        <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Preservation hours</th>
-                        <th className="text-left font-medium px-2 py-1.5 min-w-[220px]">Turnaround</th>
+            <div className="overflow-x-auto -mx-1">
+              <table className="min-w-full text-xs border-separate" style={{ borderSpacing: 0 }}>
+                <thead>
+                  <tr className="text-slate-400">
+                    <th className="text-left font-medium px-2 py-1.5 sticky left-0 bg-white whitespace-nowrap">Week</th>
+                    <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Bouquets received (est.)</th>
+                    <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">On-call support</th>
+                    <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Preservation hours</th>
+                    <th className="text-left font-medium px-2 py-1.5 min-w-[220px]">Staffing</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {presStaffingPlan.scheduledCapacity.map((schedCap, w) => {
+                    const demand      = bouquetsReceivedByWeek[w];
+                    const plannedCap  = presStaffingPlan.plannedCapacity[w];
+                    const schedStatus = preservationStaffingStatus(schedCap, demand);
+                    const planStatus  = preservationStaffingStatus(plannedCap, demand);
+                    const weekIso     = isoMonday(w);
+                    const scheduledH  = presStaffingPlan.scheduledHours[w];
+                    const plannedH    = presStaffingPlan.plannedHours[w];
+                    const onCallH     = presStaffingPlan.onCallHoursByWeek[w];
+                    return (
+                      <tr key={w} className={`border-b border-slate-50 align-top ${w % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
+                        <td className="px-2 py-2 sticky left-0 bg-inherit whitespace-nowrap text-slate-500">
+                          {getWeekLabel(w)}
+                          {w === 0 && <span className="ml-1 text-[9px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
+                        </td>
+                        <td className="px-2 py-2 whitespace-nowrap text-slate-600">
+                          {Math.round(demand)} bq
+                        </td>
+                        <td className="px-2 py-2">
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number" min="0" step="1" placeholder="0"
+                              value={presNewHireHours[weekIso] ?? ''}
+                              onChange={e => setPresOnCallHours(weekIso, parseFloat(e.target.value) || 0)}
+                              className="w-14 border border-slate-200 rounded px-1.5 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-emerald-300"
+                              title="Hours called in just for this week — doesn't carry into other weeks"
+                            />
+                            <span className="text-[10px] text-slate-300">h, this wk only</span>
+                          </div>
+                          {onCallH > 0 && (
+                            <div className="text-[10px] text-emerald-600 mt-0.5 whitespace-nowrap">+{Math.round(onCallH / PRES_NEW_HIRE_RATIO)} bq capacity</div>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 whitespace-nowrap">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-slate-400 w-14 shrink-0">Scheduled</span>
+                            <span className="text-slate-700 font-medium">{Math.round(scheduledH)}h</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <span className="text-emerald-600 w-14 shrink-0">Planned</span>
+                            <span className="text-emerald-700 font-medium">{Math.round(plannedH)}h</span>
+                          </div>
+                        </td>
+                        <td className="px-2 py-2">
+                          <div className="space-y-1.5">
+                            <div className={`flex items-center gap-1.5 border rounded px-2 py-1 ${schedStatus.bg} ${schedStatus.border}`}>
+                              <span className="text-[10px] text-slate-400 w-14 shrink-0">Scheduled</span>
+                              <span className={`text-[10px] font-medium ${schedStatus.text}`}>{schedStatus.label}</span>
+                            </div>
+                            <div className={`flex items-center gap-1.5 border rounded px-2 py-1 ${planStatus.bg} ${planStatus.border}`}>
+                              <span className="text-[10px] text-slate-400 w-14 shrink-0">Planned</span>
+                              <span className={`text-[10px] font-semibold ${planStatus.text}`}>{planStatus.label}</span>
+                            </div>
+                          </div>
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {presHiringPlan.planTurnaround.map((total, w) => {
-                        const schedTotal = presHiringPlan.scheduledTurnaround[w];
-                        const { bar, text, label } = preservationTurnaroundColors(total);
-                        const schedColors = preservationTurnaroundColors(schedTotal);
-                        const weekIso = isoMonday(w);
-                        const scheduledH = presHiringPlan.scheduledHours[w];
-                        const plannedH   = presHiringPlan.plannedHours[w];
-                        const hireCum    = presHiringPlan.hireHoursByWeek[w];
-                        return (
-                          <tr key={w} className={`border-b border-slate-50 align-top ${w % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
-                            <td className="px-2 py-2 sticky left-0 bg-inherit whitespace-nowrap text-slate-500">
-                              {getWeekLabel(w)}
-                              {w === 0 && <span className="ml-1 text-[9px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
-                            </td>
-                            <td className="px-2 py-2 whitespace-nowrap text-slate-600">
-                              {Math.round(bouquetsReceivedByWeek[w])} bq
-                            </td>
-                            <td className="px-2 py-2">
-                              <div className="flex items-center gap-1">
-                                <input
-                                  type="number" min="0" step="1" placeholder="0"
-                                  value={presNewHireHours[weekIso] ?? ''}
-                                  onChange={e => setPresNewHireHours(weekIso, parseFloat(e.target.value) || 0)}
-                                  className="w-14 border border-slate-200 rounded px-1.5 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-emerald-300"
-                                  title="Hours/wk a hypothetical new hire starting this week would average"
-                                />
-                                <span className="text-[10px] text-slate-300">h/wk</span>
-                              </div>
-                              {hireCum > 0 && (
-                                <div className="text-[10px] text-emerald-600 mt-0.5 whitespace-nowrap">+{Math.round(hireCum)}h/wk running</div>
-                              )}
-                            </td>
-                            <td className="px-2 py-2 whitespace-nowrap">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-slate-400 w-14 shrink-0">Scheduled</span>
-                                <span className="text-slate-700 font-medium">{Math.round(scheduledH)}h</span>
-                              </div>
-                              <div className="flex items-center gap-1.5 mt-1">
-                                <span className="text-emerald-600 w-14 shrink-0">Planned</span>
-                                <span className="text-emerald-700 font-medium">{Math.round(plannedH)}h</span>
-                              </div>
-                            </td>
-                            <td className="px-2 py-2">
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[10px] text-slate-400 w-14 shrink-0">Scheduled</span>
-                                  {schedTotal !== null ? (
-                                    <>
-                                      <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
-                                        <div className={`h-2 rounded-full ${schedColors.bar}`} style={{ width: `${Math.min(100, (schedTotal / maxWeeksScale) * 100)}%` }} />
-                                      </div>
-                                      <span className={`text-[10px] font-medium w-14 text-right shrink-0 ${schedColors.text}`}>{schedTotal}w</span>
-                                    </>
-                                  ) : (
-                                    <span className="text-[10px] text-red-500 italic">52wk+</span>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[10px] text-slate-400 w-14 shrink-0">Planned</span>
-                                  {total !== null ? (
-                                    <>
-                                      <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
-                                        <div className={`h-2 rounded-full ${bar}`} style={{ width: `${Math.min(100, (total / maxWeeksScale) * 100)}%` }} />
-                                      </div>
-                                      <span className={`text-[10px] font-semibold w-14 text-right shrink-0 ${text}`}>{total}w</span>
-                                    </>
-                                  ) : (
-                                    <span className="text-[10px] text-red-600 italic">52wk+</span>
-                                  )}
-                                </div>
-                              </div>
-                              {total !== null && (
-                                <div className={`text-[10px] mt-0.5 ${text}`}>{label}</div>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              );
-            })()}
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
             <div className="flex gap-4 mt-4 pt-3 border-t border-slate-100 flex-wrap">
               <span className="text-[10px] text-slate-500">Bouquets received: same estimate shown on Design&apos;s Queue &amp; Turnaround tab — edit it there, it updates here too.</span>
-              <span className="text-[10px] text-slate-500 border-l border-slate-200 pl-4">Preservation hours: Scheduled = the real 52-week planner. Planned = Scheduled + any new hire above.</span>
-              <span className="flex items-center gap-1.5 text-[10px] text-slate-500 border-l border-slate-200 pl-4"><span className="w-2.5 h-2.5 rounded-full bg-green-400 inline-block" /> keeping pace</span>
-              <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> ≤{PRES_TARGET_WEEKS} wk behind</span>
-              <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-red-600 inline-block" /> &gt;{PRES_TARGET_WEEKS} wk behind</span>
+              <span className="text-[10px] text-slate-500 border-l border-slate-200 pl-4">Preservation hours: Scheduled = the real 52-week planner. Planned = Scheduled + any on-call support above.</span>
+              <span className="flex items-center gap-1.5 text-[10px] text-slate-500 border-l border-slate-200 pl-4"><span className="w-2.5 h-2.5 rounded-full bg-green-400 inline-block" /> correctly staffed</span>
+              <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-red-400 inline-block" /> understaffed</span>
+              <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> overstaffed (&gt;{Math.round(PRES_OVERSTAFF_PCT * 100)}% over)</span>
             </div>
           </div>
         </div>
@@ -3102,6 +2815,50 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
 
   return (
     <div className="space-y-4">
+      {/* Roster editor — always visible regardless of tab, matching Design */}
+      <div>
+        <button onClick={() => setShowRoster(r => !r)} className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">
+          {showRoster ? '▲ Hide' : '▼ Edit'} fulfillment roster, ratios &amp; pay rates
+        </button>
+        {showRoster && (
+          <div className="mt-3 bg-white border border-slate-100 rounded-xl p-5">
+            <FfRosterEditor
+              team={team}
+              ffRoster={ffRoster}
+              deptLocation={location}
+              onUpdateName={updateFfRosterName}
+              onUpdateRoster={updateRoster}
+              onTemplateChange={updateFfTemplate}
+              onResetToTemplate={resetFfMemberToTemplate}
+              onRemove={handleRemoveFfMember}
+              employeeRates={employeeRates}
+              onRefreshRatio={async (id, name) => {
+                try {
+                  const res = await fetch(`/api/actuals?location=${location}&type=team&weeks=100`);
+                  const data = await res.json() as { teamActuals?: { department: string; week_of: string; member_name: string; actual_hours: number; actual_orders: number }[] };
+                  const rows = (data.teamActuals ?? []).filter(r => r.department === 'fulfillment' && r.member_name === name).sort((a, b) => b.week_of.localeCompare(a.week_of)).slice(0, 4);
+                  const h = rows.reduce((s, r) => s + r.actual_hours, 0);
+                  const o = rows.reduce((s, r) => s + r.actual_orders, 0);
+                  if (o > 0 && h > 0) updateRoster(team.findIndex(m => m.id === id), 'ratio', Math.round(h / o * 100) / 100);
+                } catch {}
+              }}
+              onReorder={(newOrder) => {
+                const newRoster = { ...ffRoster };
+                newOrder.forEach((id, i) => {
+                  newRoster[id] = { ...(newRoster[id] ?? { ratio: 1, rate: 0, name: '' }), _order: i } as typeof newRoster[string];
+                });
+                onFfRosterChange(newRoster);
+              }}
+            />
+            <button onClick={handleAddFfMember}
+              className="mt-4 text-xs px-3 py-1 border border-slate-200 rounded text-slate-500 hover:bg-slate-50 transition-colors">
+              + Add team member
+            </button>
+            <p className="mt-3 text-xs text-slate-400"><strong>Ratio:</strong> hours per order. e.g. 0.5 = 1 order per 0.5 hrs.</p>
+          </div>
+        )}
+      </div>
+
       <div className="flex border-b border-slate-200">
         {(['thisweek', 'schedule', 'queue', 'historicals'] as const).filter(t => userRole !== 'viewer').map(t => (
           <button key={t} onClick={() => setFfTab(t)}
@@ -3259,49 +3016,6 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
 
       {ffTab === 'schedule' && (
         <>
-          <div>
-            <button onClick={() => setShowRoster(r => !r)} className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">
-              {showRoster ? '▲ Hide' : '▼ Edit'} fulfillment roster, ratios &amp; pay rates
-            </button>
-            {showRoster && (
-              <div className="mt-3 bg-white border border-slate-100 rounded-xl p-5">
-                <FfRosterEditor
-                  team={team}
-                  ffRoster={ffRoster}
-                  deptLocation={location}
-                  onUpdateName={updateFfRosterName}
-                  onUpdateRoster={updateRoster}
-                  onTemplateChange={updateFfTemplate}
-                  onResetToTemplate={resetFfMemberToTemplate}
-                  onRemove={handleRemoveFfMember}
-                  employeeRates={employeeRates}
-                  onRefreshRatio={async (id, name) => {
-                    try {
-                      const res = await fetch(`/api/actuals?location=${location}&type=team&weeks=100`);
-                      const data = await res.json() as { teamActuals?: { department: string; week_of: string; member_name: string; actual_hours: number; actual_orders: number }[] };
-                      const rows = (data.teamActuals ?? []).filter(r => r.department === 'fulfillment' && r.member_name === name).sort((a, b) => b.week_of.localeCompare(a.week_of)).slice(0, 4);
-                      const h = rows.reduce((s, r) => s + r.actual_hours, 0);
-                      const o = rows.reduce((s, r) => s + r.actual_orders, 0);
-                      if (o > 0 && h > 0) updateRoster(team.findIndex(m => m.id === id), 'ratio', Math.round(h / o * 100) / 100);
-                    } catch {}
-                  }}
-                  onReorder={(newOrder) => {
-                    const newRoster = { ...ffRoster };
-                    newOrder.forEach((id, i) => {
-                      newRoster[id] = { ...(newRoster[id] ?? { ratio: 1, rate: 0, name: '' }), _order: i } as typeof newRoster[string];
-                    });
-                    onFfRosterChange(newRoster);
-                  }}
-                />
-                <button onClick={handleAddFfMember}
-                  className="mt-4 text-xs px-3 py-1 border border-slate-200 rounded text-slate-500 hover:bg-slate-50 transition-colors">
-                  + Add team member
-                </button>
-                <p className="mt-3 text-xs text-slate-400"><strong>Ratio:</strong> hours per order. e.g. 0.5 = 1 order per 0.5 hrs.</p>
-              </div>
-            )}
-          </div>
-
           <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 flex-wrap gap-2">
               <h3 className="text-sm font-semibold text-slate-700">Hours per team member per week</h3>
