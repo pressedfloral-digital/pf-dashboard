@@ -43,7 +43,6 @@ interface WeekSchedule {
 const WEEKS              = 52;
 const WINDOW             = 8;
 const PRESERVATION_WEEKS = 8;
-const DESIGN_TARGET_MAX      = 14;
 // Ratio assumed for a hypothetical new hire on the Queue & Turnaround planner —
 // a specialist pace, not the team's blended average, since a new hire isn't
 // presumed to start at whatever mix of senior/junior ratios happens to be
@@ -205,15 +204,7 @@ function addDays(iso: string, days: number): string {
   return d.toISOString().split('T')[0];
 }
 
-function turnaroundColors(totalWeeks: number | null, overstaffed: boolean) {
-  if (totalWeeks === null) return { bar: 'bg-red-400',    text: 'text-red-700',    label: 'queue not cleared in 52 wks' };
-  if (overstaffed)         return { bar: 'bg-orange-400', text: 'text-orange-700', label: `~${totalWeeks} wks — overstaffed` };
-  if (totalWeeks <= 10)    return { bar: 'bg-green-400',  text: 'text-green-700',  label: `~${totalWeeks} wks — ideal` };
-  if (totalWeeks <= 18)    return { bar: 'bg-amber-400',  text: 'text-amber-700',  label: `~${totalWeeks} wks — backlog building` };
-  return                          { bar: 'bg-red-600',    text: 'text-red-800',    label: `~${totalWeeks} wks — large backlog` };
-}
-
-// Same idea as turnaroundColors, but banded around the 2-week Fulfillment
+// Banded around the 2-week Fulfillment
 // target instead of Design's 10/18-week bands — amber kicks in a week before
 // the target is actually breached, so there's still time to react.
 function fulfillmentTurnaroundColors(totalWeeks: number | null) {
@@ -2637,13 +2628,15 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   // fullPipelineRemaining definition up there for the full reasoning.
   fullPipelineRemaining: {
     weekOf: string; count: number;
-    stage: 'fulfilled' | 'in_fulfillment' | 'in_design_queue' | 'still_drying' | 'not_yet_received';
+    stage: 'fulfilled' | 'in_fulfillment' | 'in_design_queue' | 'still_drying' | 'not_yet_received' | 'partially_designed';
     weeksFromNow: number | null;
     weeksInFulfillment: number | null;
     designCompleteWeek: number | null;
     ffOnlyWeeks: number | null;
     totalFulfillmentWeeks: number | null;
     weeksElapsed: number;
+    designedCount: number | null;
+    queuedCount: number | null;
   }[];
 }) {
   const [ffTab,      setFfTab]      = useState<'thisweek' | 'schedule' | 'queue' | 'historicals'>('thisweek');
@@ -3327,7 +3320,14 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                           {done && <span className="ml-2 text-[10px] bg-slate-200 text-slate-500 rounded px-1 py-px">✓ fulfilled</span>}
                           {row.stage === 'not_yet_received' && <span className="ml-2 text-[10px] bg-slate-100 text-slate-400 rounded px-1 py-px">est.</span>}
                         </td>
-                        <td className="px-3 py-2 text-right text-slate-600">{Math.round(row.count)}</td>
+                        <td className="px-3 py-2 text-right text-slate-600">
+                          {row.stage === 'partially_designed' ? (
+                            <div className="flex flex-col items-end">
+                              <span className="font-medium">{Math.round(row.count)}</span>
+                              <span className="text-[10px] text-slate-400 whitespace-nowrap">{row.designedCount} designed / {row.queuedCount} queued</span>
+                            </div>
+                          ) : Math.round(row.count)}
+                        </td>
                         <td className="px-3 py-2 text-right">
                           {done ? (
                             <span className="text-slate-400 text-[10px]">complete</span>
@@ -3335,6 +3335,10 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                             <span className="text-indigo-700 text-[10px] bg-indigo-100 rounded px-1.5 py-0.5">fulfilling now</span>
                           ) : row.stage === 'in_fulfillment' ? (
                             <span className="text-slate-500 text-[10px]">in fulfillment queue</span>
+                          ) : row.stage === 'partially_designed' ? (
+                            <span className="text-amber-700 text-[10px] bg-amber-100 rounded px-1.5 py-0.5">
+                              partially designed — {row.queuedCount} queued
+                            </span>
                           ) : row.stage === 'in_design_queue' ? (
                             <span className="text-violet-700 text-[10px] bg-violet-100 rounded px-1.5 py-0.5">in design queue</span>
                           ) : row.stage === 'still_drying' ? (
@@ -4084,7 +4088,6 @@ export function SchedulePage({
   const [weekOffset,   setWeekOffset]  = useState(0);
   const [showCPO,      setShowCPO]     = useState(true);
   const [designInputMode, setDesignInputMode] = useState<InputMode>('hours');
-  const [queueUnit, setQueueUnit] = useState<InputMode>('hours');
   const [activeTab,    setActiveTab]   = useState<'thisweek' | 'schedule' | 'monthly' | 'queue' | 'historicals'>('thisweek');
   const [showDoneCohorts, setShowDoneCohorts] = useState(false);
   const [designThisWeekOffset, setDesignThisWeekOffset] = useState(0);
@@ -4508,18 +4511,9 @@ export function SchedulePage({
       scheduledTurnaroundTrend, planTurnaroundTrend, hoursPerFrame,
       scheduledTurnaroundUnclamped, planTurnaroundUnclamped,
       scheduledTurnaroundTrendUnclamped, planTurnaroundTrendUnclamped,
+      baseCapacity, planCapacity,
     };
   }, [weeklyTotals, designers, settings.newHireHours, settings.designHours, teamActuals, cohortIntake.remainingQueue, graduatingCohorts]);
-
-  // Combine a base turnaround value with its trend-adjusted counterpart into a
-  // single display string — a range when they differ, else just one number.
-  function turnaroundRangeLabel(base: number | null, trend: number | null): string {
-    if (base === null) return '52wk+';
-    if (trend === null) return `${base}w+`;
-    if (trend === base) return `${base}w`;
-    const lo = Math.min(base, trend), hi = Math.max(base, trend);
-    return `${lo}–${hi}w`;
-  }
 
   function setNewHireHours(weekIso: string, hours: number) {
     const next = { ...settings.newHireHours };
@@ -4559,27 +4553,37 @@ export function SchedulePage({
     // queued behind whichever ones (graduated or still drying) are ahead of
     // it, so promised dates line up with what the schedule can deliver.
     type Row = (typeof results)[number] | (typeof presResults)[number];
-    const allRows: Row[] = [...results, ...presResults];
+    const baseRows: Row[] = [...results, ...presResults];
     const joinWeekOf = (r: Row) => 'preservationWeeksLeft' in r ? r.preservationWeeksLeft : 0;
-    let idx = allRows.findIndex(r => r.remaining > 0);
-    if (idx === -1) idx = allRows.length;
-    let remainingInRow = allRows[idx]?.remaining ?? 0;
-    for (let w = 0; w < WEEKS && idx < allRows.length; w++) {
-      let capacity = weeklyTotals[w].totalFrames;
-      while (capacity > 0 && idx < allRows.length && joinWeekOf(allRows[idx]) <= w) {
-        if (remainingInRow <= capacity) {
-          allRows[idx].weeksFromNow = w;
-          capacity -= remainingInRow;
-          idx++;
-          remainingInRow = allRows[idx]?.remaining ?? 0;
-        } else {
-          remainingInRow -= capacity;
-          capacity = 0;
+    // Run the walk once against a given capacity array, on a fresh copy of
+    // baseRows each time, so the Scheduled and Planned (with hypothetical
+    // hire) walks can't contaminate each other.
+    function runWalk(capacityByWeek: number[]): Row[] {
+      const rows = baseRows.map(r => ({ ...r, weeksFromNow: null as number | null }));
+      let idx = rows.findIndex(r => r.remaining > 0);
+      if (idx === -1) idx = rows.length;
+      let remainingInRow = rows[idx]?.remaining ?? 0;
+      for (let w = 0; w < WEEKS && idx < rows.length; w++) {
+        let capacity = capacityByWeek[w];
+        while (capacity > 0 && idx < rows.length && joinWeekOf(rows[idx]) <= w) {
+          if (remainingInRow <= capacity) {
+            rows[idx].weeksFromNow = w;
+            capacity -= remainingInRow;
+            idx++;
+            remainingInRow = rows[idx]?.remaining ?? 0;
+          } else {
+            remainingInRow -= capacity;
+            capacity = 0;
+          }
         }
       }
+      return rows;
     }
-    return allRows.sort((a, b) => a.weekOf.localeCompare(b.weekOf));
-  }, [cohortIntake, weeklyTotals]);
+    const scheduledRows = runWalk(weeklyTotals.map(t => t.totalFrames));
+    const plannedRows   = runWalk(hiringPlan.planCapacity);
+    const merged = scheduledRows.map((r, i) => ({ ...r, weeksFromNowPlanned: plannedRows[i].weeksFromNow }));
+    return merged.sort((a, b) => a.weekOf.localeCompare(b.weekOf));
+  }, [cohortIntake, weeklyTotals, hiringPlan.planCapacity]);
 
   // ── Fulfillment capacity + queue walk, computed here (not just inside
   // FulfillmentSection) so Design's own "Total w/ fulfillment" column and
@@ -4693,45 +4697,88 @@ export function SchedulePage({
   const fullPipelineRemaining = useMemo(() => {
     type Row = {
       weekOf: string; count: number;
-      stage: 'fulfilled' | 'in_fulfillment' | 'in_design_queue' | 'still_drying' | 'not_yet_received';
+      stage: 'fulfilled' | 'in_fulfillment' | 'in_design_queue' | 'still_drying' | 'not_yet_received' | 'partially_designed';
       weeksFromNow: number | null;
       weeksInFulfillment: number | null;
       designCompleteWeek: number | null;
+      designCompleteWeekPlanned: number | null;
       ffOnlyWeeks: number | null;
       totalFulfillmentWeeks: number | null;
+      preservationWeeksLeft: number | null;
+      // Only set on a 'partially_designed' row — the single intake week that
+      // currently sits mid-cohort at Design's FIFO boundary, where part of
+      // that week's bouquets have already left Design (feeding Fulfillment's
+      // own downstream cohort split) and the rest are still queued behind it
+      // (from Design's own split of the same week). Without merging these,
+      // that one week showed up as two separate rows with the same date and
+      // the same full received count, which read as a duplicate.
+      designedCount: number | null;
+      queuedCount: number | null;
     };
     const rows: Row[] = [];
     const todayMs = getMondayDate(0).getTime();
 
+    const ffRowsByWeek = new Map<string, Row>();
     for (const r of ffHistoricalRemainingForPipeline) {
       const entryWeekOf = ffEntryWeekByCohortForPipeline[r.weekOf];
       const weeksInFulfillment = !r.alreadyDone && entryWeekOf
         ? Math.round((todayMs - new Date(entryWeekOf + 'T00:00:00').getTime()) / (7 * 24 * 60 * 60 * 1000))
         : null;
-      rows.push({
+      ffRowsByWeek.set(r.weekOf, {
         weekOf: r.weekOf, count: r.count,
         stage: r.alreadyDone ? 'fulfilled' : 'in_fulfillment',
         weeksFromNow: r.alreadyDone ? null : r.weeksFromNow,
         weeksInFulfillment,
         designCompleteWeek: r.alreadyDone ? null : 0,
+        designCompleteWeekPlanned: r.alreadyDone ? null : 0,
         ffOnlyWeeks: r.alreadyDone ? null : r.weeksFromNow,
         totalFulfillmentWeeks: (!r.alreadyDone && r.weeksFromNow !== null) ? (weeksInFulfillment ?? 0) + r.weeksFromNow : null,
+        preservationWeeksLeft: null,
+        designedCount: null, queuedCount: null,
       });
     }
+
+    // Weeks merged into a 'partially_designed' row below, so the loop over
+    // ffRowsByWeek further down doesn't also push their (now-superseded)
+    // already-designed-only version.
+    const mergedWeeks = new Set<string>();
 
     for (const r of historicalRemaining) {
       if ('alreadyDone' in r && r.alreadyDone) continue;
       const designCompleteWeek = r.weeksFromNow;
       const ffWait = designCompleteWeek !== null && designCompleteWeek < WEEKS
         ? ffScheduledTurnaroundForPipeline[designCompleteWeek] : null;
+      const weeksFromNow = (designCompleteWeek !== null && ffWait !== null) ? designCompleteWeek + ffWait : null;
+      const designCompleteWeekPlanned = 'weeksFromNowPlanned' in r ? r.weeksFromNowPlanned : null;
+      const preservationWeeksLeft = 'preservationWeeksLeft' in r ? (r as {preservationWeeksLeft: number}).preservationWeeksLeft : null;
+
+      const ffMatch = ffRowsByWeek.get(r.weekOf);
+      if (ffMatch) {
+        mergedWeeks.add(r.weekOf);
+        rows.push({
+          weekOf: r.weekOf, count: ffMatch.count + r.remaining,
+          stage: 'partially_designed',
+          weeksFromNow, weeksInFulfillment: null,
+          designCompleteWeek, designCompleteWeekPlanned,
+          ffOnlyWeeks: ffWait, totalFulfillmentWeeks: ffWait,
+          preservationWeeksLeft,
+          designedCount: ffMatch.count, queuedCount: r.remaining,
+        });
+        continue;
+      }
       rows.push({
         weekOf: r.weekOf, count: r.remaining,
         stage: 'inPreservation' in r && r.inPreservation ? 'still_drying' : 'in_design_queue',
-        weeksFromNow: (designCompleteWeek !== null && ffWait !== null) ? designCompleteWeek + ffWait : null,
-        weeksInFulfillment: null,
-        designCompleteWeek, ffOnlyWeeks: ffWait,
-        totalFulfillmentWeeks: ffWait,
+        weeksFromNow, weeksInFulfillment: null,
+        designCompleteWeek, designCompleteWeekPlanned,
+        ffOnlyWeeks: ffWait, totalFulfillmentWeeks: ffWait,
+        preservationWeeksLeft,
+        designedCount: null, queuedCount: null,
       });
+    }
+
+    for (const [weekOf, row] of ffRowsByWeek) {
+      if (!mergedWeeks.has(weekOf)) rows.push(row);
     }
 
     const knownWeeks = new Set([...ffHistoricalRemainingForPipeline.map(r => r.weekOf), ...historicalRemaining.map(r => r.weekOf)]);
@@ -4740,6 +4787,8 @@ export function SchedulePage({
       if (knownWeeks.has(weekIso)) continue;
       const designTotal = hiringPlan.scheduledTurnaround[w];
       const designCompleteWeek = designTotal !== null ? w + designTotal : null;
+      const designTotalPlanned = hiringPlan.planTurnaround[w];
+      const designCompleteWeekPlanned = designTotalPlanned !== null ? w + designTotalPlanned : null;
       const ffWait = designCompleteWeek !== null && designCompleteWeek < WEEKS
         ? ffScheduledTurnaroundForPipeline[designCompleteWeek] : null;
       rows.push({
@@ -4747,24 +4796,18 @@ export function SchedulePage({
         stage: 'not_yet_received',
         weeksFromNow: (designCompleteWeek !== null && ffWait !== null) ? designCompleteWeek + ffWait : null,
         weeksInFulfillment: null,
-        designCompleteWeek, ffOnlyWeeks: ffWait,
+        designCompleteWeek, designCompleteWeekPlanned,
+        ffOnlyWeeks: ffWait,
         totalFulfillmentWeeks: ffWait,
+        preservationWeeksLeft: null,
+        designedCount: null, queuedCount: null,
       });
     }
 
     return rows
       .map(r => ({ ...r, weeksElapsed: Math.round((todayMs - new Date(r.weekOf + 'T00:00:00').getTime()) / (7 * 24 * 60 * 60 * 1000)) }))
       .sort((a, b) => a.weekOf.localeCompare(b.weekOf));
-  }, [ffHistoricalRemainingForPipeline, historicalRemaining, hiringPlan.scheduledTurnaround, bouquetsReceivedByWeek, ffScheduledTurnaroundForPipeline, ffEntryWeekByCohortForPipeline]);
-
-  // O(1) lookup for Design's own "Total w/ fulfillment" column below, keyed
-  // by intake week — same fullPipelineRemaining data Fulfillment's table
-  // reads, so the two numbers can never disagree.
-  const fullPipelineByWeek = useMemo(() => {
-    const map = new Map<string, (typeof fullPipelineRemaining)[number]>();
-    fullPipelineRemaining.forEach(r => map.set(r.weekOf, r));
-    return map;
-  }, [fullPipelineRemaining]);
+  }, [ffHistoricalRemainingForPipeline, historicalRemaining, hiringPlan.scheduledTurnaround, hiringPlan.planTurnaround, bouquetsReceivedByWeek, ffScheduledTurnaroundForPipeline, ffEntryWeekByCohortForPipeline]);
 
   // ── Must design ───────────────────────────────────────────────────────────────
   // Minimum output each schedule week needs so no locked-in client promise
@@ -5298,201 +5341,46 @@ export function SchedulePage({
             <div className="space-y-6">
               <div className="bg-white border border-slate-100 rounded-xl p-5">
                 <div className="flex items-start justify-between gap-2 flex-wrap mb-1">
-                  <h2 className="text-sm font-semibold text-slate-700">Future turnaround — orders arriving each week</h2>
-                  <InputModeToggle mode={queueUnit} onChange={setQueueUnit} unitLabel="Frames" />
+                  <h2 className="text-sm font-semibold text-slate-700">Hiring plan — hypothetical new hires</h2>
                 </div>
-                <p className="text-xs text-slate-400 mb-4">
-                  Estimated weeks from bouquet received to frame completed, including the fixed {PRESERVATION_WEEKS}-week preservation pipeline.
-                  Add a hypothetical hire below to see how Planned turnaround responds, for that week and every week after.
+                <p className="text-xs text-slate-400 mb-3">
+                  Hours/wk a hypothetical new hire starting that week would average. Affects the Planned column below for that
+                  cohort&apos;s own row and for every already-in-shop cohort still waiting in the queue — a hire made now can pull
+                  in turnaround for orders already on the shelf, not just future ones.
                 </p>
-                {(() => {
-                  const maxWeeksScale = Math.max(
-                    ...hiringPlan.scheduledTurnaround.filter((t): t is number => t !== null),
-                    ...hiringPlan.planTurnaround.filter((t): t is number => t !== null),
-                    ...hiringPlan.scheduledTurnaroundTrend.filter((t): t is number => t !== null),
-                    ...hiringPlan.planTurnaroundTrend.filter((t): t is number => t !== null),
-                    DESIGN_TARGET_MAX,
-                  ) * 1.05;
-                  return (
-                    <div className="overflow-x-auto -mx-1">
-                      <table className="min-w-full text-xs border-separate" style={{ borderSpacing: 0 }}>
-                        <thead>
-                          <tr className="text-slate-400">
-                            <th className="text-left font-medium px-2 py-1.5 sticky left-0 bg-white whitespace-nowrap">Week</th>
-                            <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Bouquets received</th>
-                            <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">New hire</th>
-                            <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Design hours</th>
-                            <th className="text-left font-medium px-2 py-1.5 min-w-[220px]">Turnaround (design only)</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {hiringPlan.planTurnaround.map((total, w) => {
-                            const schedTotal = hiringPlan.scheduledTurnaround[w];
-                            const schedTrend  = hiringPlan.scheduledTurnaroundTrend[w];
-                            const planTrend   = hiringPlan.planTurnaroundTrend[w];
-                            // Color by the worse (higher) end of the range, not the optimistic
-                            // as-scheduled number — a week that's only "ideal" if the team works
-                            // full scheduled hours, but "large backlog" at the recent clocked
-                            // pace, should read as the risk it actually is, not green.
-                            const planWorst  = (total === null || planTrend === null) ? null : Math.max(total, planTrend);
-                            const schedWorst = (schedTotal === null || schedTrend === null) ? null : Math.max(schedTotal, schedTrend);
-                            // This total always includes the fixed PRESERVATION_WEEKS drying
-                            // time, so it can structurally never go below that floor no matter
-                            // how much capacity is scheduled — comparing it against
-                            // DESIGN_TARGET_MIN (a design-only figure) made "overstaffed"
-                            // unreachable. Landing exactly at the floor means the design queue
-                            // isn't the bottleneck at all, which is the real overstaffed signal.
-                            const overstaffed = planWorst !== null && planWorst <= PRESERVATION_WEEKS;
-                            const schedOverstaffed = schedWorst !== null && schedWorst <= PRESERVATION_WEEKS;
-                            // Once overstaffed, the real number just repeats PRESERVATION_WEEKS
-                            // with no sense of degree — swap in the unclamped (drying-wait-free)
-                            // figure so "overstaffed" can actually say how overstaffed, e.g. "6w".
-                            const planUnclampedTotal  = hiringPlan.planTurnaroundUnclamped[w];
-                            const planUnclampedTrend  = hiringPlan.planTurnaroundTrendUnclamped[w];
-                            const planUnclampedWorst  = (planUnclampedTotal === null || planUnclampedTrend === null) ? null : Math.max(planUnclampedTotal, planUnclampedTrend);
-                            const schedUnclampedTotal = hiringPlan.scheduledTurnaroundUnclamped[w];
-                            const schedUnclampedTrend = hiringPlan.scheduledTurnaroundTrendUnclamped[w];
-                            const schedUnclampedWorst = (schedUnclampedTotal === null || schedUnclampedTrend === null) ? null : Math.max(schedUnclampedTotal, schedUnclampedTrend);
-                            const planDisplayWeeks  = overstaffed && planUnclampedWorst !== null ? planUnclampedWorst : planWorst;
-                            const schedDisplayWeeks = schedOverstaffed && schedUnclampedWorst !== null ? schedUnclampedWorst : schedWorst;
-                            const { bar, text, label } = turnaroundColors(planDisplayWeeks, overstaffed);
-                            const schedColors = turnaroundColors(schedDisplayWeeks, schedOverstaffed);
-                            const categoryOf = (l: string) => l.split('—')[1]?.trim() ?? l;
-                            const weekIso = isoMonday(w);
-                            const _weVal = weeklyEstimates[weekIso];
-                            const hasOverride = _weVal !== undefined;
-                            const overrideVal = hasOverride ? (location === 'Utah' ? _weVal.ut : _weVal.ga) : undefined;
-                            const lastYearIso = addDays(weekIso, -364);
-                            const lastYearActual = actualIntakeByWeek[lastYearIso];
-                            const multiplier = getIntakeMultiplier(weekIso);
-                            const projected = getProjectedIntake(weekIso);
-                            const estVal = hasOverride ? overrideVal : (projected !== undefined ? projected : '');
-                            const scheduledH = hiringPlan.scheduledHours[w];
-                            const plannedH   = hiringPlan.plannedHours[w];
-                            const hireCum    = hiringPlan.hireHoursByWeek[w];
-                            const hpf = hiringPlan.hoursPerFrame[w] || 1;
-                            const queueUnitLabel = queueUnit === 'output' ? 'f' : 'h';
-                            const scheduledDisplay = queueUnit === 'output' ? round2(scheduledH / hpf) : Math.round(scheduledH);
-                            const plannedDisplay   = queueUnit === 'output' ? round2(plannedH / hpf)   : Math.round(plannedH);
-                            return (
-                              <tr key={w} className={`border-b border-slate-50 align-top ${w % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
-                                <td className="px-2 py-2 sticky left-0 bg-inherit whitespace-nowrap text-slate-500">
-                                  {getWeekLabel(w)}
-                                  {w === 0 && <span className="ml-1 text-[9px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
-                                </td>
-                                <td className="px-2 py-2">
-                                  <div className="flex items-center gap-1">
-                                    <input
-                                      type="number"
-                                      value={estVal}
-                                      placeholder={String(avgIntake)}
-                                      min="0"
-                                      onChange={e => setWeeklyEstimate(weekIso, parseInt(e.target.value) || 0)}
-                                      className="w-14 border border-slate-200 rounded px-1.5 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300"
-                                      title="Est. bouquets delivered this week"
-                                    />
-                                    <span className="text-[10px] text-slate-300">bq</span>
-                                  </div>
-                                  {lastYearActual !== undefined && (
-                                    <div className="flex items-center gap-1 mt-0.5" title={`${lastYearActual} bq received ${fmtDate(lastYearIso)} (same week last year)`}>
-                                      <span className="text-[10px] text-slate-400">×</span>
-                                      <input
-                                        type="number"
-                                        step="0.1"
-                                        min="0"
-                                        value={multiplier}
-                                        disabled={hasOverride}
-                                        onChange={e => setWeeklyMultiplier(weekIso, parseFloat(e.target.value) || DEFAULT_INTAKE_MULTIPLIER)}
-                                        className="w-12 border border-slate-200 rounded px-1 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300 disabled:bg-slate-50 disabled:text-slate-300"
-                                        title={hasOverride ? 'Clear the bq override to use the LY projection' : 'Multiplier applied to last year’s same week'}
-                                      />
-                                      <span className="text-[10px] text-slate-300">LY {lastYearActual}</span>
-                                    </div>
-                                  )}
-                                </td>
-                                <td className="px-2 py-2">
-                                  <div className="flex items-center gap-1">
-                                    <input
-                                      type="number" min="0" step="1" placeholder="0"
-                                      value={settings.newHireHours[weekIso] ?? ''}
-                                      onChange={e => setNewHireHours(weekIso, parseFloat(e.target.value) || 0)}
-                                      className="w-14 border border-slate-200 rounded px-1.5 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-emerald-300"
-                                      title="Hours/wk a hypothetical new hire starting this week would average"
-                                    />
-                                    <span className="text-[10px] text-slate-300">h/wk</span>
-                                  </div>
-                                  {hireCum > 0 && (
-                                    <div className="text-[10px] text-emerald-600 mt-0.5 whitespace-nowrap">+{Math.round(hireCum)}h/wk running</div>
-                                  )}
-                                </td>
-                                <td className="px-2 py-2 whitespace-nowrap">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="text-slate-400 w-14 shrink-0">Scheduled</span>
-                                    <span className="text-slate-700 font-medium">{scheduledDisplay}{queueUnitLabel}</span>
-                                  </div>
-                                  <div className="flex items-center gap-1.5 mt-1">
-                                    <span className="text-emerald-600 w-14 shrink-0">Planned</span>
-                                    <span className="text-emerald-700 font-medium">{plannedDisplay}{queueUnitLabel}</span>
-                                  </div>
-                                </td>
-                                <td className="px-2 py-2">
-                                  <div className="space-y-1">
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-[10px] text-slate-400 w-14 shrink-0">Scheduled</span>
-                                      {schedTotal !== null ? (
-                                        <>
-                                          <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
-                                            <div className={`h-2 rounded-full ${schedColors.bar}`} style={{ width: `${Math.min(100, ((schedDisplayWeeks ?? schedTotal) / maxWeeksScale) * 100)}%` }} />
-                                          </div>
-                                          <span className={`text-[10px] font-medium w-14 text-right shrink-0 ${schedColors.text}`}>{schedOverstaffed ? turnaroundRangeLabel(schedUnclampedTotal, schedUnclampedTrend) : turnaroundRangeLabel(schedTotal, schedTrend)}</span>
-                                        </>
-                                      ) : (
-                                        <span className="text-[10px] text-red-500 italic">52wk+</span>
-                                      )}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-[10px] text-slate-400 w-14 shrink-0">Planned</span>
-                                      {total !== null ? (
-                                        <>
-                                          <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
-                                            <div className={`h-2 rounded-full ${bar}`} style={{ width: `${Math.min(100, ((planDisplayWeeks ?? total) / maxWeeksScale) * 100)}%` }} />
-                                          </div>
-                                          <span className={`text-[10px] font-semibold w-14 text-right shrink-0 ${text}`}>{overstaffed ? turnaroundRangeLabel(planUnclampedTotal, planUnclampedTrend) : turnaroundRangeLabel(total, planTrend)}</span>
-                                        </>
-                                      ) : (
-                                        <span className="text-[10px] text-red-600 italic">52wk+</span>
-                                      )}
-                                    </div>
-                                  </div>
-                                  {total !== null && (
-                                    <div className={`text-[10px] mt-0.5 ${text}`}>{categoryOf(label)}</div>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })()}
-                <div className="flex gap-4 mt-4 pt-3 border-t border-slate-100 flex-wrap">
-                  <span className="text-[10px] text-slate-500">Design hours: Scheduled = the real Weekly Schedule. Planned = Scheduled + any new hire above — same numbers driving the Planned bar.</span>
-                  <span className="text-[10px] text-slate-500 border-l border-slate-200 pl-4">Turnaround ranges reflect recent clocked-vs-scheduled hours.</span>
-                  <span className="flex items-center gap-1.5 text-[10px] text-slate-500 border-l border-slate-200 pl-4"><span className="w-2.5 h-2.5 rounded-full bg-orange-400 inline-block" /> {PRESERVATION_WEEKS} wks (floor) — overstaffed</span>
-                  <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-green-400 inline-block" /> ≤10 wks ideal</span>
-                  <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> ≤18 wks backlog building</span>
-                  <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-red-600 inline-block" /> &gt;18 wks large backlog</span>
+                <div className="overflow-x-auto -mx-1 pb-1">
+                  <div className="flex gap-1.5" style={{ width: 'max-content' }}>
+                    {Array.from({ length: WEEKS }, (_, w) => w).map(w => {
+                      const weekIso = isoMonday(w);
+                      const hireCum = hiringPlan.hireHoursByWeek[w];
+                      return (
+                        <div key={w} className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded ${w === 0 ? 'bg-indigo-50/60' : ''}`}>
+                          <span className="text-[9px] text-slate-400 whitespace-nowrap">{getWeekLabel(w)}</span>
+                          <input
+                            type="number" min="0" step="1" placeholder="0"
+                            value={settings.newHireHours[weekIso] ?? ''}
+                            onChange={e => setNewHireHours(weekIso, parseFloat(e.target.value) || 0)}
+                            className="w-12 border border-slate-200 rounded px-1 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-emerald-300"
+                            title={`Hours/wk a hypothetical new hire starting ${fmtDate(weekIso)} would average`}
+                          />
+                          {hireCum > 0 && (
+                            <span className="text-[9px] text-emerald-600 whitespace-nowrap">+{Math.round(hireCum)}h</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
 
               <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
                 <div className="px-5 py-3 border-b border-slate-100 flex items-start justify-between gap-3 flex-wrap">
                   <div>
-                    <h2 className="text-sm font-semibold text-slate-700">Weeks remaining until design — past intake cohorts</h2>
+                    <h2 className="text-sm font-semibold text-slate-700">Queue &amp; turnaround — every intake week, oldest first</h2>
                     <p className="text-xs text-slate-400 mt-0.5">
-                      For bouquets already received: estimated weeks from today until their cohort reaches the front of the FIFO design queue.
-                      Based on {location} design backlog of {cohortIntake.remainingQueue.toLocaleString()} orders (from actual bouquets received) and scheduled capacity.
+                      One flow from oldest intake to newest, mixing actual (already-received) cohorts with estimated (not-yet-received)
+                      weeks — the underlying math is the same either way. Based on {location} design backlog of{' '}
+                      {cohortIntake.remainingQueue.toLocaleString()} orders (from actual bouquets received) and scheduled capacity.
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -5517,7 +5405,7 @@ export function SchedulePage({
                       Send biweekly bloom update
                     </button>
                     {(() => {
-                      const doneCount = historicalRemaining.filter(row => 'alreadyDone' in row && row.alreadyDone).length;
+                      const doneCount = fullPipelineRemaining.filter(r => r.stage === 'fulfilled' || r.stage === 'in_fulfillment').length;
                       return doneCount > 0 ? (
                         <button onClick={() => setShowDoneCohorts(v => !v)}
                           className="text-xs px-2.5 py-1 border border-slate-200 rounded text-slate-500 hover:bg-slate-50 whitespace-nowrap">
@@ -5527,36 +5415,49 @@ export function SchedulePage({
                     })()}
                   </div>
                 </div>
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                     <table className="min-w-full text-xs">
                       <thead>
-                        <tr className="bg-slate-50 border-b border-slate-100">
+                        <tr className="bg-slate-50 border-b border-slate-100 sticky top-0">
                           <th className="px-4 py-2 text-left font-medium text-slate-500 whitespace-nowrap">Intake week</th>
-                          <th className="px-3 py-2 text-right font-medium text-slate-500">Received</th>
+                          <th className="px-3 py-2 text-right font-medium text-slate-500">Bouquets received</th>
                           <th className="px-3 py-2 text-right font-medium text-slate-500">Status</th>
-                          <th className="px-3 py-2 text-left font-medium text-slate-500">Weeks until designed</th>
+                          <th className="px-3 py-2 text-left font-medium text-slate-500 min-w-[160px]">Weeks until designed</th>
                           <th className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap">Total to design</th>
                           <th className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap">Total w/ fulfillment</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {historicalRemaining.filter(row => showDoneCohorts || !('alreadyDone' in row && row.alreadyDone)).map((row, i) => {
-                          const inPres    = 'inPreservation' in row && row.inPreservation;
-                          const done      = 'alreadyDone'   in row && row.alreadyDone;
-                          const weeksLeft = row.weeksFromNow;
-                          const weeksElapsed = Math.round((getMondayDate(0).getTime() - new Date(row.weekOf + 'T12:00:00').getTime()) / (7 * 24 * 60 * 60 * 1000));
-                          const totalToDesign        = (!done && weeksLeft !== null) ? weeksElapsed + weeksLeft : null;
-                          // Real per-cohort Fulfillment queue math (same data
-                          // Fulfillment's "Weeks remaining until fulfilled"
-                          // table shows) — replaces the old flat +2wk guess.
-                          const pipelineMatch = fullPipelineByWeek.get(row.weekOf);
-                          const totalWithFulfillment = pipelineMatch && pipelineMatch.weeksFromNow !== null
-                            ? pipelineMatch.weeksElapsed + pipelineMatch.weeksFromNow : null;
+                        {fullPipelineRemaining
+                          .filter(row => showDoneCohorts || !(row.stage === 'fulfilled' || row.stage === 'in_fulfillment'))
+                          .map((row, i) => {
+                          const done       = row.stage === 'fulfilled' || row.stage === 'in_fulfillment';
+                          const inPres     = row.stage === 'still_drying';
+                          const notYetIn   = row.stage === 'not_yet_received';
+                          const partial    = row.stage === 'partially_designed';
+                          const weeksLeft  = done ? null : row.designCompleteWeek;
+                          const weeksLeftPlanned = done ? null : row.designCompleteWeekPlanned;
+                          const totalToDesign        = (!done && weeksLeft !== null) ? row.weeksElapsed + weeksLeft : null;
+                          const totalToDesignPlanned = (!done && weeksLeftPlanned !== null) ? row.weeksElapsed + weeksLeftPlanned : null;
+                          // Real per-cohort Fulfillment queue math (same data Fulfillment's
+                          // "Weeks remaining until fulfilled" table shows) — replaces the old
+                          // flat +2wk guess. Scheduled-only for now; doesn't yet reflect the
+                          // hiring lever above (that only moves Design's own numbers here).
+                          const totalWithFulfillment = row.weeksFromNow !== null ? row.weeksElapsed + row.weeksFromNow : null;
                           // Received: same merged source as the "Bouquets received" row on the
                           // preservation Historicals tab — explicit presActuals override, else
                           // the team's logged order totals for that week, else hardcoded history.
+                          // Not-yet-received weeks instead get an editable estimate input.
                           const receivedVal = actualIntakeByWeek[row.weekOf] || null;
                           const receivedIsOverride = presActuals[row.weekOf] !== undefined;
+                          const _weVal = weeklyEstimates[row.weekOf];
+                          const hasOverride = _weVal !== undefined;
+                          const overrideVal = hasOverride ? (location === 'Utah' ? _weVal.ut : _weVal.ga) : undefined;
+                          const lastYearIso = addDays(row.weekOf, -364);
+                          const lastYearActual = actualIntakeByWeek[lastYearIso];
+                          const multiplier = getIntakeMultiplier(row.weekOf);
+                          const projected = getProjectedIntake(row.weekOf);
+                          const estVal = hasOverride ? overrideVal : (projected !== undefined ? projected : '');
                           // At risk: the live calc now points past a date we already promised
                           // a client. The live numbers above still show the true estimate —
                           // this is purely a flag that the promise needs attention.
@@ -5565,11 +5466,13 @@ export function SchedulePage({
                             && addDays(isoMonday(0), weeksLeft * 7) > promise.promisedByDate;
                           return (
                             <tr key={i} className={`border-b border-slate-50 ${
-                              done ? 'bg-slate-50 opacity-50' : inPres ? 'bg-green-50/30' : weeksLeft === 0 ? 'bg-indigo-50/40' : 'hover:bg-slate-50'
+                              done ? 'bg-slate-50 opacity-50' : partial ? 'bg-amber-50/30' : inPres ? 'bg-green-50/30' : weeksLeft === 0 ? 'bg-indigo-50/40' : notYetIn ? 'bg-slate-50/40' : 'hover:bg-slate-50'
                             }`}>
                               <td className="px-4 py-2 font-medium text-slate-700 whitespace-nowrap">
                                 {fmtDate(row.weekOf)}
                                 {done && <span className="ml-2 text-[10px] bg-slate-200 text-slate-500 rounded px-1 py-px">✓ designed</span>}
+                                {partial && <span className="ml-2 text-[10px] bg-amber-100 text-amber-700 rounded px-1 py-px">partially designed</span>}
+                                {notYetIn && <span className="ml-2 text-[10px] bg-slate-100 text-slate-400 rounded px-1 py-px">est.</span>}
                                 {atRisk && (
                                   <span className="ml-2 text-[10px] bg-red-100 text-red-700 rounded px-1 py-px"
                                     title={`Promised by ${fmtDate(promise!.promisedByDate)} (~${promise!.promisedWeeks} wks when locked in) — currently trending later than that.`}>
@@ -5578,19 +5481,61 @@ export function SchedulePage({
                                 )}
                               </td>
                               <td className="px-3 py-2 text-right text-slate-600">
-                                {receivedVal === null ? '—' : receivedIsOverride
+                                {notYetIn ? (
+                                  <div className="flex flex-col items-end gap-0.5">
+                                    <div className="flex items-center gap-1">
+                                      <input
+                                        type="number"
+                                        value={estVal}
+                                        placeholder={String(avgIntake)}
+                                        min="0"
+                                        onChange={e => setWeeklyEstimate(row.weekOf, parseInt(e.target.value) || 0)}
+                                        className="w-14 border border-slate-200 rounded px-1.5 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300"
+                                        title="Est. bouquets delivered this week"
+                                      />
+                                      <span className="text-[10px] text-slate-300">bq</span>
+                                    </div>
+                                    {lastYearActual !== undefined && (
+                                      <div className="flex items-center gap-1" title={`${lastYearActual} bq received ${fmtDate(lastYearIso)} (same week last year)`}>
+                                        <span className="text-[10px] text-slate-400">×</span>
+                                        <input
+                                          type="number"
+                                          step="0.1"
+                                          min="0"
+                                          value={multiplier}
+                                          disabled={hasOverride}
+                                          onChange={e => setWeeklyMultiplier(row.weekOf, parseFloat(e.target.value) || DEFAULT_INTAKE_MULTIPLIER)}
+                                          className="w-12 border border-slate-200 rounded px-1 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300 disabled:bg-slate-50 disabled:text-slate-300"
+                                          title={hasOverride ? 'Clear the bq override to use the LY projection' : 'Multiplier applied to last year’s same week'}
+                                        />
+                                        <span className="text-[10px] text-slate-300">LY {lastYearActual}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : partial ? (
+                                  <div className="flex flex-col items-end">
+                                    <span className="text-slate-600 font-medium">{row.count}</span>
+                                    <span className="text-[10px] text-slate-400 whitespace-nowrap">{row.designedCount} designed / {row.queuedCount} queued</span>
+                                  </div>
+                                ) : receivedVal === null ? '—' : receivedIsOverride
                                   ? <span className="text-green-700 font-medium">{receivedVal}</span>
                                   : <span className="text-indigo-400">{receivedVal}</span>}
                               </td>
                               <td className="px-3 py-2 text-right">
                                 {done ? (
                                   <span className="text-slate-400 text-[10px]">complete</span>
+                                ) : partial ? (
+                                  <span className="text-amber-700 text-[10px] bg-amber-100 rounded px-1.5 py-0.5">
+                                    {row.queuedCount} still in design queue
+                                  </span>
                                 ) : inPres ? (
                                   <span className="text-green-700 text-[10px] bg-green-100 rounded px-1.5 py-0.5">
-                                    still drying — {('preservationWeeksLeft' in row ? (row as {preservationWeeksLeft: number}).preservationWeeksLeft : 0)} wks left
+                                    still drying — {row.preservationWeeksLeft ?? 0} wks left
                                   </span>
                                 ) : weeksLeft === 0 ? (
                                   <span className="text-indigo-700 text-[10px] bg-indigo-100 rounded px-1.5 py-0.5">designing now</span>
+                                ) : notYetIn ? (
+                                  <span className="text-slate-400 text-[10px] bg-slate-100 rounded px-1.5 py-0.5">not yet received</span>
                                 ) : (
                                   <span className="text-slate-500 text-[10px]">in design queue</span>
                                 )}
@@ -5600,35 +5545,62 @@ export function SchedulePage({
                                   <span className="text-xs text-slate-400 italic">already designed</span>
                                 ) : inPres ? (
                                   <span className="text-xs text-slate-400 italic">
-                                    enters queue in ~{('preservationWeeksLeft' in row ? (row as {preservationWeeksLeft: number}).preservationWeeksLeft : 0)} wks,
-                                    then ~{weeksLeft !== null ? weeksLeft - ('preservationWeeksLeft' in row ? (row as {preservationWeeksLeft: number}).preservationWeeksLeft : 0) : '?'} wks in design queue
+                                    enters queue in ~{row.preservationWeeksLeft ?? 0} wks,
+                                    then ~{weeksLeft !== null ? weeksLeft - (row.preservationWeeksLeft ?? 0) : '?'} wks in design queue
                                   </span>
                                 ) : weeksLeft === null ? (
                                   <span className="text-xs text-red-400 italic">not cleared in 52 wks</span>
-                                ) : weeksLeft === 0 ? (
-                                  <div className="flex items-center gap-2">
-                                    <div className="flex-1 bg-indigo-200 rounded-full h-1.5 max-w-32">
-                                      <div className="h-1.5 rounded-full bg-indigo-500 w-full" />
-                                    </div>
-                                    <span className="text-xs font-semibold text-indigo-700">this week</span>
-                                  </div>
                                 ) : (
-                                  <div className="flex items-center gap-2">
-                                    <div className="flex-1 bg-slate-100 rounded-full h-1.5 max-w-32">
-                                      <div className={`h-1.5 rounded-full ${weeksLeft <= 4 ? 'bg-green-400' : weeksLeft <= 8 ? 'bg-amber-400' : weeksLeft <= 14 ? 'bg-orange-400' : 'bg-red-500'}`}
-                                        style={{ width: `${Math.min(100, (weeksLeft / 16) * 100)}%` }} />
+                                  <div className="space-y-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[10px] text-slate-400 w-14 shrink-0">Scheduled</span>
+                                      {weeksLeft === 0 ? (
+                                        <span className="text-xs font-semibold text-indigo-700">this week</span>
+                                      ) : (
+                                        <>
+                                          <div className="flex-1 bg-slate-100 rounded-full h-1.5 max-w-24">
+                                            <div className={`h-1.5 rounded-full ${weeksLeft <= 4 ? 'bg-green-400' : weeksLeft <= 8 ? 'bg-amber-400' : weeksLeft <= 14 ? 'bg-orange-400' : 'bg-red-500'}`}
+                                              style={{ width: `${Math.min(100, (weeksLeft / 16) * 100)}%` }} />
+                                          </div>
+                                          <span className={`text-[10px] font-medium whitespace-nowrap ${weeksLeft <= 4 ? 'text-green-700' : weeksLeft <= 8 ? 'text-amber-700' : weeksLeft <= 14 ? 'text-orange-700' : 'text-red-700'}`}>
+                                            ~{weeksLeft} wk{weeksLeft !== 1 ? 's' : ''}
+                                          </span>
+                                        </>
+                                      )}
                                     </div>
-                                    <span className={`text-xs font-medium whitespace-nowrap ${weeksLeft <= 4 ? 'text-green-700' : weeksLeft <= 8 ? 'text-amber-700' : weeksLeft <= 14 ? 'text-orange-700' : 'text-red-700'}`}>
-                                      ~{weeksLeft} wk{weeksLeft !== 1 ? 's' : ''} from now
-                                    </span>
+                                    {weeksLeftPlanned !== null && weeksLeftPlanned !== weeksLeft && (
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[10px] text-emerald-600 w-14 shrink-0">Planned</span>
+                                        {weeksLeftPlanned === 0 ? (
+                                          <span className="text-xs font-semibold text-indigo-700">this week</span>
+                                        ) : (
+                                          <>
+                                            <div className="flex-1 bg-slate-100 rounded-full h-1.5 max-w-24">
+                                              <div className={`h-1.5 rounded-full ${weeksLeftPlanned <= 4 ? 'bg-green-400' : weeksLeftPlanned <= 8 ? 'bg-amber-400' : weeksLeftPlanned <= 14 ? 'bg-orange-400' : 'bg-red-500'}`}
+                                                style={{ width: `${Math.min(100, (weeksLeftPlanned / 16) * 100)}%` }} />
+                                            </div>
+                                            <span className={`text-[10px] font-semibold whitespace-nowrap ${weeksLeftPlanned <= 4 ? 'text-green-700' : weeksLeftPlanned <= 8 ? 'text-amber-700' : weeksLeftPlanned <= 14 ? 'text-orange-700' : 'text-red-700'}`}>
+                                              ~{weeksLeftPlanned} wk{weeksLeftPlanned !== 1 ? 's' : ''}
+                                            </span>
+                                          </>
+                                        )}
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </td>
                               <td className="px-3 py-2 text-center">
                                 {totalToDesign !== null ? (
-                                  <span className={`text-xs font-semibold ${totalToDesign <= 10 ? 'text-green-700' : totalToDesign <= 18 ? 'text-amber-700' : 'text-red-700'}`}>
-                                    ~{totalToDesign} wks
-                                  </span>
+                                  <div className="space-y-0.5">
+                                    <div className={`text-xs font-semibold ${totalToDesign <= 10 ? 'text-green-700' : totalToDesign <= 18 ? 'text-amber-700' : 'text-red-700'}`}>
+                                      ~{totalToDesign} wks
+                                    </div>
+                                    {totalToDesignPlanned !== null && totalToDesignPlanned !== totalToDesign && (
+                                      <div className={`text-[10px] font-medium ${totalToDesignPlanned <= 10 ? 'text-emerald-600' : totalToDesignPlanned <= 18 ? 'text-amber-600' : 'text-red-600'}`}>
+                                        planned ~{totalToDesignPlanned} wks
+                                      </div>
+                                    )}
+                                  </div>
                                 ) : done ? <span className="text-xs text-slate-300">—</span>
                                          : <span className="text-xs text-slate-400">TBD</span>}
                               </td>
