@@ -34,7 +34,14 @@ export interface KpiMetrics {
   hours:        number;
   production:   number;
   laborCost:    number;
-  ratio:        number | null;   // hours / production
+  // ratio excludes managers entirely — neither their hours nor their
+  // production count toward it. A manager's hours mix in non-production
+  // (managerial/admin) time that would skew hrs/frame, so ratioHours/
+  // ratioProduction track a manager-free subset used only to derive `ratio`;
+  // hours/production above stay inclusive for cost, CPO, and totals.
+  ratioHours:      number;
+  ratioProduction: number;
+  ratio:        number | null;   // ratioHours / ratioProduction
   cpo:          number | null;   // laborCost / production
   cpoWithGM:    number | null;   // (laborCost + GM salary) / production — combined only
   hasData:      boolean;
@@ -152,13 +159,38 @@ function normDept(raw: string): string {
   return raw;
 }
 
+// Which team_member_week_actuals rows belong to a manager, so the actuals
+// ratio can exclude their hours (but keep their production). Built from the
+// live roster's isManager flag — a current snapshot, same limitation the
+// roster already has everywhere else in this codebase (unlike SALARY_MANAGERS
+// above, which is time-aware for the specific hardcoded salary managers).
+function buildManagerNameSet(rosterRows: ScheduleSettingRow[]): Set<string> {
+  const deptByKey: Record<string, string> = {
+    designRoster: 'Design', presRoster: 'Preservation', ffRoster: 'Fulfillment',
+  };
+  const set = new Set<string>();
+  for (const row of rosterRows) {
+    const dept = deptByKey[row.key];
+    if (!dept) continue;
+    const roster = row.value as Record<string, { name?: string; isManager?: boolean }> | null;
+    if (!roster) continue;
+    for (const member of Object.values(roster)) {
+      if (member?.isManager && member.name) {
+        set.add(`${row.location}|${dept}|${member.name.trim().toLowerCase()}`);
+      }
+    }
+  }
+  return set;
+}
+
 // ── Core computation ──────────────────────────────────────────────────────────
 
 function computePeriodKpis(
-  laborRows:  LaborRow[],
-  actualRows: ActualRow[],
-  location:   string,
-  weekOfs:    string[]
+  laborRows:    LaborRow[],
+  actualRows:   ActualRow[],
+  location:     string,
+  weekOfs:      string[],
+  managerNames: Set<string>   // `${location}|${dept}|${name lowercased}` — see buildManagerNameSet
 ): PeriodKpis {
   const PROD_DEPTS = ['Design', 'Preservation', 'Fulfillment'] as const;
   const ALL_DEPTS  = [...PROD_DEPTS, 'G&A', 'Resin'] as const;
@@ -176,24 +208,35 @@ function computePeriodKpis(
     if (mgrCost > 0) laborByDept[dept] = (laborByDept[dept] ?? 0) + mgrCost;
   }
 
-  // Sum hours + production from team_member_week_actuals
-  const hoursByDept: Record<string, number> = {};
-  const prodByDept:  Record<string, number> = {};
+  // Sum hours + production from team_member_week_actuals. ratioHoursByDept
+  // mirrors hoursByDept but skips manager rows — actuals ratio counts a
+  // manager's real production but not their hours (which mix in non-
+  // production managerial time), unlike hoursByDept/prodByDept themselves,
+  // which stay fully inclusive for cost/CPO/total-hours purposes.
+  const hoursByDept:      Record<string, number> = {};
+  const ratioHoursByDept: Record<string, number> = {};
+  const prodByDept:       Record<string, number> = {};
   for (const row of actualRows.filter(r => r.location === location && weekOfs.includes(r.week_of))) {
     const dept = normDept(row.department);
     hoursByDept[dept] = (hoursByDept[dept] ?? 0) + row.actual_hours;
     prodByDept[dept]  = (prodByDept[dept]  ?? 0) + row.actual_orders;
+    const isMgr = managerNames.has(`${location}|${dept}|${row.member_name.trim().toLowerCase()}`);
+    if (!isMgr) ratioHoursByDept[dept] = (ratioHoursByDept[dept] ?? 0) + row.actual_hours;
   }
 
   function makeMetrics(dept: string, overrideProduction?: number): KpiMetrics {
-    const hours      = hoursByDept[dept] ?? 0;
-    const production = overrideProduction ?? (prodByDept[dept] ?? 0);
-    const laborCost  = laborByDept[dept] ?? 0;
+    const hours          = hoursByDept[dept] ?? 0;
+    const production     = overrideProduction ?? (prodByDept[dept] ?? 0);
+    const laborCost      = laborByDept[dept] ?? 0;
+    const ratioHours      = ratioHoursByDept[dept] ?? 0;
+    const ratioProduction = production;
     return {
       hours,
       production,
       laborCost,
-      ratio:     (hours > 0 && production > 0) ? hours / production : null,
+      ratioHours,
+      ratioProduction,
+      ratio:     (ratioHours > 0 && ratioProduction > 0) ? ratioHours / ratioProduction : null,
       cpo:       (laborCost > 0 && production > 0) ? laborCost / production : null,
       cpoWithGM: null,
       hasData:   hours > 0 || production > 0 || laborCost > 0,
@@ -246,11 +289,15 @@ function computePeriodKpis(
   if (ratioHasData) combinedRatio = ratioSum;
 
   const combinedLaborCost = design.laborCost + preservation.laborCost + fulfillment.laborCost + gaCost;
+  const combinedRatioHours      = design.ratioHours      + preservation.ratioHours      + fulfillment.ratioHours;
+  const combinedRatioProduction = design.ratioProduction + preservation.ratioProduction + fulfillment.ratioProduction;
 
   const combined: KpiMetrics = {
     hours:      totalHours,
     production: totalProdOrders,
     laborCost:  combinedLaborCost,
+    ratioHours:      combinedRatioHours,
+    ratioProduction: combinedRatioProduction,
     ratio:      combinedRatio,
     cpo:        blendedCPO,
     cpoWithGM:  blendedCPOWithGM,
@@ -262,12 +309,14 @@ function computePeriodKpis(
 
 function poolLocations(utah: PeriodKpis, georgia: PeriodKpis): PeriodKpis {
   function poolMetrics(a: KpiMetrics, b: KpiMetrics): KpiMetrics {
-    const hours      = a.hours      + b.hours;
-    const production = a.production + b.production;
-    const laborCost  = a.laborCost  + b.laborCost;
+    const hours          = a.hours          + b.hours;
+    const production     = a.production     + b.production;
+    const laborCost      = a.laborCost      + b.laborCost;
+    const ratioHours      = a.ratioHours      + b.ratioHours;
+    const ratioProduction = a.ratioProduction + b.ratioProduction;
     return {
-      hours, production, laborCost,
-      ratio:     (hours > 0 && production > 0) ? hours / production : null,
+      hours, production, laborCost, ratioHours, ratioProduction,
+      ratio:     (ratioHours > 0 && ratioProduction > 0) ? ratioHours / ratioProduction : null,
       cpo:       (laborCost > 0 && production > 0) ? laborCost / production : null,
       cpoWithGM: null,
       hasData:   hours > 0 || production > 0 || laborCost > 0,
@@ -314,9 +363,12 @@ function poolLocations(utah: PeriodKpis, georgia: PeriodKpis): PeriodKpis {
 
   const combinedLaborCost = design.laborCost + preservation.laborCost + fulfillment.laborCost + ga.laborCost;
   const totalHours        = design.hours + preservation.hours + fulfillment.hours;
+  const combinedRatioHours      = design.ratioHours      + preservation.ratioHours      + fulfillment.ratioHours;
+  const combinedRatioProduction = design.ratioProduction + preservation.ratioProduction + fulfillment.ratioProduction;
 
   const combined: KpiMetrics = {
     hours: totalHours, production: totalProdOrders, laborCost: combinedLaborCost,
+    ratioHours: combinedRatioHours, ratioProduction: combinedRatioProduction,
     ratio: combinedRatio, cpo: blendedCPO, cpoWithGM: blendedCPOWithGM,
     hasData: totalHours > 0 || totalProdOrders > 0,
   };
@@ -325,22 +377,24 @@ function poolLocations(utah: PeriodKpis, georgia: PeriodKpis): PeriodKpis {
 }
 
 function buildWindowResult(
-  label:      string,
-  start:      string,
-  end:        string,
-  laborRows:  LaborRow[],
-  actualRows: ActualRow[]
+  label:        string,
+  start:        string,
+  end:          string,
+  laborRows:    LaborRow[],
+  actualRows:   ActualRow[],
+  managerNames: Set<string>
 ): WindowResult {
   const weekOfs = getWeekMondays(start, end);
-  const utah    = computePeriodKpis(laborRows, actualRows, 'Utah',    weekOfs);
-  const georgia = computePeriodKpis(laborRows, actualRows, 'Georgia', weekOfs);
+  const utah    = computePeriodKpis(laborRows, actualRows, 'Utah',    weekOfs, managerNames);
+  const georgia = computePeriodKpis(laborRows, actualRows, 'Georgia', weekOfs, managerNames);
   return { label, periodStart: start, periodEnd: end, utah, georgia, combined: poolLocations(utah, georgia) };
 }
 
 // Trailing N-completed-calendar-months average of actual G&A labor cost for a
 // location. Used to project G&A into estimated months, which have no actuals
 // of their own to draw from. Reuses computePeriodKpis so any G&A salary-manager
-// cost injection stays consistent with historical months automatically.
+// cost injection stays consistent with historical months automatically. No
+// actual rows are passed in (G&A cost only), so manager names don't matter here.
 function averageGaCostForMonths(
   laborRows: LaborRow[],
   location:  string,
@@ -353,7 +407,7 @@ function averageGaCostForMonths(
     const first   = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const last    = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
     const weekOfs = getWeekMondays(isoDate(first), isoDate(last));
-    total += computePeriodKpis(laborRows, [], location, weekOfs).ga.laborCost;
+    total += computePeriodKpis(laborRows, [], location, weekOfs, new Set()).ga.laborCost;
     monthKeys.push(isoDate(first).slice(0, 7));
   }
   return { avg: months > 0 ? total / months : 0, monthKeys };
@@ -400,16 +454,20 @@ function holidayHoursForMember(
 const FULL_TIME_HOURS_PER_YEAR = 2080; // 52wk × 40hr, for salary→hourly-equivalent comparisons
 
 function projectDept(
-  roster:      Record<string, DesignRosterEntry | PresRosterEntry>,
-  hours:       HoursMap,
-  dailyHours:  DailyHoursMap,
-  weekOfs:     string[],         // Mondays in the month (isoMonday strings)
-  location:    string,
-  dept:        WageDept,
-  holidaySet:  Set<string>,
-  mode:        'estimate' | 'expected' | 'goal'
-): { hours: number; production: number; laborCost: number } {
+  roster:        Record<string, DesignRosterEntry | PresRosterEntry>,
+  hours:         HoursMap,
+  dailyHours:    DailyHoursMap,
+  weekOfs:       string[],         // Mondays in the month (isoMonday strings)
+  location:      string,
+  dept:          WageDept,
+  holidaySet:    Set<string>,
+  mode:          'estimate' | 'expected' | 'goal',
+  mgrTotalHours: HoursMap
+): { hours: number; production: number; laborCost: number; ratioHours: number; ratioProduction: number } {
   let totalHours = 0, totalProduction = 0, totalCost = 0;
+  // Estimated ratio excludes managers entirely — neither their hours nor
+  // their (roster-ratio-derived) production count toward it.
+  let ratioHours = 0, ratioProduction = 0;
   // Names whose pay was already added below via their own roster entry — the
   // SALARY_MANAGERS fallback further down exists to cover managers whose pay
   // never appears anywhere else, so it must skip anyone already counted here
@@ -422,6 +480,7 @@ function projectDept(
     const memberHours = weekOfs.reduce((sum, w) => sum + (hours[memberId]?.[w] ?? 0), 0);
 
     totalHours += memberHours;
+    if (!member.isManager) ratioHours += memberHours;
     if (member.ratio > 0) {
       const tierRatio = RATIO_TARGETS[dept][member.role ?? 'specialist'];
       const effectiveRatio =
@@ -431,7 +490,11 @@ function projectDept(
 
       const holidayHours   = holidayHoursForMember(memberId, weekOfs, hours, dailyHours, holidaySet);
       const productiveHours = Math.max(0, memberHours - holidayHours);
-      if (effectiveRatio > 0) totalProduction += productiveHours / effectiveRatio;
+      if (effectiveRatio > 0) {
+        const memberProduction = productiveHours / effectiveRatio;
+        totalProduction += memberProduction;
+        if (!member.isManager) ratioProduction += memberProduction;
+      }
     }
 
     const payType     = member.payType ?? 'hourly';
@@ -446,7 +509,14 @@ function projectDept(
         totalCost += (annualSal / 52) * weekOfs.length;
         costedNames.add(member.name.trim().toLowerCase());
       } else if (hourlyRate > 0) {
-        totalCost += memberHours * hourlyRate;
+        // Hourly managers are paid for their full work week (management +
+        // production combined), not just the production hours counted into
+        // memberHours above — use mgrTotalHours where it's set, falling back
+        // to that week's production hours if there's no total-hours entry.
+        const payHours = member.isManager
+          ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? hours[memberId]?.[w] ?? 0), 0)
+          : memberHours;
+        totalCost += payHours * hourlyRate;
         costedNames.add(member.name.trim().toLowerCase());
       }
     } else {
@@ -471,7 +541,7 @@ function projectDept(
   const uncostedManagers = SALARY_MANAGERS.filter(mgr => !costedNames.has(mgr.name.trim().toLowerCase()));
   totalCost += getSalaryMgrCostForWeeks(uncostedManagers, location, dept, weekOfs);
 
-  return { hours: totalHours, production: totalProduction, laborCost: totalCost };
+  return { hours: totalHours, production: totalProduction, laborCost: totalCost, ratioHours, ratioProduction };
 }
 
 function buildRatioVariant(
@@ -512,17 +582,25 @@ function projectMonthForLocation(
   const designDailyHours = get('designDailyHours') as DailyHoursMap;
   const presDailyHours   = get('presDailyHours')   as DailyHoursMap;
   const ffDailyHours     = get('ffDailyHours')     as DailyHoursMap;
+  // Hourly managers' true total work hours (management + production combined),
+  // entered separately from their production hours in Scheduling — e.g. a
+  // design manager scheduled for 26 production hours but paid for a full
+  // 40hr/week. Keyed by memberId, one shared map across all departments.
+  // Falls back to production hours per week if a manager has no entry here.
+  const mgrTotalHours    = get('mgrTotalHours')    as HoursMap;
 
-  const designMetrics = projectDept(designRoster, designHours, designDailyHours, weekOfs, location, 'Design',       holidaySet, mode);
-  const presMetrics   = projectDept(presRoster,   presHours,   presDailyHours,   weekOfs, location, 'Preservation', holidaySet, mode);
-  const ffMetrics     = projectDept(ffRoster,     ffHours,     ffDailyHours,     weekOfs, location, 'Fulfillment',  holidaySet, mode);
+  const designMetrics = projectDept(designRoster, designHours, designDailyHours, weekOfs, location, 'Design',       holidaySet, mode, mgrTotalHours);
+  const presMetrics   = projectDept(presRoster,   presHours,   presDailyHours,   weekOfs, location, 'Preservation', holidaySet, mode, mgrTotalHours);
+  const ffMetrics     = projectDept(ffRoster,     ffHours,     ffDailyHours,     weekOfs, location, 'Fulfillment',  holidaySet, mode, mgrTotalHours);
 
-  function toMetrics(m: { hours: number; production: number; laborCost: number }): KpiMetrics {
+  function toMetrics(m: { hours: number; production: number; laborCost: number; ratioHours: number; ratioProduction: number }): KpiMetrics {
     return {
       hours:      m.hours,
       production: m.production,
       laborCost:  m.laborCost,
-      ratio:      m.hours > 0 && m.production > 0 ? m.hours / m.production : null,
+      ratioHours:      m.ratioHours,
+      ratioProduction: m.ratioProduction,
+      ratio:      m.ratioHours > 0 && m.ratioProduction > 0 ? m.ratioHours / m.ratioProduction : null,
       cpo:        m.laborCost > 0 && m.production > 0 ? m.laborCost / m.production : null,
       cpoWithGM:  null,
       hasData:    m.hours > 0 || m.production > 0 || m.laborCost > 0,
@@ -532,7 +610,7 @@ function projectMonthForLocation(
   const design       = toMetrics(designMetrics);
   const preservation = toMetrics(presMetrics);
   const fulfillment  = toMetrics(ffMetrics);
-  const resin: KpiMetrics = { hours: 0, production: 0, laborCost: 0, ratio: null, cpo: null, cpoWithGM: null, hasData: false };
+  const resin: KpiMetrics = { hours: 0, production: 0, laborCost: 0, ratioHours: 0, ratioProduction: 0, ratio: null, cpo: null, cpoWithGM: null, hasData: false };
 
   const totalProdOrders = design.production + preservation.production + fulfillment.production;
 
@@ -540,6 +618,7 @@ function projectMonthForLocation(
   // it across total org production so its CPO ($/unit) is computable.
   const ga: KpiMetrics = {
     hours: 0, production: totalProdOrders, laborCost: gaCost,
+    ratioHours: 0, ratioProduction: 0,
     ratio: null,
     cpo: gaCost > 0 && totalProdOrders > 0 ? gaCost / totalProdOrders : null,
     cpoWithGM: null,
@@ -575,8 +654,12 @@ function projectMonthForLocation(
   }
   if (ratioHasData) combinedRatio = ratioSum;
 
+  const combinedRatioHours      = design.ratioHours      + preservation.ratioHours      + fulfillment.ratioHours;
+  const combinedRatioProduction = design.ratioProduction + preservation.ratioProduction + fulfillment.ratioProduction;
+
   const combined: KpiMetrics = {
     hours: totalHours, production: totalProdOrders, laborCost: combinedLaborCost,
+    ratioHours: combinedRatioHours, ratioProduction: combinedRatioProduction,
     ratio: combinedRatio, cpo: blendedCPO, cpoWithGM: blendedCPOWithGM,
     hasData: totalHours > 0 || totalProdOrders > 0 || combinedLaborCost > 0,
   };
@@ -625,8 +708,11 @@ export async function GET(req: NextRequest) {
   ].sort()[0];
 
   try {
-    // Single pair of queries — all computation happens in memory
-    const [laborRes, actualsRes] = await Promise.all([
+    // Single set of queries — all computation happens in memory. Roster is
+    // fetched here (not just inside the est-current/est-next block below) so
+    // the actuals windows can also identify which team_member_week_actuals
+    // rows belong to a manager, for the ratio's manager-hours exclusion.
+    const [laborRes, actualsRes, rosterRes] = await Promise.all([
       supabase
         .from('weekly_labor_cost')
         .select('employee,location,department,week_of,gross_pay')
@@ -635,31 +721,37 @@ export async function GET(req: NextRequest) {
         .from('team_member_week_actuals')
         .select('week_of,member_name,department,location,actual_hours,actual_orders')
         .gte('week_of', earliestDate),
+      supabase
+        .from('schedule_settings')
+        .select('location,key,value')
+        .in('key', ['designRoster', 'presRoster', 'ffRoster']),
     ]);
 
     if (laborRes.error)   throw laborRes.error;
     if (actualsRes.error) throw actualsRes.error;
+    if (rosterRes.error)  throw rosterRes.error;
 
     const laborRows:  LaborRow[]  = laborRes.data  ?? [];
     const actualRows: ActualRow[] = actualsRes.data ?? [];
+    const managerNames = buildManagerNameSet(rosterRes.data ?? []);
 
     const results: WindowResult[] = [];
 
     // ── MTD ───────────────────────────────────────────────────────────────────
     if (requested.includes('mtd')) {
       const mtdStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-      results.push(buildWindowResult(`${monthLabel(mtdStart.slice(0, 7))} MTD`, mtdStart, today, laborRows, actualRows));
+      results.push(buildWindowResult(`${monthLabel(mtdStart.slice(0, 7))} MTD`, mtdStart, today, laborRows, actualRows, managerNames));
     }
 
     // ── QTD ───────────────────────────────────────────────────────────────────
     if (requested.includes('qtd')) {
       const qtdStart = isoDate(getQuarterStart(now));
-      results.push(buildWindowResult(`${getQuarterLabel(now)} QTD`, qtdStart, today, laborRows, actualRows));
+      results.push(buildWindowResult(`${getQuarterLabel(now)} QTD`, qtdStart, today, laborRows, actualRows, managerNames));
     }
 
     // ── YTD ───────────────────────────────────────────────────────────────────
     if (requested.includes('ytd')) {
-      results.push(buildWindowResult(`${now.getFullYear()} YTD`, `${now.getFullYear()}-01-01`, today, laborRows, actualRows));
+      results.push(buildWindowResult(`${now.getFullYear()} YTD`, `${now.getFullYear()}-01-01`, today, laborRows, actualRows, managerNames));
     }
 
     // ── Weekly series ─────────────────────────────────────────────────────────
@@ -672,7 +764,7 @@ export async function GET(req: NextRequest) {
         d.setDate(d.getDate() - i * 7);
         const monday = isoDate(d);
         const sunday = getSundayOf(monday);
-        results.push(buildWindowResult(weekLabel(monday), monday, sunday, laborRows, actualRows));
+        results.push(buildWindowResult(weekLabel(monday), monday, sunday, laborRows, actualRows, managerNames));
       }
     }
 
@@ -684,7 +776,7 @@ export async function GET(req: NextRequest) {
         const first = new Date(now.getFullYear(), now.getMonth() - i, 1);
         const last  = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
         const key   = isoDate(first).slice(0, 7);
-        results.push(buildWindowResult(monthLabel(key), isoDate(first), isoDate(last), laborRows, actualRows));
+        results.push(buildWindowResult(monthLabel(key), isoDate(first), isoDate(last), laborRows, actualRows, managerNames));
       }
     }
 
@@ -696,7 +788,7 @@ export async function GET(req: NextRequest) {
         const qDate  = new Date(now.getFullYear(), now.getMonth() - i * 3, 1);
         const qStart = getQuarterStart(qDate);
         const qEnd   = new Date(qStart.getFullYear(), qStart.getMonth() + 3, 0);
-        results.push(buildWindowResult(getQuarterLabel(qStart), isoDate(qStart), isoDate(qEnd), laborRows, actualRows));
+        results.push(buildWindowResult(getQuarterLabel(qStart), isoDate(qStart), isoDate(qEnd), laborRows, actualRows, managerNames));
       }
     }
 

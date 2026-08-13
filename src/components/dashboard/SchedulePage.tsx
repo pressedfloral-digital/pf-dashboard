@@ -4162,11 +4162,12 @@ export function SchedulePage({
   const monthlyData = useMemo(() => {
     const map: Record<string, {
       monthKey: string; weeks: number; totalFrames: number; totalCost: number; totalHours: number;
+      ratioHours: number; ratioFrames: number;
       byDesigner: Record<string, { frames: number; cost: number; hrs: number }>;
     }> = {};
     for (let w = 0; w < WEEKS; w++) {
       const key = getMonthKey(w);
-      if (!map[key]) map[key] = { monthKey: key, weeks: 0, totalFrames: 0, totalCost: 0, totalHours: 0, byDesigner: {} };
+      if (!map[key]) map[key] = { monthKey: key, weeks: 0, totalFrames: 0, totalCost: 0, totalHours: 0, ratioHours: 0, ratioFrames: 0, byDesigner: {} };
       map[key].weeks++;
       map[key].totalFrames += weeklyTotals[w].totalFrames;
       map[key].totalCost   += weeklyTotals[w].totalCost;
@@ -4177,14 +4178,23 @@ export function SchedulePage({
         map[key].byDesigner[d.id].cost   += cost;
         map[key].byDesigner[d.id].hrs    += hrs;
         map[key].totalHours += hrs;
+        // Blended ratio excludes managers entirely (neither their hours nor
+        // their production) — a manager's hours include non-production
+        // (managerial/admin) time that would skew hrs/frame, and their
+        // scheduled "production" is a rough proxy at best.
+        const isMgr = !!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager);
+        if (!isMgr) {
+          map[key].ratioHours  += hrs;
+          map[key].ratioFrames += frames;
+        }
       });
     }
     return Object.values(map).map(m => ({
       ...m,
-      monthlyRatio: m.totalFrames > 0 ? m.totalHours  / m.totalFrames : null,
+      monthlyRatio: m.ratioFrames > 0 ? m.ratioHours / m.ratioFrames : null,
       monthlyCPO:   m.totalFrames > 0 && m.totalCost > 0 ? m.totalCost / m.totalFrames : null,
     }));
-  }, [weeklyTotals, designers, schedule]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [weeklyTotals, designers, schedule, settings.designRoster]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Actual intake by week (merged: hardcoded historical < team actuals < Supabase actuals) ──
   // Single source of truth for "what actually came in a given week" — used both to graduate
