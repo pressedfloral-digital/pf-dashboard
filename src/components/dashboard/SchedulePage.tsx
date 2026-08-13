@@ -73,48 +73,89 @@ const PRES_OVERSTAFF_PCT = 0.10;
 // Georgia recalibrated Aug 10, 2026 (design team confirmed front = May 18 intake
 // week; the Aug 4 calibration to May 4 was based on a bad update and drifted
 // ~2 weeks behind reality).
-const DESIGNED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: -636, Georgia: 51 };
+// Shifted +1111.5 (Utah) / +871 (Georgia) on 2026-08-13 when UTAH_HISTORICAL_INTAKE/
+// GEORGIA_HISTORICAL_INTAKE gained several weeks of newly-supplied intake data ahead
+// of what was previously the earliest tracked week — since the FIFO trim below always
+// consumes oldest-first, that new front-loaded volume would otherwise eat into this
+// same fixed budget before reaching the real queue front, pushing it back into cohorts
+// that were already fully designed. The shift is exactly the added weeks' total
+// (verified against real Supabase actuals data to land on the identical intake week —
+// May 18 Georgia, May 25 Utah — both before and after the historical-data update).
+const DESIGNED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: 475.5, Georgia: 922 };
 
 // Same idea as DESIGNED_BASELINE, one stage downstream: an offset added to
 // actual logged Fulfillment output so the cumulative total lands on the
 // real front of the Fulfillment queue. Calibrated Aug 12, 2026 against the
 // team's own read of where they are: Utah working through orders received
 // 4/28–5/24, Georgia working through 4/8–4/29.
-const FULFILLED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: -1082, Georgia: -602 };
+// Shifted by the same +1111.5 (Utah) / +871 (Georgia) on 2026-08-13, for the same
+// reason as DESIGNED_BASELINE above — designedCohorts (this stage's own input) grows
+// by the identical newly-added front volume, one stage downstream.
+const FULFILLED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: 29.5, Georgia: 269 };
 
 const UTAH_HISTORICAL_INTAKE: { weekOf: string; actual: number }[] = [
-  { weekOf: '2025-09-29', actual: 187 },
-  { weekOf: '2025-10-06', actual: 167 },
-  { weekOf: '2025-10-13', actual: 192 },
-  { weekOf: '2025-10-20', actual: 159 },
-  { weekOf: '2025-10-27', actual: 139 },
-  { weekOf: '2025-11-03', actual: 97  },
-  { weekOf: '2025-11-10', actual: 110 },
-  { weekOf: '2025-11-17', actual: 68  },
-  { weekOf: '2025-11-24', actual: 39  },
-  { weekOf: '2025-12-01', actual: 15  },
-  { weekOf: '2025-12-08', actual: 29  },
-  { weekOf: '2025-12-15', actual: 41  },
-  { weekOf: '2025-12-22', actual: 16  },
-  { weekOf: '2025-12-29', actual: 24  },
-  { weekOf: '2026-01-05', actual: 22  },
-  { weekOf: '2026-01-12', actual: 18  },
-  { weekOf: '2026-01-19', actual: 22  },
-  { weekOf: '2026-01-26', actual: 12  },
-  { weekOf: '2026-02-02', actual: 10  },
-  { weekOf: '2026-02-09', actual: 25  },
-  { weekOf: '2026-02-16', actual: 27  },
-  { weekOf: '2026-02-23', actual: 24  },
-  { weekOf: '2026-03-02', actual: 13  },
-  { weekOf: '2026-03-09', actual: 28  },
-  { weekOf: '2026-03-16', actual: 47  },
-  { weekOf: '2026-03-23', actual: 43  },
-  { weekOf: '2026-03-30', actual: 31  },
+  { weekOf: '2025-07-28', actual: 84    },
+  { weekOf: '2025-08-04', actual: 110   },
+  { weekOf: '2025-08-11', actual: 119   },
+  { weekOf: '2025-08-18', actual: 108   },
+  { weekOf: '2025-08-25', actual: 124   },
+  { weekOf: '2025-09-01', actual: 120   },
+  { weekOf: '2025-09-08', actual: 146   },
+  { weekOf: '2025-09-15', actual: 154   },
+  { weekOf: '2025-09-22', actual: 146.5 },
+  { weekOf: '2025-09-29', actual: 186.5 },
+  { weekOf: '2025-10-06', actual: 167   },
+  { weekOf: '2025-10-13', actual: 192   },
+  { weekOf: '2025-10-20', actual: 159   },
+  { weekOf: '2025-10-27', actual: 139   },
+  { weekOf: '2025-11-03', actual: 97    },
+  { weekOf: '2025-11-10', actual: 110   },
+  { weekOf: '2025-11-17', actual: 68    },
+  { weekOf: '2025-11-24', actual: 39    },
+  { weekOf: '2025-12-01', actual: 15    },
+  { weekOf: '2025-12-08', actual: 29    },
+  { weekOf: '2025-12-15', actual: 41    },
+  { weekOf: '2025-12-22', actual: 16    },
+  { weekOf: '2025-12-29', actual: 24    },
+  { weekOf: '2026-01-05', actual: 22    },
+  { weekOf: '2026-01-12', actual: 18    },
+  { weekOf: '2026-01-19', actual: 22    },
+  { weekOf: '2026-01-26', actual: 12    },
+  { weekOf: '2026-02-02', actual: 10    },
+  { weekOf: '2026-02-09', actual: 25    },
+  { weekOf: '2026-02-16', actual: 27    },
+  { weekOf: '2026-02-23', actual: 24    },
+  { weekOf: '2026-03-02', actual: 13    },
+  { weekOf: '2026-03-09', actual: 28    },
+  { weekOf: '2026-03-16', actual: 47    },
+  { weekOf: '2026-03-23', actual: 43    },
+  { weekOf: '2026-03-30', actual: 43    },
+  { weekOf: '2026-04-06', actual: 49    },
+  { weekOf: '2026-04-13', actual: 71    },
+  { weekOf: '2026-04-20', actual: 66    },
+  { weekOf: '2026-04-27', actual: 120   },
+  { weekOf: '2026-05-04', actual: 85    },
+  { weekOf: '2026-05-11', actual: 68    },
+  { weekOf: '2026-05-18', actual: 148   },
+  { weekOf: '2026-05-25', actual: 115   },
+  { weekOf: '2026-06-01', actual: 104   },
+  { weekOf: '2026-06-08', actual: 117   },
+  { weekOf: '2026-06-15', actual: 129   },
+  { weekOf: '2026-06-22', actual: 150   },
+  { weekOf: '2026-06-29', actual: 155   },
 ];
 
 // ─── Historical Georgia intake (actual received by week) ──────────────────────
 const GEORGIA_HISTORICAL_INTAKE: { weekOf: string; actual: number }[] = [
-  { weekOf: '2025-09-22', actual: 67  }, // wk 39
+  { weekOf: '2025-07-28', actual: 91  },
+  { weekOf: '2025-08-04', actual: 91  },
+  { weekOf: '2025-08-11', actual: 91  },
+  { weekOf: '2025-08-18', actual: 86  },
+  { weekOf: '2025-08-25', actual: 115 },
+  { weekOf: '2025-09-01', actual: 108 },
+  { weekOf: '2025-09-08', actual: 156 },
+  { weekOf: '2025-09-15', actual: 133 },
+  { weekOf: '2025-09-22', actual: 167 }, // wk 39
   { weekOf: '2025-09-29', actual: 176 }, // wk 40
   { weekOf: '2025-10-06', actual: 200 }, // wk 41
   { weekOf: '2025-10-13', actual: 170 }, // wk 42
@@ -141,7 +182,20 @@ const GEORGIA_HISTORICAL_INTAKE: { weekOf: string; actual: number }[] = [
   { weekOf: '2026-03-09', actual: 48  }, // wk 11
   { weekOf: '2026-03-16', actual: 63  }, // wk 12
   { weekOf: '2026-03-23', actual: 49  }, // wk 13
-  { weekOf: '2026-03-30', actual: 56  }, // wk 14 (current, projected)
+  { weekOf: '2026-03-30', actual: 56  }, // wk 14
+  { weekOf: '2026-04-06', actual: 8   },
+  { weekOf: '2026-04-13', actual: 36  },
+  { weekOf: '2026-04-20', actual: 57  },
+  { weekOf: '2026-04-27', actual: 89  },
+  { weekOf: '2026-05-04', actual: 73  },
+  { weekOf: '2026-05-11', actual: 75  },
+  { weekOf: '2026-05-18', actual: 112 },
+  { weekOf: '2026-05-25', actual: 106 },
+  { weekOf: '2026-06-01', actual: 138 },
+  { weekOf: '2026-06-08', actual: 124 },
+  { weekOf: '2026-06-15', actual: 139 },
+  { weekOf: '2026-06-22', actual: 151 },
+  { weekOf: '2026-06-29', actual: 135 },
 ];
 
 // ─── Default designers ────────────────────────────────────────────────────────
