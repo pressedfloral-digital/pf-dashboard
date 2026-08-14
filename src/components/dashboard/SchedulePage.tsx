@@ -73,27 +73,44 @@ const PRES_OVERSTAFF_PCT = 0.10;
 // Georgia recalibrated Aug 10, 2026 (design team confirmed front = May 18 intake
 // week; the Aug 4 calibration to May 4 was based on a bad update and drifted
 // ~2 weeks behind reality).
-// Shifted +1111.5 (Utah) / +871 (Georgia) on 2026-08-13 when UTAH_HISTORICAL_INTAKE/
-// GEORGIA_HISTORICAL_INTAKE gained several weeks of newly-supplied intake data ahead
-// of what was previously the earliest tracked week — since the FIFO trim below always
-// consumes oldest-first, that new front-loaded volume would otherwise eat into this
-// same fixed budget before reaching the real queue front, pushing it back into cohorts
-// that were already fully designed. The shift is exactly the added weeks' total
-// (verified against real Supabase actuals data to land on the identical intake week —
-// May 18 Georgia, May 25 Utah — both before and after the historical-data update).
-const DESIGNED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: 475.5, Georgia: 922 };
+// Shifted twice on 2026-08-13 as UTAH_HISTORICAL_INTAKE/GEORGIA_HISTORICAL_INTAKE
+// gained weeks of newly-supplied intake data ahead of what was previously the
+// earliest tracked week — since the FIFO trim below always consumes oldest-first,
+// new front-loaded volume would otherwise eat into this same fixed budget before
+// reaching the real queue front, pushing it back into cohorts that were already
+// fully designed. Each shift is exactly the added weeks' total (verified against
+// real Supabase actuals data to land on the identical intake week — May 18
+// Georgia, May 25 Utah — both before and after each historical-data update):
+// first pass +1111.5 (Utah) / +871 (Georgia) when the array grew back to
+// 2025-07-28; second pass +1791 (Utah) / +1624 (Georgia) when it grew back to
+// 2025-04-21.
+const DESIGNED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: 2266.5, Georgia: 2546 };
 
 // Same idea as DESIGNED_BASELINE, one stage downstream: an offset added to
 // actual logged Fulfillment output so the cumulative total lands on the
 // real front of the Fulfillment queue. Calibrated Aug 12, 2026 against the
 // team's own read of where they are: Utah working through orders received
 // 4/28–5/24, Georgia working through 4/8–4/29.
-// Shifted by the same +1111.5 (Utah) / +871 (Georgia) on 2026-08-13, for the same
-// reason as DESIGNED_BASELINE above — designedCohorts (this stage's own input) grows
-// by the identical newly-added front volume, one stage downstream.
-const FULFILLED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: 29.5, Georgia: 269 };
+// Shifted by the same deltas as DESIGNED_BASELINE above, both passes, for the
+// same reason — designedCohorts (this stage's own input) grows by the identical
+// newly-added front volume, one stage downstream.
+const FULFILLED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: 1820.5, Georgia: 1893 };
 
 const UTAH_HISTORICAL_INTAKE: { weekOf: string; actual: number }[] = [
+  { weekOf: '2025-04-21', actual: 133   },
+  { weekOf: '2025-04-28', actual: 117   },
+  { weekOf: '2025-05-05', actual: 88    },
+  { weekOf: '2025-05-12', actual: 112   },
+  { weekOf: '2025-05-19', actual: 182   },
+  { weekOf: '2025-05-26', actual: 160   },
+  { weekOf: '2025-06-02', actual: 180   },
+  { weekOf: '2025-06-09', actual: 153   },
+  { weekOf: '2025-06-16', actual: 192   },
+  { weekOf: '2025-06-23', actual: 173   },
+  { weekOf: '2025-06-30', actual: 61    },
+  { weekOf: '2025-07-07', actual: 27    },
+  { weekOf: '2025-07-14', actual: 120   },
+  { weekOf: '2025-07-21', actual: 93    },
   { weekOf: '2025-07-28', actual: 84    },
   { weekOf: '2025-08-04', actual: 110   },
   { weekOf: '2025-08-11', actual: 119   },
@@ -147,6 +164,20 @@ const UTAH_HISTORICAL_INTAKE: { weekOf: string; actual: number }[] = [
 
 // ─── Historical Georgia intake (actual received by week) ──────────────────────
 const GEORGIA_HISTORICAL_INTAKE: { weekOf: string; actual: number }[] = [
+  { weekOf: '2025-04-21', actual: 104 },
+  { weekOf: '2025-04-28', actual: 114 },
+  { weekOf: '2025-05-05', actual: 71  },
+  { weekOf: '2025-05-12', actual: 134 },
+  { weekOf: '2025-05-19', actual: 125 },
+  { weekOf: '2025-05-26', actual: 176 },
+  { weekOf: '2025-06-02', actual: 166 },
+  { weekOf: '2025-06-09', actual: 123 },
+  { weekOf: '2025-06-16', actual: 169 },
+  { weekOf: '2025-06-23', actual: 107 },
+  { weekOf: '2025-06-30', actual: 64  },
+  { weekOf: '2025-07-07', actual: 104 },
+  { weekOf: '2025-07-14', actual: 76  },
+  { weekOf: '2025-07-21', actual: 91  },
   { weekOf: '2025-07-28', actual: 91  },
   { weekOf: '2025-08-04', actual: 91  },
   { weekOf: '2025-08-11', actual: 91  },
@@ -5499,6 +5530,13 @@ export function SchedulePage({
                           const multiplier = getIntakeMultiplier(row.weekOf);
                           const projected = getProjectedIntake(row.weekOf);
                           const estVal = hasOverride ? overrideVal : (projected !== undefined ? projected : '');
+                          // Realized growth multiplier for already-received weeks — same
+                          // last-year comparison the not-yet-received rows project forward
+                          // with, but computed backward from what actually came in, so you
+                          // can see how this year's growth is actually tracking vs. the
+                          // multiplier you're planning future weeks around.
+                          const actualMultiplier = (receivedVal !== null && lastYearActual !== undefined && lastYearActual > 0)
+                            ? receivedVal / lastYearActual : null;
                           // At risk: the live calc now points past a date we already promised
                           // a client. The live numbers above still show the true estimate —
                           // this is purely a flag that the promise needs attention.
@@ -5557,10 +5595,22 @@ export function SchedulePage({
                                   <div className="flex flex-col items-end">
                                     <span className="text-slate-600 font-medium">{row.count}</span>
                                     <span className="text-[10px] text-slate-400 whitespace-nowrap">{row.designedCount} designed / {row.queuedCount} queued</span>
+                                    {actualMultiplier !== null && (
+                                      <span className="text-[10px] text-slate-400 whitespace-nowrap" title={`${row.count} received vs ${lastYearActual} same week last year`}>
+                                        ×{actualMultiplier.toFixed(2)} LY {lastYearActual}
+                                      </span>
+                                    )}
                                   </div>
-                                ) : receivedVal === null ? '—' : receivedIsOverride
-                                  ? <span className="text-green-700 font-medium">{receivedVal}</span>
-                                  : <span className="text-indigo-400">{receivedVal}</span>}
+                                ) : receivedVal === null ? '—' : (
+                                  <div className="flex flex-col items-end">
+                                    <span className={receivedIsOverride ? 'text-green-700 font-medium' : 'text-indigo-400'}>{receivedVal}</span>
+                                    {actualMultiplier !== null && (
+                                      <span className="text-[10px] text-slate-400 whitespace-nowrap" title={`${receivedVal} received vs ${lastYearActual} same week last year`}>
+                                        ×{actualMultiplier.toFixed(2)} LY {lastYearActual}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
                               </td>
                               <td className="px-3 py-2 text-right">
                                 {done ? (
