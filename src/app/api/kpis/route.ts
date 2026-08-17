@@ -208,20 +208,24 @@ function computePeriodKpis(
     if (mgrCost > 0) laborByDept[dept] = (laborByDept[dept] ?? 0) + mgrCost;
   }
 
-  // Sum hours + production from team_member_week_actuals. ratioHoursByDept
-  // mirrors hoursByDept but skips manager rows — actuals ratio counts a
-  // manager's real production but not their hours (which mix in non-
-  // production managerial time), unlike hoursByDept/prodByDept themselves,
-  // which stay fully inclusive for cost/CPO/total-hours purposes.
+  // Sum hours + production from team_member_week_actuals. ratioHoursByDept /
+  // ratioProdByDept mirror hoursByDept / prodByDept but skip manager rows
+  // entirely — neither a manager's hours nor their production count toward
+  // the ratio — unlike hoursByDept/prodByDept themselves, which stay fully
+  // inclusive for cost/CPO/total-hours purposes.
   const hoursByDept:      Record<string, number> = {};
   const ratioHoursByDept: Record<string, number> = {};
   const prodByDept:       Record<string, number> = {};
+  const ratioProdByDept:  Record<string, number> = {};
   for (const row of actualRows.filter(r => r.location === location && weekOfs.includes(r.week_of))) {
     const dept = normDept(row.department);
     hoursByDept[dept] = (hoursByDept[dept] ?? 0) + row.actual_hours;
     prodByDept[dept]  = (prodByDept[dept]  ?? 0) + row.actual_orders;
     const isMgr = managerNames.has(`${location}|${dept}|${row.member_name.trim().toLowerCase()}`);
-    if (!isMgr) ratioHoursByDept[dept] = (ratioHoursByDept[dept] ?? 0) + row.actual_hours;
+    if (!isMgr) {
+      ratioHoursByDept[dept] = (ratioHoursByDept[dept] ?? 0) + row.actual_hours;
+      ratioProdByDept[dept]  = (ratioProdByDept[dept]  ?? 0) + row.actual_orders;
+    }
   }
 
   function makeMetrics(dept: string, overrideProduction?: number): KpiMetrics {
@@ -229,7 +233,7 @@ function computePeriodKpis(
     const production     = overrideProduction ?? (prodByDept[dept] ?? 0);
     const laborCost      = laborByDept[dept] ?? 0;
     const ratioHours      = ratioHoursByDept[dept] ?? 0;
-    const ratioProduction = production;
+    const ratioProduction = ratioProdByDept[dept] ?? 0;
     return {
       hours,
       production,
