@@ -301,7 +301,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                               onChange={ev => handleEdit(w, name, 'hours', parseFloat(ev.target.value) || 0)}
                               className={`hist-input w-full px-2 py-0.5 text-center text-[10px] bg-transparent border-none outline-none border-t border-t-slate-100 focus:bg-indigo-50 ${e.hours > 0 && e.isActual ? 'text-green-600 font-medium' : isMissing && !hasData ? 'text-amber-300' : 'text-slate-400'}`}
                             />
-                            {e.hours > 0 && e.orders > 0 && !member?.isManager && (
+                            {e.hours > 0 && e.orders > 0 && (
                               <div className={`text-[9px] px-1 text-center ${(e.hours / e.orders) <= 1.0 ? 'text-green-700' : (e.hours / e.orders) <= 2.0 ? 'text-amber-700' : 'text-red-700'}`}>
                                 {(e.hours / e.orders).toFixed(2)} h/ord
                               </div>
@@ -469,7 +469,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                         <td key={mk} className="px-3 py-2 text-center border-l border-slate-100">
                           {d.orders > 0 && <div className="font-semibold text-indigo-700">{d.orders}</div>}
                           {d.hours > 0 && <div className="text-slate-400">{Math.round(d.hours * 10) / 10}h</div>}
-                          {ratio !== null && !member?.isManager && (
+                          {ratio !== null && (
                             <div className={`text-[10px] ${ratio <= 1.0 ? 'text-green-700' : ratio <= 2.0 ? 'text-amber-700' : 'text-red-700'}`}>
                               {ratio.toFixed(2)} h/ord
                             </div>
