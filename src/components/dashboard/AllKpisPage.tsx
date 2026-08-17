@@ -107,7 +107,7 @@ function KpiCell({
         </div>
         {val != null && (
           <div className="text-xs text-slate-400 tabular-nums">
-            {fmtHours(metrics.hours)}h / {fmtUnits(metrics.production)} {DEPT_PRODUCTION_UNIT[dept]}
+            {fmtHours(metrics.ratioHours)}h / {fmtUnits(metrics.ratioProduction)} {DEPT_PRODUCTION_UNIT[dept]}
           </div>
         )}
       </div>

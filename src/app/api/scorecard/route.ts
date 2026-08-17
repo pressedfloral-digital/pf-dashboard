@@ -22,6 +22,12 @@ interface ActualRow {
   actual_orders: number;
 }
 
+interface RosterSettingRow {
+  location: string;
+  key:      string;
+  value:    unknown;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // Months that belong to a given week_of (Monday attribution — matches dashboard)
@@ -42,6 +48,28 @@ function weeksInMonth(weekOfs: string[], monthKey: string): string[] {
 // Returns salary manager weekly cost contribution for a given location+dept+weekOf
 function getSalaryMgrCost(location: string, dept: string, weekOf: string): number {
   return getSalaryMgrCostForWeeks(DEPARTMENT_MANAGERS, location, dept, [weekOf]);
+}
+
+// Which team_member_week_actuals rows belong to a manager, so Combined ratio
+// can exclude their hours AND their production — mirrors buildManagerNameSet
+// in src/app/api/kpis/route.ts. Built from the live roster's isManager flag.
+function buildManagerNameSet(rosterRows: RosterSettingRow[]): Set<string> {
+  const deptByKey: Record<string, string> = {
+    designRoster: 'Design', presRoster: 'Preservation', ffRoster: 'Fulfillment',
+  };
+  const set = new Set<string>();
+  for (const row of rosterRows) {
+    const dept = deptByKey[row.key];
+    if (!dept) continue;
+    const roster = row.value as Record<string, { name?: string; isManager?: boolean }> | null;
+    if (!roster) continue;
+    for (const member of Object.values(roster)) {
+      if (member?.isManager && member.name) {
+        set.add(`${row.location}|${dept}|${member.name.trim().toLowerCase()}`);
+      }
+    }
+  }
+  return set;
 }
 
 // Departments included in blended CPO (all except Resin)
@@ -119,6 +147,14 @@ export async function GET(req: NextRequest) {
       .gte('month_key', fromDate.slice(0, 7));
     if (goalsError) throw goalsError;
 
+    // ── Fetch roster (for manager-hours/production exclusion on Combined ratio) ─
+    const { data: rosterData, error: rosterError } = await supabase
+      .from('schedule_settings')
+      .select('location,key,value')
+      .in('key', ['designRoster', 'presRoster', 'ffRoster']);
+    if (rosterError) throw rosterError;
+    const managerNames = buildManagerNameSet(rosterData ?? []);
+
     // ── Compute monthly actuals per location ──────────────────────────────────
     const allWeekOfs = [...new Set([
       ...laborRows.map(r => r.week_of),
@@ -167,10 +203,21 @@ export async function GET(req: NextRequest) {
         // ── Production by dept this month (from team_member_week_actuals) ──────
         const productionByDept: Record<string, number> = {};
         const hoursByDept:      Record<string, number> = {};
+        // ratioHoursByDept / ratioProductionByDept mirror the above but skip
+        // manager rows entirely — Combined ratio counts neither a manager's
+        // hours nor their production, while productionByDept/hoursByDept stay
+        // fully inclusive for CPO/cost purposes.
+        const ratioHoursByDept:      Record<string, number> = {};
+        const ratioProductionByDept: Record<string, number> = {};
         for (const row of actualRows.filter(r => r.location === loc && weekOfs.includes(r.week_of))) {
           const dept = normalizeDeptForScorecard(row.department);
           productionByDept[dept] = (productionByDept[dept] ?? 0) + row.actual_orders;
           hoursByDept[dept]      = (hoursByDept[dept]      ?? 0) + row.actual_hours;
+          const isMgr = managerNames.has(`${loc}|${dept}|${row.member_name.trim().toLowerCase()}`);
+          if (!isMgr) {
+            ratioHoursByDept[dept]      = (ratioHoursByDept[dept]      ?? 0) + row.actual_hours;
+            ratioProductionByDept[dept] = (ratioProductionByDept[dept] ?? 0) + row.actual_orders;
+          }
         }
 
         // ── Per-dept CPO ──────────────────────────────────────────────────────
@@ -221,22 +268,30 @@ export async function GET(req: NextRequest) {
         // + (Design hours / Design orders)
         // + (Fulfillment hours / Fulfillment orders)
         // + (G&A hours / all production orders combined)
+        // Uses ratioHoursByDept/ratioProductionByDept throughout — manager
+        // hours and manager production are excluded entirely, not just hours.
         let combinedRatio: number | null = null;
         let combinedRatioSum = 0;
         let combinedHasData  = false;
 
+        const ratioTotalProductionOrders = PROD_DEPTS_FOR_BLEND.reduce(
+          (s, d) => s + (ratioProductionByDept[d] ?? 0), 0
+        );
+
         for (const dept of PROD_DEPTS_FOR_BLEND) {
-          const hrs    = hoursByDept[dept]      ?? 0;
-          const orders = productionByDept[dept] ?? 0;
+          const hrs    = ratioHoursByDept[dept]      ?? 0;
+          const orders = ratioProductionByDept[dept] ?? 0;
           if (hrs > 0 && orders > 0) {
             combinedRatioSum += hrs / orders;
             combinedHasData   = true;
           }
         }
 
-        const gaHours = hoursByDept['G&A'] ?? 0;
-        if (gaHours > 0 && totalProductionOrders > 0) {
-          combinedRatioSum += gaHours / totalProductionOrders;
+        // G&A has no manager-exclusion roster of its own (buildManagerNameSet
+        // only covers Design/Preservation/Fulfillment) — its hours stay as-is.
+        const gaHours = ratioHoursByDept['G&A'] ?? 0;
+        if (gaHours > 0 && ratioTotalProductionOrders > 0) {
+          combinedRatioSum += gaHours / ratioTotalProductionOrders;
           combinedHasData   = true;
         }
 
@@ -274,6 +329,8 @@ export async function GET(req: NextRequest) {
           laborByDept,
           productionByDept,
           hoursByDept,
+          ratioHoursByDept,
+          ratioProductionByDept,
           deptCPO,
           blendedCPO,
           combinedRatio,
@@ -297,6 +354,8 @@ export async function GET(req: NextRequest) {
         laborByDept: Record<string, number>;
         productionByDept: Record<string, number>;
         hoursByDept: Record<string, number>;
+        ratioHoursByDept: Record<string, number>;
+        ratioProductionByDept: Record<string, number>;
       };
       const locData = (result.byLocation as Record<string, Record<string, LocMonthData>>);
 
@@ -304,6 +363,9 @@ export async function GET(req: NextRequest) {
       const pooledLabor: Record<string, number> = {};
       const pooledProd:  Record<string, number> = {};
       const pooledHours: Record<string, number> = {};
+      // Manager-free pools, for Combined ratio only — see per-location comment above.
+      const pooledRatioHours: Record<string, number> = {};
+      const pooledRatioProd:  Record<string, number> = {};
 
       for (const loc of locations) {
         const m = locData[loc]?.[month];
@@ -317,10 +379,17 @@ export async function GET(req: NextRequest) {
         for (const [dept, val] of Object.entries(m.hoursByDept ?? {})) {
           pooledHours[dept] = (pooledHours[dept] ?? 0) + val;
         }
+        for (const [dept, val] of Object.entries(m.ratioHoursByDept ?? {})) {
+          pooledRatioHours[dept] = (pooledRatioHours[dept] ?? 0) + val;
+        }
+        for (const [dept, val] of Object.entries(m.ratioProductionByDept ?? {})) {
+          pooledRatioProd[dept] = (pooledRatioProd[dept] ?? 0) + val;
+        }
       }
 
       const PROD_DEPTS_BLEND = ['Design', 'Preservation', 'Fulfillment'] as const;
       const pooledTotalOrders = PROD_DEPTS_BLEND.reduce((s, d) => s + (pooledProd[d] ?? 0), 0);
+      const pooledRatioTotalOrders = PROD_DEPTS_BLEND.reduce((s, d) => s + (pooledRatioProd[d] ?? 0), 0);
 
       let companyBlendedCPO: number | null = null;
       let companyBlendedSum = 0;
@@ -338,19 +407,19 @@ export async function GET(req: NextRequest) {
       }
       if (companyHasData) companyBlendedCPO = companyBlendedSum;
 
-      // Company combined ratio: same additive structure
+      // Company combined ratio: same additive structure, manager-free pools
       let companyCombinedRatio: number | null = null;
       let companyCombinedSum = 0;
       let companyCombinedHasData = false;
 
       for (const dept of PROD_DEPTS_BLEND) {
-        const hrs    = pooledHours[dept] ?? 0;
-        const orders = pooledProd[dept]  ?? 0;
+        const hrs    = pooledRatioHours[dept] ?? 0;
+        const orders = pooledRatioProd[dept]  ?? 0;
         if (hrs > 0 && orders > 0) { companyCombinedSum += hrs / orders; companyCombinedHasData = true; }
       }
-      const gaHoursPooled = pooledHours['G&A'] ?? 0;
-      if (gaHoursPooled > 0 && pooledTotalOrders > 0) {
-        companyCombinedSum += gaHoursPooled / pooledTotalOrders;
+      const gaHoursPooled = pooledRatioHours['G&A'] ?? 0;
+      if (gaHoursPooled > 0 && pooledRatioTotalOrders > 0) {
+        companyCombinedSum += gaHoursPooled / pooledRatioTotalOrders;
         companyCombinedHasData = true;
       }
       if (companyCombinedHasData) companyCombinedRatio = companyCombinedSum;

@@ -584,7 +584,12 @@ function HistoricalsTab({ designers, location, teamActuals, onActualsSaved, canV
   const teamFrames = weekData.reduce((s, r) => s + r.frames, 0);
   const teamHours  = weekData.reduce((s, r) => s + r.hours,  0);
   const teamCost   = weekData.reduce((s, r) => s + r.cost,   0);
-  const teamRatio  = teamFrames > 0 && teamHours > 0 ? teamHours / teamFrames : null;
+  // Team ratio excludes managers entirely — neither their hours nor their
+  // frames count toward it — while teamFrames/teamHours above stay the full
+  // team totals.
+  const teamRatioFrames = weekData.reduce((s, r) => s + (r.designer.isManager ? 0 : r.frames), 0);
+  const teamRatioHours  = weekData.reduce((s, r) => s + (r.designer.isManager ? 0 : r.hours),  0);
+  const teamRatio  = teamRatioFrames > 0 && teamRatioHours > 0 ? teamRatioHours / teamRatioFrames : null;
   const teamCPO    = teamFrames > 0 && teamCost  > 0 ? teamCost  / teamFrames : null;
   const hasCost    = canViewCPO && designers.some(d =>
     (d.payType === 'hourly' && d.hourlyRate > 0) || (d.payType === 'salary' && d.annualSalary > 0)
@@ -2287,12 +2292,19 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           return s + (m.payType === 'salary' ? m.annualSalary / 260 : totalH * m.rate);
                         }, 0);
                         const dayCPO = cap > 0 && dayCost > 0 ? dayCost / cap : null;
-                        const dayHours = team.reduce((s, m) => {
+                        // h/ord ratio excludes managers entirely — neither their hours nor
+                        // their capacity count toward it — while `cap` above stays the full
+                        // team capacity.
+                        let dayRatioHours = 0, dayRatioCap = 0;
+                        team.forEach(m => {
+                          if (m.isManager) return;
                           const weekIso = isoMonday(presThisWeekOffset);
-                          return s + resolveDayHours(presDailyHours, `${weekIso}-${m.id}`, di, presRoster[m.id]?.standardWeeklyHours,
+                          const h = resolveDayHours(presDailyHours, `${weekIso}-${m.id}`, di, presRoster[m.id]?.standardWeeklyHours,
                             { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate }).hours;
-                        }, 0);
-                        const dayRatio = cap > 0 ? dayHours / cap : null;
+                          dayRatioHours += h;
+                          dayRatioCap += m.ratio > 0 ? h / m.ratio : 0;
+                        });
+                        const dayRatio = dayRatioCap > 0 ? dayRatioHours / dayRatioCap : null;
                         return (
                           <td key={di} className={`px-2 py-2 text-center ${di === 0 ? 'bg-indigo-50/50' : ''}`}>
                             <div className="text-indigo-700">{Math.round(cap * 100) / 100} ord</div>
@@ -3075,8 +3087,17 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                     {days.map((_, di) => {
                       const o = teamDailyOrders(di); const cc = teamDailyCost(di);
                       const cpo = o > 0 && cc > 0 ? cc / o : null;
-                      const ffDayHours = team.reduce((s, m) => s + (ffDailyHours[`${isoMonday(ffThisWeekOffset)}-${m.id}`]?.[di] ?? 0), 0);
-                      const ffDayRatio = o > 0 ? ffDayHours / o : null;
+                      // h/ord ratio excludes managers entirely — neither their hours nor
+                      // their order output count toward it — while `o` above stays the
+                      // full team order total.
+                      let ffDayRatioHours = 0, ffDayRatioOrders = 0;
+                      team.forEach(m => {
+                        if (m.isManager) return;
+                        const h = getFFH(m.id, di);
+                        ffDayRatioHours += h;
+                        ffDayRatioOrders += m.ratio > 0 && h > 0 ? h / m.ratio : 0;
+                      });
+                      const ffDayRatio = ffDayRatioOrders > 0 ? ffDayRatioHours / ffDayRatioOrders : null;
                       return (
                         <td key={di} className={`px-2 py-2 text-center ${di === 0 ? 'bg-amber-50/50' : ''}`}>
                           <div className="text-amber-700">{Math.round(o * 100) / 100} ord</div>
@@ -5243,8 +5264,18 @@ export function SchedulePage({
                         {days.map((_, di) => {
                           const f = Math.round(teamDailyFrames(di) * 100) / 100; const cc = teamDailyCost(di);
                           const cpo = f > 0 && cc > 0 ? cc / f : null;
-                          const designDayHours = designers.reduce((s, d) => s + getDH(d.id, di), 0);
-                          const designDayRatio = f > 0 ? designDayHours / f : null;
+                          // h/f ratio excludes managers entirely — neither their hours nor
+                          // their frame output count toward it — while `f` above stays the
+                          // full team frame total.
+                          let designDayRatioHours = 0, designDayRatioFrames = 0;
+                          designers.forEach(d => {
+                            const isMgr = !!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager);
+                            if (isMgr) return;
+                            const h = getDH(d.id, di);
+                            designDayRatioHours += h;
+                            designDayRatioFrames += d.ratio > 0 && h > 0 ? h / d.ratio : 0;
+                          });
+                          const designDayRatio = designDayRatioFrames > 0 ? designDayRatioHours / designDayRatioFrames : null;
                           return (
                             <td key={di} className={`px-2 py-2 text-center ${di === 0 ? 'bg-indigo-50/50' : ''}`}>
                               <div className="text-indigo-700">{f}f</div>
