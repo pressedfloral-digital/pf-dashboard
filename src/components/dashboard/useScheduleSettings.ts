@@ -18,6 +18,13 @@ export interface DesignerRoster {
     // falls back to wherever no explicit daily override exists. See
     // src/lib/scheduleResolution.ts.
     standardWeeklyHours?: number[];
+    // Manager-only: standard Mon-Sun TOTAL hours (production + managerial).
+    // Mirrors standardWeeklyHours but for mgrTotalHours/mgrTotalDailyHours —
+    // weeks/days with no explicit total override fall back to this template
+    // instead of silently collapsing to the production hours. Without this,
+    // a manager's non-production time vanishes from any week nobody
+    // remembered to hand-enter a total for.
+    standardTotalWeeklyHours?: number[];
     // Employment window, both ISO 'YYYY-MM-DD' and inclusive. When set,
     // scheduled hours resolve to 0 for any day outside [startDate, endDate]
     // regardless of template/override — see resolveDayHours/resolveWeekHours.
@@ -43,6 +50,8 @@ export interface TeamRoster {
     isManager?: boolean; role?: 'specialist'|'senior'|'master'; _removed?: boolean;
     // Standard Mon-Sun hours (index 0=Monday..6=Sunday) — see DesignerRoster.
     standardWeeklyHours?: number[];
+    // Manager-only standard Mon-Sun TOTAL hours — see DesignerRoster.
+    standardTotalWeeklyHours?: number[];
     // Employment window — see DesignerRoster.
     startDate?: string;
     endDate?:   string;
@@ -132,10 +141,18 @@ export function useScheduleSettings(location: 'Utah' | 'Georgia') {
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
+    // Guards against an out-of-order response: if `location` changes again
+    // before this fetch resolves, the effect cleanup below flips `cancelled`
+    // so a slower stale-location response can't land after (and get merged
+    // on top of) the newer one already applied — e.g. switching Utah →
+    // Georgia quickly enough that Utah's slower response arrives last would
+    // otherwise silently mix Utah's roster into Georgia's settings.
+    let cancelled = false;
     setLoading(true);
     fetch(`/api/schedule-settings?location=${location}`)
       .then(r => r.json())
       .then((data: Record<string, unknown>) => {
+        if (cancelled) return;
         setSettings(prev => {
           const next = { ...prev };
           KEYS.forEach(k => {
@@ -157,7 +174,8 @@ export function useScheduleSettings(location: 'Utah' | 'Georgia') {
         });
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [location]);
 
   const save = useCallback((key: keyof ScheduleSettings, value: unknown) => {
