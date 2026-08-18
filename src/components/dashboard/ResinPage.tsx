@@ -31,6 +31,7 @@ interface CohortRow {
   weekOf:       string;   // ISO date — Monday of intake week
   weekLabel:    string;
   units:        number;   // resin units that entered queue this week
+  weeksElapsed: number;   // weeks since this intake week, i.e. its current age
   weeksToComplete: number | null;
 }
 
@@ -87,6 +88,8 @@ function useResinSettings() {
   const mgrTotalHours: Record<string, Record<string, number>> = settings.mgrTotalHours ?? {};
   const mgrTotalDailyHours: DailyHoursMap = settings.mgrTotalDailyHours ?? {};
 
+  const queueFrontWeek: string | null = settings.resinQueueFrontWeek ?? null;
+
   function setRoster(r: ResinMember[]) { update('resinRoster', r as unknown); }
   function setMgrTotalDailyHours(h: DailyHoursMap) { update('mgrTotalDailyHours', h); }
   // No longer written going forward (daily entries/template supersede it),
@@ -94,10 +97,12 @@ function useResinSettings() {
   // legacy value left over from before the daily-hours linkage existed —
   // otherwise it would keep outranking the template in resolveWeekHours.
   function setHours(h: Record<string, Record<string, number>>) { update('resinHours', h); }
+  function setQueueFrontWeek(w: string | null) { update('resinQueueFrontWeek', w); }
 
   return {
     roster, setRoster, hours, setHours, resinDailyHours, setResinDailyHours,
     mgrTotalHours, mgrTotalDailyHours, setMgrTotalDailyHours,
+    queueFrontWeek, setQueueFrontWeek,
     loading, saveState,
   };
 }
@@ -119,25 +124,29 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
   const [queueLoading, setQueueLoading] = useState(true);
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
-  const [moveLoading, setMoveLoading] = useState(false);
-  const [moveResult, setMoveResult] = useState<string | null>(null);
   const [showRoster, setShowRoster] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
 
   const {
     roster, setRoster, hours, setHours, resinDailyHours, setResinDailyHours,
     mgrTotalHours, mgrTotalDailyHours, setMgrTotalDailyHours,
+    queueFrontWeek, setQueueFrontWeek,
     loading, saveState,
   } = useResinSettings();
 
-  // Fetch queue summary
+  // Fetch queue summary — re-fetches whenever queueFrontWeek changes so the
+  // top summary cards (total/Utah/Georgia) stay consistent with the
+  // turnaround table below, which already excludes cohorts before that week
+  // as completed. Without frontWeek the API just returns the full uncleared
+  // total, same as before this existed.
   useEffect(() => {
-    fetch('/api/resin/queue?summary=true')
+    const params = queueFrontWeek ? `&frontWeek=${queueFrontWeek}` : '';
+    fetch(`/api/resin/queue?summary=true${params}`)
       .then(r => r.json())
       .then(d => setQueueSummary(d))
       .catch(() => {})
       .finally(() => setQueueLoading(false));
-  }, []);
+  }, [queueFrontWeek]);
 
   // ── Derived: weekly capacity ───────────────────────────────────────────────
   const windowWeeks = Array.from({ length: WINDOW }, (_, i) => weekOffset + i);
@@ -202,33 +211,59 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
     return total / 8;
   })();
 
+  // Full tracked-horizon schedule capacity, per week — used to project cohort
+  // completion against real near-term staffing changes instead of a flat
+  // 8-week average that can't see them.
+  const capacityByWeek = Array.from({ length: WEEKS }, (_, w) => weeklyCapacity(w));
+
   // ── Derived: turnaround simulation ────────────────────────────────────────
+  // Cohorts older than queueFrontWeek are stuck-open stragglers (a bad tag, an
+  // abandoned line item) rather than real backlog — folding them into the FIFO
+  // walk would anchor "weeks to complete" to whichever ancient order happens
+  // to still be open, instead of where the team actually is right now. They're
+  // still surfaced (see stragglerCohorts below) so someone can go close them
+  // out, just excluded from the timing math.
+  const { activeCohorts, stragglerCohorts } = (() => {
+    const empty = { activeCohorts: [] as { weekOf: string; units: number }[], stragglerCohorts: [] as { weekOf: string; units: number }[] };
+    if (!queueSummary) return empty;
+    if (!queueFrontWeek) return { activeCohorts: queueSummary.cohorts, stragglerCohorts: [] };
+    const active: { weekOf: string; units: number }[] = [];
+    const stragglers: { weekOf: string; units: number }[] = [];
+    for (const c of queueSummary.cohorts) {
+      (c.weekOf < queueFrontWeek ? stragglers : active).push(c);
+    }
+    return { activeCohorts: active, stragglerCohorts: stragglers };
+  })();
+
   const cohortRows: CohortRow[] = (() => {
-    if (!queueSummary) return [];
+    if (activeCohorts.length === 0) return [];
 
-    const now = getMondayDate(0);
-    let queueRemaining = queueSummary.totalUnits;
-    const cap = avgWeeklyCapacity > 0 ? avgWeeklyCapacity : 1;
+    // Cumulative units from the front of the (active) queue through each
+    // cohort, matched against cumulative real capacity going forward — a
+    // cohort's completion week is whenever running capacity first reaches its
+    // running unit total. This is true FIFO: cumulative units only grows as
+    // you move toward newer cohorts, so newer cohorts correctly land later,
+    // not sooner. Horizon extends past the tracked schedule (assuming the
+    // last tracked week's capacity holds) so a large backlog doesn't read as
+    // "never clears" just because the capacity array ran out.
+    const horizon = capacityByWeek.length * 2;
+    const capAt = (w: number) => w < capacityByWeek.length ? capacityByWeek[w] : (capacityByWeek[capacityByWeek.length - 1] ?? 0);
+    const cumCapByWeek: number[] = [];
+    let runningCap = 0;
+    for (let w = 0; w < horizon; w++) { runningCap += capAt(w); cumCapByWeek.push(runningCap); }
 
-    return queueSummary.cohorts.map(({ weekOf, units }) => {
-      const cohortMonday = mondayOf(weekOf);
-      const weeksBehindNow = Math.round(
-        (now.getTime() - cohortMonday.getTime()) / (7 * 24 * 60 * 60 * 1000)
-      );
-
-      // How many weeks from now until this cohort is reached?
-      // FIFO: weeks to reach = queueRemaining / capacity (at start of this cohort's turn)
-      const weeksFromNow = queueRemaining > 0 ? Math.ceil(queueRemaining / cap) : 0;
-      const weeksToComplete = weeksBehindNow + weeksFromNow;
-
-      // After this cohort is "used up", reduce the queue
-      queueRemaining = Math.max(0, queueRemaining - units);
-
+    const today = getMondayDate(0);
+    let cumulativeUnits = 0;
+    return activeCohorts.map(({ weekOf, units }) => {
+      cumulativeUnits += units;
+      const weeksFromNow = cumCapByWeek.findIndex(cc => cc >= cumulativeUnits);
+      const weeksElapsed = Math.round((today.getTime() - mondayOf(weekOf).getTime()) / (7 * 24 * 60 * 60 * 1000));
       return {
         weekOf,
-        weekLabel: cohortMonday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        weekLabel: mondayOf(weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
         units,
-        weeksToComplete: weeksToComplete > 0 ? weeksToComplete : null,
+        weeksElapsed,
+        weeksToComplete: weeksFromNow === -1 ? null : weeksFromNow,
       };
     });
   })();
@@ -369,35 +404,18 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
     try {
       const res = await fetch('/api/cron/resin-queue-sync');
       const d = await res.json();
-      setSyncResult(`Synced ${d.synced ?? 0} resin items (${d.skipped ?? 0} skipped — not yet bouquetReceived)`);
+      setSyncResult(
+        `Synced ${d.synced ?? 0} resin items, cleared ${d.cleared ?? 0} no-longer-open` +
+        (d.transfers ? ` · ${d.transfers.transferred ?? 0} GA→UT transfers detected, ${d.transfers.errors ?? 0} errors` : '')
+      );
       // Refresh summary
-      const s = await fetch('/api/resin/queue?summary=true').then(r => r.json());
+      const params = queueFrontWeek ? `&frontWeek=${queueFrontWeek}` : '';
+      const s = await fetch(`/api/resin/queue?summary=true${params}`).then(r => r.json());
       setQueueSummary(s);
     } catch (e) {
       setSyncResult('Sync failed — check console');
     } finally {
       setSyncLoading(false);
-    }
-  }
-
-  async function moveGeorgiaToUtah(dryRun = false) {
-    setMoveLoading(true);
-    setMoveResult(null);
-    try {
-      const res = await fetch(
-        `/api/admin/sync-resin-locations${dryRun ? '?dryRun=true' : ''}`,
-        { method: 'POST' }
-      );
-      const d = await res.json();
-      setMoveResult(
-        dryRun
-          ? `Dry run: ${d.moved ?? 0} orders would be moved, ${d.cannotMove ?? 0} cannot be moved, ${d.alreadyUtah ?? 0} already Utah`
-          : `Moved ${d.moved ?? 0} orders to Utah, ${d.cannotMove ?? 0} cannot be moved (already fulfilled)`
-      );
-    } catch {
-      setMoveResult('Move failed — check console');
-    } finally {
-      setMoveLoading(false);
     }
   }
 
@@ -467,37 +485,21 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
         <p className="text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded px-3 py-2">{syncResult}</p>
       )}
 
-      {/* ── Georgia transfer section ───────────────────────────────────────────── */}
+      {/* ── Georgia transfer note ────────────────────────────────────────────────
+          The dashboard never writes to Shopify's fulfillment location itself
+          — your team moves it by hand once they've physically shipped a
+          Georgia item to Utah. Sync Queue just watches for that change and
+          reflects it (see the queue table below) once it sees the location
+          is now Utah. */}
       {(queueSummary?.georgiaOrigin ?? 0) > 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-4 flex-wrap">
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-amber-800">
-              {queueSummary!.georgiaOrigin} resin orders originated in Georgia
-            </p>
-            <p className="text-xs text-amber-600 mt-0.5">
-              All resin orders are completed in Utah. Use the button to bulk-move Georgia orders
-              to the Utah fulfillment location in Shopify.
-            </p>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => moveGeorgiaToUtah(true)}
-              disabled={moveLoading}
-              className="text-xs border border-amber-300 bg-white text-amber-700 rounded px-3 py-1.5 hover:bg-amber-50 disabled:opacity-50"
-            >
-              Dry Run
-            </button>
-            <button
-              onClick={() => moveGeorgiaToUtah(false)}
-              disabled={moveLoading}
-              className="text-xs bg-amber-600 text-white rounded px-3 py-1.5 hover:bg-amber-700 disabled:opacity-50"
-            >
-              {moveLoading ? 'Moving…' : 'Move to Utah'}
-            </button>
-          </div>
-          {moveResult && (
-            <p className="w-full text-xs text-amber-700 mt-1">{moveResult}</p>
-          )}
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <p className="text-sm font-medium text-amber-800">
+            {queueSummary!.georgiaOrigin} resin orders originated in Georgia
+          </p>
+          <p className="text-xs text-amber-600 mt-0.5">
+            All resin work happens in Utah. Once your team ships the flowers and updates the fulfillment location
+            in Shopify yourselves, the next sync will detect it and show it as transferred below.
+          </p>
         </div>
       )}
 
@@ -869,81 +871,116 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
 
           {/* Turnaround bars */}
           <div className="bg-white border border-slate-100 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-slate-700 mb-1">
-              Turnaround — by event-date intake week
-            </h3>
+            <div className="flex items-start justify-between gap-4 flex-wrap mb-1">
+              <h3 className="text-sm font-semibold text-slate-700">
+                Turnaround — by event-date intake week
+              </h3>
+              <label className="flex items-center gap-1.5 text-xs text-slate-500 shrink-0">
+                Currently designing as of
+                <input
+                  type="date"
+                  value={queueFrontWeek ?? ''}
+                  onChange={e => setQueueFrontWeek(e.target.value ? mondayOf(e.target.value).toISOString().split('T')[0] : null)}
+                  title="Any date within the current intake week works — it's rounded to that week's Monday. Cohorts before that week are treated as stuck stragglers and excluded from the turnaround math below, not the real backlog"
+                  className="border border-slate-200 rounded px-2 py-1 text-xs text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-purple-300"
+                />
+              </label>
+            </div>
             <p className="text-xs text-slate-400 mb-4">
-              Based on {(queueSummary?.totalUnits ?? 0).toLocaleString()} units in queue
-              · {avgWeeklyCapacity.toFixed(0)} units/week avg capacity · FIFO sort.
+              Based on {activeCohorts.reduce((s, c) => s + c.units, 0).toLocaleString()} active units in queue
+              · per-week scheduled capacity from the 52-week planner · FIFO sort.
               Intake week = event date + {queueSummary?.offsetDays ?? 4} days (falls back to order date when an order has no event-date tag).
-              {queueSummary?.oldestEventDate && (
-                <> Oldest still-open order has an event date of <strong>{new Date(queueSummary.oldestEventDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</strong> — check the table below if that looks like a stuck straggler rather than the real front of the queue.</>
+              {!queueFrontWeek && queueSummary?.oldestEventDate && (
+                <> Oldest still-open order has an event date of <strong>{new Date(queueSummary.oldestEventDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</strong> — set &quot;Currently designing as of&quot; above once you know the real front, so stuck stragglers like that one stop anchoring the math.</>
               )}
             </p>
 
             {cohortRows.length === 0 ? (
               <p className="text-sm text-slate-400 py-8 text-center">
-                No queue data yet — click "Sync Queue" to pull from Shopify
+                No queue data yet — click &quot;Sync Queue&quot; to pull from Shopify
               </p>
             ) : (
-              <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
-                {[...cohortRows].reverse().map(row => {
-                  const wks = row.weeksToComplete;
-                  const barColor =
-                    wks === null     ? 'bg-slate-200' :
-                    wks <= 6         ? 'bg-emerald-400' :
-                    wks <= 12        ? 'bg-yellow-400' :
-                    'bg-red-400';
-                  const labelColor =
-                    wks === null     ? 'text-slate-400' :
-                    wks <= 6         ? 'text-emerald-700' :
-                    wks <= 12        ? 'text-yellow-700' :
-                    'text-red-700';
-                  const maxWks = Math.max(...cohortRows.map(r => r.weeksToComplete ?? 0), 1);
-                  const barWidth = wks !== null ? `${Math.min(100, (wks / maxWks) * 100)}%` : '4px';
-
-                  return (
-                    <div key={row.weekOf} className="flex items-center gap-3">
-                      <span className="text-xs text-slate-500 w-20 shrink-0 text-right">
-                        {row.weekLabel}
-                      </span>
-                      <div className="flex-1 flex items-center gap-2">
-                        <div className="flex-1 bg-slate-50 rounded-full h-5 relative overflow-hidden">
-                          <div
-                            className={`h-full rounded-full transition-all ${barColor}`}
-                            style={{ width: barWidth }}
-                          />
-                        </div>
-                        <span className={`text-xs font-medium w-16 shrink-0 ${labelColor}`}>
-                          {wks !== null ? `${wks} wks` : '—'}
-                        </span>
-                        <span className="text-xs text-slate-400 w-12 shrink-0 text-right">
-                          {row.units}u
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
+              <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+                <table className="min-w-full text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-100 sticky top-0">
+                      <th className="px-4 py-2 text-left font-medium text-slate-500 whitespace-nowrap">Intake week</th>
+                      <th className="px-3 py-2 text-right font-medium text-slate-500">Orders received</th>
+                      <th className="px-3 py-2 text-right font-medium text-slate-500">Status</th>
+                      <th className="px-3 py-2 text-left font-medium text-slate-500 min-w-[160px]">Weeks until made</th>
+                      <th className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap"
+                        title="Full turnaround, arrival to completion — weeks already elapsed since this intake week plus weeks still left">
+                        Total turnaround
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cohortRows.map(row => {
+                      const wks = row.weeksToComplete;
+                      const totalTurnaround = wks !== null ? row.weeksElapsed + wks : null;
+                      return (
+                        <tr key={row.weekOf} className={`border-b border-slate-50 ${wks === 0 ? 'bg-indigo-50/40' : 'hover:bg-slate-50'}`}>
+                          <td className="px-4 py-2 font-medium text-slate-700 whitespace-nowrap">{row.weekLabel}</td>
+                          <td className="px-3 py-2 text-right text-slate-600">{row.units}</td>
+                          <td className="px-3 py-2 text-right">
+                            {wks === 0 ? (
+                              <span className="text-indigo-700 text-[10px] bg-indigo-100 rounded px-1.5 py-0.5">making now</span>
+                            ) : (
+                              <span className="text-slate-500 text-[10px]">in queue</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2">
+                            {wks === null ? (
+                              <span className="text-xs text-red-400 italic">not cleared in {WEEKS * 2} wks</span>
+                            ) : wks === 0 ? (
+                              <span className="text-xs font-semibold text-indigo-700">this week</span>
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <div className="flex-1 bg-slate-100 rounded-full h-1.5 max-w-24">
+                                  <div className={`h-1.5 rounded-full ${wks <= 6 ? 'bg-emerald-400' : wks <= 12 ? 'bg-yellow-400' : 'bg-red-400'}`}
+                                    style={{ width: `${Math.min(100, (wks / 24) * 100)}%` }} />
+                                </div>
+                                <span className={`text-[10px] font-medium whitespace-nowrap ${wks <= 6 ? 'text-emerald-700' : wks <= 12 ? 'text-yellow-700' : 'text-red-700'}`}>
+                                  ~{wks} wk{wks !== 1 ? 's' : ''}
+                                </span>
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            {totalTurnaround !== null ? (
+                              <span className={`text-xs font-semibold ${totalTurnaround <= 6 ? 'text-emerald-700' : totalTurnaround <= 12 ? 'text-yellow-700' : 'text-red-700'}`}>
+                                ~{totalTurnaround} wks
+                              </span>
+                            ) : (
+                              <span className="text-xs text-slate-400">TBD</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
 
-            {/* Legend */}
-            <div className="flex gap-4 mt-4 flex-wrap">
-              {[
-                { color: 'bg-emerald-400', label: '≤6 wks — on track' },
-                { color: 'bg-yellow-400',  label: '7–12 wks — backlog' },
-                { color: 'bg-red-400',     label: '13+ wks — behind' },
-              ].map(({ color, label }) => (
-                <span key={label} className="flex items-center gap-1.5 text-xs text-slate-500">
-                  <span className={`w-2.5 h-2.5 rounded-full ${color} inline-block`} />
-                  {label}
-                </span>
-              ))}
-            </div>
+            {stragglerCohorts.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-slate-100">
+                <p className="text-xs font-medium text-slate-500 mb-2">
+                  {stragglerCohorts.reduce((s, c) => s + c.units, 0)} units in {stragglerCohorts.length} cohort{stragglerCohorts.length === 1 ? '' : 's'} predate &quot;currently designing as of&quot; — treated as already completed in resin, excluded from the turnaround math above. Still shown in the queue table below in case one needs a second look.
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {stragglerCohorts.map(c => (
+                    <span key={c.weekOf} className="text-[10px] bg-slate-50 border border-slate-200 text-slate-500 rounded px-1.5 py-0.5">
+                      {mondayOf(c.weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}: {c.units}u
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Full queue table */}
-          <ResinQueueTable />
+          <ResinQueueTable queueFrontWeek={queueFrontWeek} />
         </div>
       )}
 
@@ -965,51 +1002,26 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
 
 // ─── Queue table sub-component ─────────────────────────────────────────────────
 
-function ResinQueueTable() {
+function ResinQueueTable({ queueFrontWeek }: { queueFrontWeek: string | null }) {
   const [orders, setOrders] = useState<ResinQueueRow[]>([]);
   const [total, setTotal]   = useState(0);
   const [page, setPage]     = useState(1);
   const [loading, setLoading] = useState(true);
-  const [movingId, setMovingId] = useState<string | null>(null);
-  const [moveResults, setMoveResults] = useState<Record<string, 'moved' | 'error'>>({});
-
-  async function moveToUtah(order: ResinQueueRow) {
-    setMovingId(order.line_item_id);
-    try {
-      const res = await fetch('/api/admin/sync-resin-locations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shopifyOrderId: order.shopify_order_id, lineItemId: order.line_item_id }),
-      });
-      const d = await res.json();
-      if (d.moved >= 1 || d.alreadyUtah >= 1) {
-        setMoveResults(r => ({ ...r, [order.line_item_id]: 'moved' }));
-        setOrders(prev => prev.map(o =>
-          o.line_item_id === order.line_item_id ? { ...o, origin_location: 'Utah' } : o
-        ));
-      } else {
-        setMoveResults(r => ({ ...r, [order.line_item_id]: 'error' }));
-      }
-    } catch {
-      setMoveResults(r => ({ ...r, [order.line_item_id]: 'error' }));
-    } finally {
-      setMovingId(null);
-    }
-  }
 
   const fetchPage = useCallback(async (p: number) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/resin/queue?page=${p}&pageSize=50`);
+      const params = queueFrontWeek ? `&frontWeek=${queueFrontWeek}` : '';
+      const res = await fetch(`/api/resin/queue?page=${p}&pageSize=50${params}`);
       const d   = await res.json();
       setOrders(d.orders ?? []);
       setTotal(d.total ?? 0);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [queueFrontWeek]);
 
-  useEffect(() => { fetchPage(1); }, [fetchPage]);
+  useEffect(() => { setPage(1); fetchPage(1); }, [fetchPage]);
 
   if (loading) return (
     <div className="bg-white border border-slate-100 rounded-xl p-8 text-center">
@@ -1043,11 +1055,12 @@ function ResinQueueTable() {
             <tr className="bg-slate-50 border-b border-slate-100">
               <th className="px-4 py-2 text-left font-medium text-slate-500">Order #</th>
               <th className="px-3 py-2 text-left font-medium text-slate-500">Product</th>
+              <th className="px-3 py-2 text-left font-medium text-slate-500" title="Recreate from photo = no physical delivery to wait on. Send own = customer is mailing something in, still waits like a normal order.">Source</th>
               <th className="px-3 py-2 text-left font-medium text-slate-500">PF Status</th>
               <th className="px-3 py-2 text-left font-medium text-slate-500">Origin</th>
-              <th className="px-3 py-2 text-left font-medium text-slate-500">Order date</th>
+              <th className="px-3 py-2 text-left font-medium text-slate-500" title="Event date + 4 days — what actually drives this order's intake week/cohort. Falls back to order date only when there's no event-date tag.">Intake date</th>
               <th className="px-3 py-2 text-center font-medium text-slate-500">Qty</th>
-              <th className="px-3 py-2 text-center font-medium text-slate-500">Location</th>
+              <th className="px-3 py-2 text-left font-medium text-slate-500" title="Read-only — reflects whatever your team sets directly in Shopify, never written by the dashboard">Transfer status</th>
             </tr>
           </thead>
           <tbody>
@@ -1057,6 +1070,26 @@ function ResinQueueTable() {
                 <td className="px-3 py-1.5 text-slate-600">
                   {o.line_item_title}
                   {o.variant_title && <span className="text-slate-400"> · {o.variant_title}</span>}
+                </td>
+                <td className="px-3 py-1.5">
+                  {o.blooms_process_type === 'recreate' ? (
+                    <span className="text-[10px] text-sky-700 bg-sky-50 border border-sky-200 rounded px-1.5 py-0.5 whitespace-nowrap"
+                      title="Customer supplied a photo — no physical delivery to wait on">
+                      Recreate from photo
+                    </span>
+                  ) : o.blooms_process_type === 'send_own' ? (
+                    <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 whitespace-nowrap"
+                      title="Customer is mailing something in — still waits on a physical delivery like a normal order">
+                      Send own{o.event_date ? ` — event ${o.event_date}` : ''}
+                    </span>
+                  ) : o.event_date ? (
+                    <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 whitespace-nowrap"
+                      title="No Blooms Process add-on, but this order has an event-date tag — real wedding flowers are expected, same wait as a Blooms Process 'send own' item">
+                      Real flowers — event {o.event_date}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-slate-300">—</span>
+                  )}
                 </td>
                 <td className="px-3 py-1.5">
                   <span className="bg-purple-50 text-purple-700 rounded px-1.5 py-0.5 text-[10px]">
@@ -1069,22 +1102,26 @@ function ResinQueueTable() {
                     : <span className="text-slate-500">{o.origin_location ?? '—'}</span>
                   }
                 </td>
-                <td className="px-3 py-1.5 text-slate-500">{o.order_date ?? '—'}</td>
+                <td className="px-3 py-1.5 text-slate-500">
+                  {o.event_date ? (
+                    <div title={`Event date tag: ${o.event_date}${o.order_date ? ` · order date: ${o.order_date}` : ''}`}>
+                      {addDays(o.event_date, EVENT_TO_INTAKE_OFFSET_DAYS)}
+                      <span className="text-[10px] text-slate-300"> (event {o.event_date})</span>
+                    </div>
+                  ) : (o.order_date ?? '—')}
+                </td>
                 <td className="px-3 py-1.5 text-center text-slate-600">{o.quantity}</td>
-                <td className="px-3 py-1.5 text-center">
-                  {o.origin_location === 'Georgia' && moveResults[o.line_item_id] !== 'moved' ? (
-                    <button
-                      onClick={() => moveToUtah(o)}
-                      disabled={movingId === o.line_item_id}
-                      className="text-[10px] bg-amber-500 hover:bg-amber-600 text-white rounded px-2 py-1 disabled:opacity-50 whitespace-nowrap"
-                    >
-                      {movingId === o.line_item_id ? '…' : 'Move to UT'}
-                    </button>
-                  ) : moveResults[o.line_item_id] === 'moved' ? (
-                    <span className="text-[10px] text-emerald-600 font-medium">✓ Moved</span>
-                  ) : moveResults[o.line_item_id] === 'error' ? (
-                    <span className="text-[10px] text-red-500">Failed</span>
-                  ) : null}
+                <td className="px-3 py-1.5">
+                  {o.transferred_to_utah_at ? (
+                    <span className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5 whitespace-nowrap"
+                      title="Fulfillment location manually moved to Utah in Shopify — detected on a later sync. The dashboard never makes this change itself.">
+                      Transferred to UT on {new Date(o.transferred_to_utah_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    </span>
+                  ) : o.origin_location === 'Georgia' ? (
+                    <span className="text-[10px] text-slate-300">still in Georgia</span>
+                  ) : (
+                    <span className="text-[10px] text-slate-300">—</span>
+                  )}
                 </td>
               </tr>
             ))}
@@ -1106,6 +1143,22 @@ interface ResinQueueRow {
   pf_status:           string | null;
   origin_location:     string | null;
   order_date:          string | null;
+  event_date:          string | null;
   quantity:            number;
+  transferred_to_utah_at: string | null;
+  // 'recreate' = customer supplied a photo, no delivery to wait on.
+  // 'send_own' = customer is mailing something in, still waits like normal.
+  // null = no Blooms Process item on this order.
+  blooms_process_type: 'recreate' | 'send_own' | null;
+}
+
+// 3-6 day event-to-intake lag, matching the offset baked into resin_queue's
+// cohorting on the server (EVENT_TO_INTAKE_OFFSET_DAYS in the API route).
+const EVENT_TO_INTAKE_OFFSET_DAYS = 4;
+
+function addDays(iso: string, days: number): string {
+  const d = new Date(iso + 'T12:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split('T')[0];
 }
 

@@ -93,6 +93,15 @@ export interface ScheduleSettings {
   resinRoster:        unknown;
   resinHours:         Record<string, Record<string, number>>;
   resinDailyHours:    DailyHoursMap;
+  // Manually-confirmed front of the resin queue (ISO Monday of the intake
+  // week currently being worked) — resin_queue is live-synced from Shopify
+  // so there's no accumulated-baseline drift to correct the way Design's
+  // DESIGNED_BASELINE needs, but old stuck-open orders (tagging mistakes,
+  // abandoned line items) can otherwise anchor the FIFO simulation to a
+  // straggler instead of where the team actually is. Cohorts older than this
+  // are excluded from the turnaround math and surfaced separately for
+  // investigation instead.
+  resinQueueFrontWeek: string | null;
 }
 
 const DEFAULTS: ScheduleSettings = {
@@ -116,13 +125,14 @@ const DEFAULTS: ScheduleSettings = {
   resinRoster: null,
   resinHours: {},
   resinDailyHours: {},
+  resinQueueFrontWeek: null,
 };
 
 const KEYS: (keyof ScheduleSettings)[] = [
   'designHours','designRoster','presHours','presRoster','presSettings',
   'ffHours','ffRoster','masterAvailability','avgIntake','newHireHours','ffNewHireHours','presNewHireHours','weeklyEstimates','weeklyMultipliers',
   'mgrTotalHours','mgrTotalDailyHours','designDailyHours','ffDailyHours','presDailyHours','presCheckHours',
-  'resinRoster','resinHours','resinDailyHours',
+  'resinRoster','resinHours','resinDailyHours','resinQueueFrontWeek',
 ];
 
 export function useScheduleSettings(location: 'Utah' | 'Georgia') {
