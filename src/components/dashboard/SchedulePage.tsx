@@ -84,7 +84,11 @@ const PRES_OVERSTAFF_PCT = 0.10;
 // first pass +1111.5 (Utah) / +871 (Georgia) when the array grew back to
 // 2025-07-28; second pass +1791 (Utah) / +1624 (Georgia) when it grew back to
 // 2025-04-21.
-const DESIGNED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: 2266.5, Georgia: 2546 };
+// Recalibrated Aug 17, 2026 (design team confirmed both locations now working
+// the May 25 intake week — Utah has 10 orders left in it, Georgia has 42):
+// solved directly against live Supabase actuals for the baseline that leaves
+// exactly that many remaining in the May 25 cohort. Utah +20, Georgia +96.
+const DESIGNED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: 2286.5, Georgia: 2642 };
 
 // Same idea as DESIGNED_BASELINE, one stage downstream: an offset added to
 // actual logged Fulfillment output so the cumulative total lands on the
@@ -4608,6 +4612,30 @@ export function SchedulePage({
     return merged.sort((a, b) => a.weekOf.localeCompare(b.weekOf));
   }, [cohortIntake, weeklyTotals, hiringPlan.planCapacity]);
 
+  // ── Next-up cohort progress this week ────────────────────────────────────────
+  // historicalRemaining's own FIFO walk already lets this week's capacity spill
+  // from the current (partially-designed) cohort into whichever one is queued
+  // right behind it — that's how a cohort's designCompleteWeek can land on week
+  // 0 even when it isn't the front of the queue. But the walk only records which
+  // week each cohort's row finally clears, not how much of a not-yet-touched
+  // cohort this week's leftover capacity is projected to reach. Re-derive just
+  // that one number for week 0 specifically, for display alongside the front
+  // cohort's own "in design queue" status.
+  const nextCohortProgress = useMemo(() => {
+    const active = historicalRemaining
+      .filter(r => !('alreadyDone' in r && r.alreadyDone) && r.remaining > 0)
+      .sort((a, b) => a.weekOf.localeCompare(b.weekOf));
+    if (active.length < 2) return null;
+    const [front, next] = active;
+    // Still-drying cohorts can't be reached by this week's capacity no matter
+    // how much is left over — only relevant once "next" has already graduated.
+    if ('inPreservation' in next && next.inPreservation) return null;
+    const capacityThisWeek = weeklyTotals[0]?.totalFrames ?? 0;
+    const leftover = capacityThisWeek - front.remaining;
+    if (leftover <= 0) return null;
+    return { weekOf: next.weekOf, expected: Math.min(leftover, next.remaining), remaining: next.remaining };
+  }, [historicalRemaining, weeklyTotals]);
+
   // ── Fulfillment capacity + queue walk, computed here (not just inside
   // FulfillmentSection) so Design's own "Total w/ fulfillment" column and
   // Fulfillment's "Weeks remaining until fulfilled" table read from the
@@ -5644,23 +5672,31 @@ export function SchedulePage({
                                 )}
                               </td>
                               <td className="px-3 py-2 text-right">
-                                {done ? (
-                                  <span className="text-slate-400 text-[10px]">complete</span>
-                                ) : partial ? (
-                                  <span className="text-amber-700 text-[10px] bg-amber-100 rounded px-1.5 py-0.5">
-                                    {row.queuedCount} still in design queue
-                                  </span>
-                                ) : inPres ? (
-                                  <span className="text-green-700 text-[10px] bg-green-100 rounded px-1.5 py-0.5">
-                                    still drying — {row.preservationWeeksLeft ?? 0} wks left
-                                  </span>
-                                ) : weeksLeft === 0 ? (
-                                  <span className="text-indigo-700 text-[10px] bg-indigo-100 rounded px-1.5 py-0.5">designing now</span>
-                                ) : notYetIn ? (
-                                  <span className="text-slate-400 text-[10px] bg-slate-100 rounded px-1.5 py-0.5">not yet received</span>
-                                ) : (
-                                  <span className="text-slate-500 text-[10px]">in design queue</span>
-                                )}
+                                <div className="flex flex-col items-end gap-0.5">
+                                  {done ? (
+                                    <span className="text-slate-400 text-[10px]">complete</span>
+                                  ) : partial ? (
+                                    <span className="text-amber-700 text-[10px] bg-amber-100 rounded px-1.5 py-0.5">
+                                      {row.queuedCount} still in design queue
+                                    </span>
+                                  ) : inPres ? (
+                                    <span className="text-green-700 text-[10px] bg-green-100 rounded px-1.5 py-0.5">
+                                      still drying — {row.preservationWeeksLeft ?? 0} wks left
+                                    </span>
+                                  ) : weeksLeft === 0 ? (
+                                    <span className="text-indigo-700 text-[10px] bg-indigo-100 rounded px-1.5 py-0.5">designing now</span>
+                                  ) : notYetIn ? (
+                                    <span className="text-slate-400 text-[10px] bg-slate-100 rounded px-1.5 py-0.5">not yet received</span>
+                                  ) : (
+                                    <span className="text-slate-500 text-[10px]">in design queue</span>
+                                  )}
+                                  {nextCohortProgress?.weekOf === row.weekOf && (
+                                    <span className="text-sky-700 text-[10px] bg-sky-50 rounded px-1.5 py-0.5 whitespace-nowrap"
+                                      title="Projected from this week's scheduled capacity, not yet actual — the current front-of-queue cohort only needs part of this week's capacity to clear, so the rest is expected to spill into this cohort.">
+                                      ~{Math.round(nextCohortProgress.expected)} of {nextCohortProgress.remaining} expected this week
+                                    </span>
+                                  )}
+                                </div>
                               </td>
                               <td className="px-3 py-2">
                                 {done ? (
