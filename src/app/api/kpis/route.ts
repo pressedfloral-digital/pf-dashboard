@@ -424,8 +424,8 @@ function averageGaCostForMonths(
 //   ffRoster:     { [id]: { ratio, rate, name, payType?, annualSalary? } }
 //   designHours / presHours / ffHours: { [memberId]: { [isoMonday]: hours } }
 
-interface DesignRosterEntry  { ratio: number; payType?: string; hourlyRate?: number; annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier }
-interface PresRosterEntry    { ratio: number; rate?: number;    payType?: string;    annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier }
+interface DesignRosterEntry  { ratio: number; payType?: string; hourlyRate?: number; annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[] }
+interface PresRosterEntry    { ratio: number; rate?: number;    payType?: string;    annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[] }
 interface HoursMap           { [memberId: string]: Record<string, number> }
 interface DailyHoursMap      { [weekOfMemberKey: string]: number[] }  // "${isoMonday}-${memberId}" -> [mon..fri]
 
@@ -515,10 +515,14 @@ function projectDept(
       } else if (hourlyRate > 0) {
         // Hourly managers are paid for their full work week (management +
         // production combined), not just the production hours counted into
-        // memberHours above — use mgrTotalHours where it's set, falling back
-        // to that week's production hours if there's no total-hours entry.
+        // memberHours above. Fallback chain, highest to lowest priority:
+        // explicit weekly mgrTotalHours entry -> the roster's standing
+        // "Total schedule" template (standardTotalWeeklyHours, summed) ->
+        // that week's production hours if neither is set.
+        const totalTemplateWeekly = (member as DesignRosterEntry).standardTotalWeeklyHours
+          ?.reduce((s, h) => s + (h ?? 0), 0);
         const payHours = member.isManager
-          ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? hours[memberId]?.[w] ?? 0), 0)
+          ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? totalTemplateWeekly ?? hours[memberId]?.[w] ?? 0), 0)
           : memberHours;
         totalCost += payHours * hourlyRate;
         costedNames.add(member.name.trim().toLowerCase());
