@@ -4,6 +4,19 @@ import { supabase } from '@/lib/supabase';
 import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks, getGmCostForWeeks } from '@/lib/managers';
 import { RATIO_TARGETS, type RatioTier } from '@/lib/ratioTargets';
 import { WAGE_TARGETS, type WageLocation, type WageDept } from '@/lib/wageTargets';
+import { resolveWeekHours } from '@/lib/scheduleResolution';
+
+const VALID_ROLES = new Set<string>(['specialist', 'senior', 'master']);
+// `member.role ?? 'specialist'` alone doesn't protect against a malformed
+// role value that isn't null/undefined but also isn't a real tier — e.g. a
+// stray `0` slipping in from a bad sync or manual edit. `??` only catches
+// null/undefined, so `RATIO_TARGETS[dept][0]` silently misses, `tierRatio`
+// comes back undefined, and that person's Expected/Goal production drops to
+// zero while their cost (protected by its own `?? ownRateHr` fallback)
+// keeps counting — inflating CPO for exactly the people this happens to.
+function normalizeRole(role: unknown): RatioTier {
+  return typeof role === 'string' && VALID_ROLES.has(role) ? (role as RatioTier) : 'specialist';
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -424,10 +437,34 @@ function averageGaCostForMonths(
 //   ffRoster:     { [id]: { ratio, rate, name, payType?, annualSalary? } }
 //   designHours / presHours / ffHours: { [memberId]: { [isoMonday]: hours } }
 
-interface DesignRosterEntry  { ratio: number; payType?: string; hourlyRate?: number; annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier }
-interface PresRosterEntry    { ratio: number; rate?: number;    payType?: string;    annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier }
+interface DesignRosterEntry  { ratio: number; payType?: string; hourlyRate?: number; annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[]; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }
+interface PresRosterEntry    { ratio: number; rate?: number;    payType?: string;    annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[]; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }
 interface HoursMap           { [memberId: string]: Record<string, number> }
 interface DailyHoursMap      { [weekOfMemberKey: string]: number[] }  // "${isoMonday}-${memberId}" -> [mon..fri]
+
+// A member's hours for one week, resolved through the same fallback chain
+// the Scheduling UI uses (explicit daily overrides -> standard weekly
+// template -> legacy pre-template weekly value -> 0), rather than reading
+// the legacy weekly map directly. Most of a roster relies entirely on the
+// standard-schedule template for weeks nobody has hand-touched — reading
+// `hours[memberId]?.[weekOf]` alone (the old behavior) silently treated
+// every such week as 0 hours worked, undercounting Estimated/Expected/Goal
+// production for anyone without an explicit per-week override.
+function resolveMemberWeekHours(
+  memberId:  string,
+  weekOf:    string,
+  hours:     HoursMap,
+  dailyHours: DailyHoursMap,
+  member:    DesignRosterEntry | PresRosterEntry,
+): number {
+  return resolveWeekHours({
+    dailyMap:            dailyHours,
+    weekKey:              `${weekOf}-${memberId}`,
+    legacyWeeklyValue:    hours[memberId]?.[weekOf],
+    standardWeeklyHours:  member.standardWeeklyHours,
+    employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate },
+  });
+}
 
 // Paid holidays fall on staff pay (hours/cost unchanged — they're paid whether
 // productive or not) but zero production. Estimate each member's lost hours
@@ -438,12 +475,13 @@ function holidayHoursForMember(
   weekOfs:      string[],
   hours:        HoursMap,
   dailyHours:   DailyHoursMap,
-  holidaySet:   Set<string>
+  holidaySet:   Set<string>,
+  member:       DesignRosterEntry | PresRosterEntry,
 ): number {
   if (holidaySet.size === 0) return 0;
   let holidayHours = 0;
   for (const weekOf of weekOfs) {
-    const weekTotal = hours[memberId]?.[weekOf] ?? 0;
+    const weekTotal = resolveMemberWeekHours(memberId, weekOf, hours, dailyHours, member);
     for (let dayOffset = 0; dayOffset < 5; dayOffset++) {
       const d = new Date(weekOf + 'T12:00:00');
       d.setDate(d.getDate() + dayOffset);
@@ -481,18 +519,18 @@ function projectDept(
   for (const [memberId, member] of Object.entries(roster)) {
     if ((member as { _removed?: boolean })._removed) continue;
 
-    const memberHours = weekOfs.reduce((sum, w) => sum + (hours[memberId]?.[w] ?? 0), 0);
+    const memberHours = weekOfs.reduce((sum, w) => sum + resolveMemberWeekHours(memberId, w, hours, dailyHours, member), 0);
 
     totalHours += memberHours;
     if (!member.isManager) ratioHours += memberHours;
     if (member.ratio > 0) {
-      const tierRatio = RATIO_TARGETS[dept][member.role ?? 'specialist'];
+      const tierRatio = RATIO_TARGETS[dept][normalizeRole(member.role)];
       const effectiveRatio =
         mode === 'estimate' ? member.ratio :
         mode === 'expected' ? tierRatio :
         /* goal */             Math.min(member.ratio, tierRatio);
 
-      const holidayHours   = holidayHoursForMember(memberId, weekOfs, hours, dailyHours, holidaySet);
+      const holidayHours   = holidayHoursForMember(memberId, weekOfs, hours, dailyHours, holidaySet, member);
       const productiveHours = Math.max(0, memberHours - holidayHours);
       if (effectiveRatio > 0) {
         const memberProduction = productiveHours / effectiveRatio;
@@ -515,17 +553,21 @@ function projectDept(
       } else if (hourlyRate > 0) {
         // Hourly managers are paid for their full work week (management +
         // production combined), not just the production hours counted into
-        // memberHours above — use mgrTotalHours where it's set, falling back
-        // to that week's production hours if there's no total-hours entry.
+        // memberHours above. Fallback chain, highest to lowest priority:
+        // explicit weekly mgrTotalHours entry -> the roster's standing
+        // "Total schedule" template (standardTotalWeeklyHours, summed) ->
+        // that week's production hours if neither is set.
+        const totalTemplateWeekly = (member as DesignRosterEntry).standardTotalWeeklyHours
+          ?.reduce((s, h) => s + (h ?? 0), 0);
         const payHours = member.isManager
-          ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? hours[memberId]?.[w] ?? 0), 0)
+          ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? totalTemplateWeekly ?? resolveMemberWeekHours(memberId, w, hours, dailyHours, member)), 0)
           : memberHours;
         totalCost += payHours * hourlyRate;
         costedNames.add(member.name.trim().toLowerCase());
       }
     } else {
       const ownRateHr    = payType === 'salary' && annualSal > 0 ? annualSal / FULL_TIME_HOURS_PER_YEAR : hourlyRate;
-      const targetRateHr = WAGE_TARGETS[location as WageLocation]?.[dept]?.[member.role ?? 'specialist'] ?? ownRateHr;
+      const targetRateHr = WAGE_TARGETS[location as WageLocation]?.[dept]?.[normalizeRole(member.role)] ?? ownRateHr;
       const effectiveRateHr =
         mode === 'expected' ? targetRateHr :
         /* goal */            (ownRateHr > 0 ? Math.min(ownRateHr, targetRateHr) : targetRateHr);
@@ -873,6 +915,15 @@ export async function GET(req: NextRequest) {
 
   } catch (e) {
     console.error('KPI route error:', e);
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    // Supabase/Postgrest errors are plain {message,details,hint,code}
+    // objects, not real Error instances — String(e) on one of those gives
+    // the useless "[object Object]" (no custom toString), which the client
+    // then wraps again into "Error: [object Object]". Pull the real message
+    // off whichever shape actually threw.
+    const message =
+      e instanceof Error ? e.message :
+      typeof (e as { message?: unknown })?.message === 'string' ? (e as { message: string }).message :
+      String(e);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
