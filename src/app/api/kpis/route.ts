@@ -3,7 +3,7 @@ import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
 import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks, getGmCostForWeeks } from '@/lib/managers';
 import { RATIO_TARGETS, type RatioTier } from '@/lib/ratioTargets';
-import { WAGE_TARGETS, type WageLocation, type WageDept } from '@/lib/wageTargets';
+import type { WageDept } from '@/lib/wageTargets';
 import { resolveWeekHours } from '@/lib/scheduleResolution';
 
 const VALID_ROLES = new Set<string>(['specialist', 'senior', 'master']);
@@ -493,8 +493,6 @@ function holidayHoursForMember(
   return holidayHours;
 }
 
-const FULL_TIME_HOURS_PER_YEAR = 2080; // 52wk × 40hr, for salary→hourly-equivalent comparisons
-
 function projectDept(
   roster:        Record<string, DesignRosterEntry | PresRosterEntry>,
   hours:         HoursMap,
@@ -543,45 +541,27 @@ function projectDept(
     const hourlyRate  = (member as DesignRosterEntry).hourlyRate ?? (member as PresRosterEntry).rate ?? 0;
     const annualSal   = member.annualSalary ?? 0;
 
-    // Managers have no wage-tier target (WAGE_TARGETS only covers
-    // specialist/senior/master production rates) — their real pay (hourly or
-    // salary prorated for the month) is always included in total cost as-is.
-    if (mode === 'estimate' || member.isManager) {
-      if (payType === 'salary' && annualSal > 0) {
-        totalCost += (annualSal / 52) * weekOfs.length;
-        costedNames.add(member.name.trim().toLowerCase());
-      } else if (hourlyRate > 0) {
-        // Hourly managers are paid for their full work week (management +
-        // production combined), not just the production hours counted into
-        // memberHours above. Fallback chain, highest to lowest priority:
-        // explicit weekly mgrTotalHours entry -> the roster's standing
-        // "Total schedule" template (standardTotalWeeklyHours, summed) ->
-        // that week's production hours if neither is set.
-        const totalTemplateWeekly = (member as DesignRosterEntry).standardTotalWeeklyHours
-          ?.reduce((s, h) => s + (h ?? 0), 0);
-        const payHours = member.isManager
-          ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? totalTemplateWeekly ?? resolveMemberWeekHours(memberId, w, hours, dailyHours, member)), 0)
-          : memberHours;
-        totalCost += payHours * hourlyRate;
-        costedNames.add(member.name.trim().toLowerCase());
-      }
-    } else {
-      const ownRateHr = payType === 'salary' && annualSal > 0 ? annualSal / FULL_TIME_HOURS_PER_YEAR : hourlyRate;
-      // Goal costs a member at their real pay, full stop — only the ratio
-      // (already handled above) gets the min(own, tier) treatment. A raise
-      // or a promotion to a higher-paying tier shows up here the same way
-      // it always does: through the roster's own rate, kept current via the
-      // Rippling upload/rate sync, not by substituting in a role's wage
-      // target. Expected is the one mode that still uses the wage target —
-      // it's deliberately rate-blind, modeling "what if paid role-
-      // appropriately" regardless of this person's actual pay.
-      const effectiveRateHr =
-        mode === 'expected' ? (WAGE_TARGETS[location as WageLocation]?.[dept]?.[normalizeRole(member.role)] ?? ownRateHr) :
-        /* goal */             ownRateHr;
-      if (effectiveRateHr > 0) {
-        totalCost += memberHours * effectiveRateHr;
-        costedNames.add(member.name.trim().toLowerCase());
-      }
+    // Cost is always real pay, in every mode — only production (above) varies
+    // by mode via the ratio. A raise or a promotion to a better-paying role
+    // shows up here through the roster's own rate (kept current via the
+    // Rippling upload/rate sync), never through a substituted role target.
+    if (payType === 'salary' && annualSal > 0) {
+      totalCost += (annualSal / 52) * weekOfs.length;
+      costedNames.add(member.name.trim().toLowerCase());
+    } else if (hourlyRate > 0) {
+      // Hourly managers are paid for their full work week (management +
+      // production combined), not just the production hours counted into
+      // memberHours above. Fallback chain, highest to lowest priority:
+      // explicit weekly mgrTotalHours entry -> the roster's standing
+      // "Total schedule" template (standardTotalWeeklyHours, summed) ->
+      // that week's production hours if neither is set.
+      const totalTemplateWeekly = (member as DesignRosterEntry).standardTotalWeeklyHours
+        ?.reduce((s, h) => s + (h ?? 0), 0);
+      const payHours = member.isManager
+        ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? totalTemplateWeekly ?? resolveMemberWeekHours(memberId, w, hours, dailyHours, member)), 0)
+        : memberHours;
+      totalCost += payHours * hourlyRate;
+      costedNames.add(member.name.trim().toLowerCase());
     }
   }
 

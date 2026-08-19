@@ -605,10 +605,11 @@ export default function AllKpisPage() {
             <p>Salary manager costs are computed at annual salary ÷ 52 weeks and split across their departments.</p>
             {(timeWindow === 'est-current' || timeWindow === 'est-next') && (
               <>
-                <p><strong>Estimated</strong> = each team member&apos;s own actual pay rate × their scheduled hours, over production at their own roster ratio.</p>
-                <p><strong>Expected</strong> = the official wage target for that role/department/location × scheduled hours, over production at the role-tier ratio — ignores this specific person&apos;s actual rate. Managers use their real pay instead, since management pay isn&apos;t on the Specialist/Senior/Master scale.</p>
-                <p><strong>Goal</strong> = each team member&apos;s real pay × their scheduled hours, same as Estimated — but over production at whichever ratio is lower: their own roster ratio, or their role&apos;s tier ratio. Pay never gets swapped for a wage target here; a raise or a promotion to a better-paying tier shows up through their roster rate, same as everywhere else.</p>
-                <p>Wage targets are a fixed table per location + department + role (e.g. Utah Design senior vs Utah Fulfillment senior differ) since pay varies by all three, not just role.</p>
+                <p>Cost is always each team member&apos;s real pay (rate or salary) × their scheduled hours — the same across all three tiers below. Only the ratio used for production changes.</p>
+                <p><strong>Estimated</strong> = production at each team member&apos;s own roster ratio.</p>
+                <p><strong>Expected</strong> = production at the official ratio target for that role/department/location — ignores this specific person&apos;s own ratio.</p>
+                <p><strong>Goal</strong> = production at whichever is lower: their own roster ratio, or their role&apos;s tier ratio.</p>
+                <p>Ratio targets are a fixed table per location + department + role (e.g. Utah Design senior vs Utah Fulfillment senior differ), since production efficiency varies by all three, not just role.</p>
               </>
             )}
           </>
