@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks, getGmCostForWeeks } from '@/lib/managers';
 import { RATIO_TARGETS, type RatioTier } from '@/lib/ratioTargets';
 import { WAGE_TARGETS, type WageLocation, type WageDept } from '@/lib/wageTargets';
+import { resolveWeekHours } from '@/lib/scheduleResolution';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -424,10 +425,34 @@ function averageGaCostForMonths(
 //   ffRoster:     { [id]: { ratio, rate, name, payType?, annualSalary? } }
 //   designHours / presHours / ffHours: { [memberId]: { [isoMonday]: hours } }
 
-interface DesignRosterEntry  { ratio: number; payType?: string; hourlyRate?: number; annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[] }
-interface PresRosterEntry    { ratio: number; rate?: number;    payType?: string;    annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[] }
+interface DesignRosterEntry  { ratio: number; payType?: string; hourlyRate?: number; annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[]; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }
+interface PresRosterEntry    { ratio: number; rate?: number;    payType?: string;    annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[]; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }
 interface HoursMap           { [memberId: string]: Record<string, number> }
 interface DailyHoursMap      { [weekOfMemberKey: string]: number[] }  // "${isoMonday}-${memberId}" -> [mon..fri]
+
+// A member's hours for one week, resolved through the same fallback chain
+// the Scheduling UI uses (explicit daily overrides -> standard weekly
+// template -> legacy pre-template weekly value -> 0), rather than reading
+// the legacy weekly map directly. Most of a roster relies entirely on the
+// standard-schedule template for weeks nobody has hand-touched — reading
+// `hours[memberId]?.[weekOf]` alone (the old behavior) silently treated
+// every such week as 0 hours worked, undercounting Estimated/Expected/Goal
+// production for anyone without an explicit per-week override.
+function resolveMemberWeekHours(
+  memberId:  string,
+  weekOf:    string,
+  hours:     HoursMap,
+  dailyHours: DailyHoursMap,
+  member:    DesignRosterEntry | PresRosterEntry,
+): number {
+  return resolveWeekHours({
+    dailyMap:            dailyHours,
+    weekKey:              `${weekOf}-${memberId}`,
+    legacyWeeklyValue:    hours[memberId]?.[weekOf],
+    standardWeeklyHours:  member.standardWeeklyHours,
+    employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate },
+  });
+}
 
 // Paid holidays fall on staff pay (hours/cost unchanged — they're paid whether
 // productive or not) but zero production. Estimate each member's lost hours
@@ -438,12 +463,13 @@ function holidayHoursForMember(
   weekOfs:      string[],
   hours:        HoursMap,
   dailyHours:   DailyHoursMap,
-  holidaySet:   Set<string>
+  holidaySet:   Set<string>,
+  member:       DesignRosterEntry | PresRosterEntry,
 ): number {
   if (holidaySet.size === 0) return 0;
   let holidayHours = 0;
   for (const weekOf of weekOfs) {
-    const weekTotal = hours[memberId]?.[weekOf] ?? 0;
+    const weekTotal = resolveMemberWeekHours(memberId, weekOf, hours, dailyHours, member);
     for (let dayOffset = 0; dayOffset < 5; dayOffset++) {
       const d = new Date(weekOf + 'T12:00:00');
       d.setDate(d.getDate() + dayOffset);
@@ -481,7 +507,7 @@ function projectDept(
   for (const [memberId, member] of Object.entries(roster)) {
     if ((member as { _removed?: boolean })._removed) continue;
 
-    const memberHours = weekOfs.reduce((sum, w) => sum + (hours[memberId]?.[w] ?? 0), 0);
+    const memberHours = weekOfs.reduce((sum, w) => sum + resolveMemberWeekHours(memberId, w, hours, dailyHours, member), 0);
 
     totalHours += memberHours;
     if (!member.isManager) ratioHours += memberHours;
@@ -492,7 +518,7 @@ function projectDept(
         mode === 'expected' ? tierRatio :
         /* goal */             Math.min(member.ratio, tierRatio);
 
-      const holidayHours   = holidayHoursForMember(memberId, weekOfs, hours, dailyHours, holidaySet);
+      const holidayHours   = holidayHoursForMember(memberId, weekOfs, hours, dailyHours, holidaySet, member);
       const productiveHours = Math.max(0, memberHours - holidayHours);
       if (effectiveRatio > 0) {
         const memberProduction = productiveHours / effectiveRatio;
@@ -522,7 +548,7 @@ function projectDept(
         const totalTemplateWeekly = (member as DesignRosterEntry).standardTotalWeeklyHours
           ?.reduce((s, h) => s + (h ?? 0), 0);
         const payHours = member.isManager
-          ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? totalTemplateWeekly ?? hours[memberId]?.[w] ?? 0), 0)
+          ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? totalTemplateWeekly ?? resolveMemberWeekHours(memberId, w, hours, dailyHours, member)), 0)
           : memberHours;
         totalCost += payHours * hourlyRate;
         costedNames.add(member.name.trim().toLowerCase());
