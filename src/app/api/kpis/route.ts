@@ -566,11 +566,18 @@ function projectDept(
         costedNames.add(member.name.trim().toLowerCase());
       }
     } else {
-      const ownRateHr    = payType === 'salary' && annualSal > 0 ? annualSal / FULL_TIME_HOURS_PER_YEAR : hourlyRate;
-      const targetRateHr = WAGE_TARGETS[location as WageLocation]?.[dept]?.[normalizeRole(member.role)] ?? ownRateHr;
+      const ownRateHr = payType === 'salary' && annualSal > 0 ? annualSal / FULL_TIME_HOURS_PER_YEAR : hourlyRate;
+      // Goal costs a member at their real pay, full stop — only the ratio
+      // (already handled above) gets the min(own, tier) treatment. A raise
+      // or a promotion to a higher-paying tier shows up here the same way
+      // it always does: through the roster's own rate, kept current via the
+      // Rippling upload/rate sync, not by substituting in a role's wage
+      // target. Expected is the one mode that still uses the wage target —
+      // it's deliberately rate-blind, modeling "what if paid role-
+      // appropriately" regardless of this person's actual pay.
       const effectiveRateHr =
-        mode === 'expected' ? targetRateHr :
-        /* goal */            (ownRateHr > 0 ? Math.min(ownRateHr, targetRateHr) : targetRateHr);
+        mode === 'expected' ? (WAGE_TARGETS[location as WageLocation]?.[dept]?.[normalizeRole(member.role)] ?? ownRateHr) :
+        /* goal */             ownRateHr;
       if (effectiveRateHr > 0) {
         totalCost += memberHours * effectiveRateHr;
         costedNames.add(member.name.trim().toLowerCase());
