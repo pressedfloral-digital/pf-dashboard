@@ -6,6 +6,18 @@ import { RATIO_TARGETS, type RatioTier } from '@/lib/ratioTargets';
 import { WAGE_TARGETS, type WageLocation, type WageDept } from '@/lib/wageTargets';
 import { resolveWeekHours } from '@/lib/scheduleResolution';
 
+const VALID_ROLES = new Set<string>(['specialist', 'senior', 'master']);
+// `member.role ?? 'specialist'` alone doesn't protect against a malformed
+// role value that isn't null/undefined but also isn't a real tier — e.g. a
+// stray `0` slipping in from a bad sync or manual edit. `??` only catches
+// null/undefined, so `RATIO_TARGETS[dept][0]` silently misses, `tierRatio`
+// comes back undefined, and that person's Expected/Goal production drops to
+// zero while their cost (protected by its own `?? ownRateHr` fallback)
+// keeps counting — inflating CPO for exactly the people this happens to.
+function normalizeRole(role: unknown): RatioTier {
+  return typeof role === 'string' && VALID_ROLES.has(role) ? (role as RatioTier) : 'specialist';
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface LaborRow {
@@ -512,7 +524,7 @@ function projectDept(
     totalHours += memberHours;
     if (!member.isManager) ratioHours += memberHours;
     if (member.ratio > 0) {
-      const tierRatio = RATIO_TARGETS[dept][member.role ?? 'specialist'];
+      const tierRatio = RATIO_TARGETS[dept][normalizeRole(member.role)];
       const effectiveRatio =
         mode === 'estimate' ? member.ratio :
         mode === 'expected' ? tierRatio :
@@ -555,7 +567,7 @@ function projectDept(
       }
     } else {
       const ownRateHr    = payType === 'salary' && annualSal > 0 ? annualSal / FULL_TIME_HOURS_PER_YEAR : hourlyRate;
-      const targetRateHr = WAGE_TARGETS[location as WageLocation]?.[dept]?.[member.role ?? 'specialist'] ?? ownRateHr;
+      const targetRateHr = WAGE_TARGETS[location as WageLocation]?.[dept]?.[normalizeRole(member.role)] ?? ownRateHr;
       const effectiveRateHr =
         mode === 'expected' ? targetRateHr :
         /* goal */            (ownRateHr > 0 ? Math.min(ownRateHr, targetRateHr) : targetRateHr);
@@ -903,6 +915,15 @@ export async function GET(req: NextRequest) {
 
   } catch (e) {
     console.error('KPI route error:', e);
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    // Supabase/Postgrest errors are plain {message,details,hint,code}
+    // objects, not real Error instances — String(e) on one of those gives
+    // the useless "[object Object]" (no custom toString), which the client
+    // then wraps again into "Error: [object Object]". Pull the real message
+    // off whichever shape actually threw.
+    const message =
+      e instanceof Error ? e.message :
+      typeof (e as { message?: unknown })?.message === 'string' ? (e as { message: string }).message :
+      String(e);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
