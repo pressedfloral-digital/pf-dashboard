@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
 import { syncRosterRoles } from '@/lib/rosterRoleSync';
+import { recordRateHistory } from '@/lib/rateHistorySync';
 
 function normalizeLocation(raw: string): string {
   if (!raw) return '';
@@ -71,15 +72,21 @@ export async function POST(req: NextRequest) {
       .upsert(records, { onConflict: 'full_name,location,department' });
     if (error) throw error;
 
-    // Propagate any new/changed roles into the live Scheduling rosters so
-    // Expected/Goal projections in /api/kpis stay current automatically.
+    // Propagate any new/changed roles and pay rates into the live Scheduling
+    // rosters so Expected/Goal projections and estimated cost/CPO stay
+    // current automatically.
     const { updated: rosterRoleUpdates } = await syncRosterRoles(supabase);
+
+    // Record any pay change with today's date so past weeks that estimate
+    // cost from a rate keep using the rate that was actually in effect then.
+    const { inserted: rateHistoryInserted } = await recordRateHistory(supabase, records);
 
     return NextResponse.json({
       ok: true,
       inserted: records.length,
       employees: records.map(r => ({ name: r.full_name, location: r.location, department: r.department, title: r.title, role: r.role })),
       rosterRoleUpdates,
+      rateHistoryInserted,
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });

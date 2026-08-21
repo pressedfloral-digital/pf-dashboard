@@ -1937,8 +1937,8 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
       .map(m => {
         const roster = presRoster[m.id];
         const hours  = presHours[m.id] ?? {};
-        return { ...m, ratio: roster?.ratio ?? m.ratio, rate: roster?.rate > 0 ? roster.rate : (employeeRates[roster?.name ?? m.name]?.hourlyRate ?? m.rate), hours, defaultHrs: m.hours[0] ?? 0 };
-      });
+        return { ...m, ratio: roster?.ratio ?? m.ratio, rate: roster?.rate > 0 ? roster.rate : (employeeRates[roster?.name ?? m.name]?.hourlyRate ?? m.rate), hours, defaultHrs: m.hours[0] ?? 0, role: (roster as {role?: PresTeamMember['role']})?.role ?? m.role, isManager: (roster as {isManager?: boolean})?.isManager ?? m.isManager };
+      }) as (Omit<PresTeamMember, 'hours'> & { hours: Record<string, number>; defaultHrs: number })[];
     // Add any custom members stored in presRoster not in defaultTeam
     const defaultIds = new Set(defaultTeam.map(m => m.id));
     Object.entries(presRoster).forEach(([id, r]) => {
@@ -1949,6 +1949,8 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
           annualSalary: r.annualSalary ?? 0,
           hours: presHours[id] ?? {},
           defaultHrs: 0,
+          role: (r as {role?: PresTeamMember['role']}).role,
+          isManager: (r as {isManager?: boolean}).isManager,
         } as PresTeamMember & { hours: Record<string, number>; defaultHrs: number });
       }
     });
@@ -2848,14 +2850,16 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
         const hours  = ffHours[m.id] ?? {};
         return { ...m, ratio: roster?.ratio ?? m.ratio, rate: roster?.rate > 0 ? roster.rate : (employeeRates[roster?.name ?? m.name]?.hourlyRate ?? m.rate), name: roster?.name ?? m.name,
           payType: roster?.payType ?? 'hourly' as const,
-          annualSalary: roster?.annualSalary ?? 0, hours, defaultHrs: m.hours[0] ?? 0 };
+          annualSalary: roster?.annualSalary ?? 0, hours, defaultHrs: m.hours[0] ?? 0,
+          role: (roster as {role?: FfTeamMember['role']})?.role ?? m.role, isManager: (roster as {isManager?: boolean})?.isManager ?? m.isManager };
       });
     const defaultIds = new Set(defaultTeam.map(m => m.id));
     Object.entries(ffRoster).forEach(([id, r]) => {
       if (!defaultIds.has(id) && (includeRemoved || !r._removed)) {
         base.push({ id, name: r.name ?? 'New Member', ratio: r.ratio ?? 1.0, pay: 'hourly' as const,
           payType: r.payType ?? 'hourly' as const, annualSalary: r.annualSalary ?? 0,
-        rate: r.rate > 0 ? r.rate : (employeeRates[r.name]?.hourlyRate ?? 0), hours: ffHours[id] ?? {}, defaultHrs: 0 });
+        rate: r.rate > 0 ? r.rate : (employeeRates[r.name]?.hourlyRate ?? 0), hours: ffHours[id] ?? {}, defaultHrs: 0,
+        role: (r as {role?: FfTeamMember['role']}).role, isManager: (r as {isManager?: boolean}).isManager });
       }
     });
     return base;
@@ -4062,12 +4066,12 @@ export function SchedulePage({
         const persisted = settings.designRoster[d.id];
         if (!persisted) return d;
         const rateFromRippling = employeeRates[persisted.name ?? d.name]?.hourlyRate ?? 0;
-        return { ...d, name: persisted.name ?? d.name, ratio: persisted.ratio, payType: persisted.payType, hourlyRate: persisted.hourlyRate > 0 ? persisted.hourlyRate : rateFromRippling, annualSalary: persisted.annualSalary };
+        return { ...d, name: persisted.name ?? d.name, ratio: persisted.ratio, payType: persisted.payType, hourlyRate: persisted.hourlyRate > 0 ? persisted.hourlyRate : rateFromRippling, annualSalary: persisted.annualSalary, role: (persisted as {role?: Designer['role']}).role ?? d.role, isManager: (persisted as {isManager?: boolean}).isManager ?? d.isManager };
       });
     const defaultIds = new Set(defaultDesigners.map(d => d.id));
     Object.entries(settings.designRoster).forEach(([id, r]) => {
       if (!defaultIds.has(id) && (includeRemoved || !r._removed)) {
-        base.push({ id, name: r.name ?? 'New Designer', ratio: r.ratio ?? 1.5, payType: r.payType ?? 'hourly', hourlyRate: r.hourlyRate ?? 0, annualSalary: r.annualSalary ?? 0 });
+        base.push({ id, name: r.name ?? 'New Designer', ratio: r.ratio ?? 1.5, payType: r.payType ?? 'hourly', hourlyRate: r.hourlyRate ?? 0, annualSalary: r.annualSalary ?? 0, role: (r as {role?: Designer['role']}).role, isManager: (r as {isManager?: boolean}).isManager });
       }
     });
     return base;
@@ -4229,6 +4233,7 @@ export function SchedulePage({
     const existing = currentRoster[id] ?? designers.find(d => d.id === id) ?? {};
     if (field === 'name')    currentRoster[id] = { ...existing, name: value } as typeof currentRoster[string];
     else if (field === 'payType') currentRoster[id] = { ...existing, payType: value as PayType } as typeof currentRoster[string];
+    else if (field === 'role') currentRoster[id] = { ...existing, role: value as Designer['role'] } as typeof currentRoster[string];
     else currentRoster[id] = { ...existing, [field]: parseFloat(value) || 0 } as typeof currentRoster[string];
     update('designRoster', currentRoster);
   }

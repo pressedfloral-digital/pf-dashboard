@@ -10,7 +10,7 @@ export interface ActualRow {
   location:      string;
   actual_hours:  number;
   actual_orders: number;
-  hours_source?:  string;
+  hours_source?: string;
   orders_source?: string;
 }
 
@@ -27,6 +27,16 @@ export interface SalaryManager {
   location:      string;
   departments:   string[];  // depts to split across equally
   annualSalary:  number;
+}
+
+export interface RateHistoryRow {
+  full_name:      string;
+  location:       string;
+  department:     string;
+  pay_type:       'hourly' | 'salary';
+  hourly_rate:    number;
+  annual_salary:  number;
+  effective_date: string;
 }
 
 export interface EnrichedActual extends ActualRow {
@@ -55,15 +65,17 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
   const [actuals,     setActuals]     = useState<ActualRow[]>([]);
   const [laborRows,   setLaborRows]   = useState<WeeklyLaborRow[]>([]);
   const [salaryMgrs,  setSalaryMgrs]  = useState<SalaryManager[]>(SALARY_MANAGERS.filter(m => m.location === location));
+  const [rateHistory, setRateHistory] = useState<RateHistoryRow[]>([]);
   const [loading,     setLoading]     = useState(true);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [actualsRes, laborRes, empRes] = await Promise.all([
+      const [actualsRes, laborRes, empRes, rateHistoryRes] = await Promise.all([
         fetch(`/api/actuals?location=${location}&type=team&weeks=100`),
         fetch(`/api/admin/weekly-labor-upload?location=${location}&from=2025-12-01&to=${new Date().toISOString().split('T')[0]}`),
         fetch(`/api/admin/employees-upload?location=${location}`),
+        fetch(`/api/admin/rate-history?location=${location}`),
       ]);
 
       const actualsData = await actualsRes.json() as { teamActuals?: ActualRow[] };
@@ -71,6 +83,9 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
 
       const laborData = await laborRes.json() as { rows?: WeeklyLaborRow[] };
       setLaborRows(laborData.rows ?? []);
+
+      const rateHistoryData = await rateHistoryRes.json() as { history?: RateHistoryRow[] };
+      setRateHistory(rateHistoryData.history ?? []);
 
       // Load salary managers from employee directory
       const empData = await empRes.json() as { employees?: { full_name: string; location: string; department: string; pay_type: string; annual_salary: number }[] };
@@ -92,6 +107,21 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
     } catch {}
     setLoading(false);
   }, [location]);
+
+  // Looks up what someone's pay was as of a given week, instead of whatever
+  // it currently is — so a later rate change doesn't retroactively change a
+  // past week's estimated cost. Falls back to null (caller uses the current
+  // value) if there's no history row on or before that week.
+  const resolveRate = useCallback((name: string, department: string, weekOf: string): { payType: 'hourly' | 'salary'; hourlyRate: number; annualSalary: number } | null => {
+    const rows = rateHistory.filter(r =>
+      r.department === department &&
+      r.full_name.trim().toLowerCase() === name.trim().toLowerCase() &&
+      r.effective_date <= weekOf
+    );
+    if (rows.length === 0) return null;
+    const best = rows.reduce((a, b) => (b.effective_date > a.effective_date ? b : a));
+    return { payType: best.pay_type, hourlyRate: best.hourly_rate, annualSalary: best.annual_salary };
+  }, [rateHistory]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -127,9 +157,9 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
     ].filter(mgr => mgr.location === location);
 
     for (const mgr of applicableManagers) {
-      const weeklyPay = mgr.annualSalary / 52;
-      const perDept   = weeklyPay / mgr.departments.length;
       for (const dept of mgr.departments) {
+        const annualSalary = resolveRate(mgr.name, dept, weekOf)?.annualSalary ?? mgr.annualSalary;
+        const perDept = (annualSalary / 52) / mgr.departments.length;
         const existing = costs.find(c => c.week_of === weekOf && c.department === dept);
         if (existing) {
           existing.totalCost += perDept;
@@ -204,6 +234,8 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
     actuals,
     laborRows,
     salaryMgrs,
+    rateHistory,
+    getRateForWeek: resolveRate,
     enrichedActuals,
     getWeekCosts,
     getWeekCPO,
