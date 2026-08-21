@@ -40,6 +40,13 @@ function getMonthKey(iso: string): string {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 }
 
+// employee_rate_history/rippling_employees department casing — Title Case,
+// distinct from the lowercase-except-Resin convention team_member_week_actuals
+// uses (see `actualsDept` below).
+const RIPPLING_DEPT: Record<HistoricalsSectionProps['department'], string> = {
+  design: 'Design', preservation: 'Preservation', fulfillment: 'Fulfillment', resin: 'Resin',
+};
+
 function getAllWeeks(): string[] {
   const start = new Date('2025-12-29T12:00:00');
   const thisMonday = getMondayDate(0);
@@ -53,11 +60,12 @@ function getAllWeeks(): string[] {
 }
 
 export function HistoricalsSection({ department, location, members, ordersLabel, onRatioUpdate, excludeFromCPONames = [], presActuals = {}, onReceivedSaved }: HistoricalsSectionProps) {
-  const { enrichedActuals, loading, refresh, getWeekCosts } = useActualsWithPayroll(location);
+  const { enrichedActuals, loading, refresh, getWeekCosts, getRateForWeek } = useActualsWithPayroll(location);
   // team_member_week_actuals stores resin rows as 'Resin' (capitalized) — the
   // other three departments store lowercase. This is the one place that
   // casing difference needs to be bridged.
   const actualsDept = department === 'resin' ? 'Resin' : department;
+  const ripplingDept = RIPPLING_DEPT[department];
   const [localEdits, setLocalEdits] = useState<Record<string, Record<string, { hours: number; orders: number }>>>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [managerHours, setManagerHours] = useState<Record<string, number>>({});
@@ -133,12 +141,15 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
     return deptActuals.find(r => r.week_of === weekOf && r.member_name === name);
   }
 
-  function getEntry(weekOf: string, name: string): { hours: number; orders: number; cost: number; isActual: boolean } {
+  function getEntry(weekOf: string, name: string): { hours: number; orders: number; cost: number; isActual: boolean; ordersSource?: string } {
     const edit = localEdits[weekOf]?.[name];
     const actual = getActual(weekOf, name);
     const hours  = edit?.hours  ?? actual?.actual_hours  ?? 0;
     const orders = edit?.orders ?? actual?.actual_orders ?? 0;
     const isActual = !edit && (actual?.isActual ?? false);
+    // A pending local edit means the user is actively typing over this cell —
+    // treat it as manual immediately rather than waiting on the save round-trip.
+    const ordersSource = edit ? 'manual' : actual?.orders_source;
     // Cost: use enriched cost if actual, else estimate from rate
     let cost = 0;
     if (isActual && actual) {
@@ -146,15 +157,22 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
     } else {
       const m = members.find(m => m.name === name);
       if (m) {
-        if (m.payType === 'salary') cost = m.annualSalary / 52;
-        else cost = hours * m.hourlyRate;
+        // Use the rate that was actually in effect for this week, not
+        // whatever the roster currently shows — otherwise a later rate
+        // change would retroactively change past estimated weeks.
+        const hist = getRateForWeek(name, ripplingDept, weekOf);
+        const payType      = hist?.payType      ?? m.payType;
+        const hourlyRate   = hist?.hourlyRate   ?? m.hourlyRate;
+        const annualSalary = hist?.annualSalary ?? m.annualSalary;
+        if (payType === 'salary') cost = annualSalary / 52;
+        else cost = hours * hourlyRate;
         if (m.isManager) {
           const extraHrs = managerHours[`${weekOf}:${name}`] ?? 0;
-          if (m.payType === 'hourly') cost = (hours + extraHrs) * m.hourlyRate;
+          if (payType === 'hourly') cost = (hours + extraHrs) * hourlyRate;
         }
       }
     }
-    return { hours, orders, cost, isActual };
+    return { hours, orders, cost, isActual, ordersSource };
   }
 
   function handleEdit(weekOf: string, name: string, field: 'hours' | 'orders', val: number) {
@@ -228,6 +246,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
             <h3 className="text-sm font-semibold text-slate-700">All weeks — {department} · {location}</h3>
             <p className="text-xs text-slate-400 mt-0.5">
               Oldest → newest. <span className="text-amber-600 font-medium">Amber</span> = missing actuals.{' '}
+              <span className="text-sky-600 font-medium">Blue orders</span> = auto-synced from the production app, still editable.{' '}
               <span className="text-green-600 font-medium">Green CPO</span> = from Rippling payroll.{' '}
               <span className="text-amber-600 font-medium">Amber CPO</span> = estimated from rate.
             </p>
@@ -292,9 +311,13 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                             <input type="number" min="0" step="0.01"
                               value={e.orders > 0 ? e.orders : ''}
                               placeholder=""
+                              title={e.ordersSource === 'auto' ? 'Auto-synced from production app — edit to override' : undefined}
                               onChange={ev => handleEdit(w, name, 'orders', parseFloat(ev.target.value) || 0)}
-                              className={`hist-input w-full px-2 py-1 text-center text-[11px] font-semibold bg-transparent border-none outline-none focus:bg-indigo-50 ${isMissing && !hasData ? 'text-amber-400' : 'text-indigo-700'}`}
+                              className={`hist-input w-full px-2 py-1 text-center text-[11px] font-semibold bg-transparent border-none outline-none focus:bg-indigo-50 ${isMissing && !hasData ? 'text-amber-400' : e.ordersSource === 'auto' ? 'text-sky-600' : 'text-indigo-700'}`}
                             />
+                            {e.ordersSource === 'auto' && (
+                              <div className="text-[8px] leading-none text-sky-500 text-center -mt-0.5" title="Auto-synced from production app">synced</div>
+                            )}
                             <input type="number" min="0" step="0.5"
                               value={e.hours > 0 ? e.hours : ''}
                               placeholder=""

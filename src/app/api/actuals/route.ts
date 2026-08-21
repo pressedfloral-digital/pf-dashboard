@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
     if (type === 'team' || type === 'all') {
       const { data, error } = await supabase
         .from('team_member_week_actuals')
-        .select('department, week_of, member_name, actual_hours, actual_orders, hours_source')
+        .select('department, week_of, member_name, actual_hours, actual_orders, hours_source, orders_source')
         .eq('location', location)
         .gte('week_of', sinceIso)
         .order('week_of', { ascending: true });
@@ -100,6 +100,11 @@ export async function POST(req: NextRequest) {
           member_name: memberName,
           actual_hours: actualHours,
           actual_orders: actualOrders,
+          // A manager typing a number here always locks it — the automated
+          // production sync (src/app/api/cron/sync-production-actuals) skips
+          // any row not marked 'auto', so this edit will never be silently
+          // overwritten by the next sync.
+          orders_source: 'manual',
           entered_by: userId,
           updated_at: new Date().toISOString(),
         }, { onConflict: 'location,department,week_of,member_name' });
