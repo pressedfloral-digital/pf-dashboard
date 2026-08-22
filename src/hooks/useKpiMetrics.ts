@@ -32,7 +32,7 @@ export function useKpiMetrics(windowsParam = DEFAULT_WINDOWS): KpiState {
     setLoading(true);
     setError(null);
     try {
-      const res  = await fetch(`/api/kpis?windows=${encodeURIComponent(windowsParam)}`);
+      const res  = await fetch(`/api/kpis?windows=${encodeURIComponent(windowsParam)}`, { cache: 'no-store' });
       const data = await res.json() as {
         ok:        boolean;
         windows:   WindowResult[];

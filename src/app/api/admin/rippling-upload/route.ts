@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
+import { fetchAllRows } from '@/lib/fetchAllRows';
 
 // ── POST /api/admin/rippling-upload ───────────────────────────────────────────
 // Accepts parsed payroll rows from the client (already parsed from XLSX there)
@@ -117,21 +118,24 @@ export async function GET(req: NextRequest) {
   const to         = req.nextUrl.searchParams.get('to');
 
   try {
-    let query = supabase
-      .from('rippling_payroll')
-      .select('full_name, department, location, gross_pay, bonus_amount, check_date, title');
-
-    if (location)   query = query.eq('location', location);
-    if (department) query = query.eq('department', department);
-    if (from)       query = query.gte('check_date', from);
-    if (to)         query = query.lte('check_date', to);
-
-    const { data, error } = await query.order('check_date', { ascending: true });
-    if (error) throw error;
+    // fetchAllRows — same reasoning as weekly-labor-upload/payroll-upload:
+    // an unranged .select() silently truncates past Postgrest's 1000-row
+    // default with no error, and an unfiltered call to this route has
+    // nothing bounding it. See src/lib/fetchAllRows.ts.
+    const data = await fetchAllRows<{ full_name: string; department: string; location: string; gross_pay: number; bonus_amount: number | null; check_date: string; title: string | null }>((rangeFrom, rangeTo) => {
+      let query = supabase
+        .from('rippling_payroll')
+        .select('full_name, department, location, gross_pay, bonus_amount, check_date, title');
+      if (location)   query = query.eq('location', location);
+      if (department) query = query.eq('department', department);
+      if (from)       query = query.gte('check_date', from);
+      if (to)         query = query.lte('check_date', to);
+      return query.order('check_date', { ascending: true }).range(rangeFrom, rangeTo);
+    });
 
     // Aggregate by person
     const byPerson: Record<string, { fullName: string; totalGross: number; totalBonus: number; checkCount: number; title: string }> = {};
-    for (const row of (data ?? [])) {
+    for (const row of data) {
       if (!byPerson[row.full_name]) {
         byPerson[row.full_name] = { fullName: row.full_name, totalGross: 0, totalBonus: 0, checkCount: 0, title: row.title ?? '' };
       }

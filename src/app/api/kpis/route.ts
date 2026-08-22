@@ -5,6 +5,14 @@ import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks, getGmCostForWeeks } from
 import { RATIO_TARGETS, type RatioTier } from '@/lib/ratioTargets';
 import type { WageDept } from '@/lib/wageTargets';
 import { resolveWeekHours } from '@/lib/scheduleResolution';
+import { fetchAllRows } from '@/lib/fetchAllRows';
+
+// MTD/QTD/YTD figures need to reflect whatever's in weekly_labor_cost right
+// now — a payroll upload landing mid-month should show up on next load, not
+// wait for a deploy or a cache TTL. Force dynamic + no-store so nothing
+// (Next's route cache, Vercel's edge, or the browser) ever serves a stale
+// KPI snapshot.
+export const dynamic = 'force-dynamic';
 
 const VALID_ROLES = new Set<string>(['specialist', 'senior', 'master']);
 // `member.role ?? 'specialist'` alone doesn't protect against a malformed
@@ -745,27 +753,36 @@ export async function GET(req: NextRequest) {
     // fetched here (not just inside the est-current/est-next block below) so
     // the actuals windows can also identify which team_member_week_actuals
     // rows belong to a manager, for the ratio's manager-hours exclusion.
-    const [laborRes, actualsRes, rosterRes] = await Promise.all([
-      supabase
-        .from('weekly_labor_cost')
-        .select('employee,location,department,week_of,gross_pay')
-        .gte('week_of', earliestDate),
-      supabase
-        .from('team_member_week_actuals')
-        .select('week_of,member_name,department,location,actual_hours,actual_orders')
-        .gte('week_of', earliestDate),
+    //
+    // fetchAllRows, not a plain .select() — weekly_labor_cost and
+    // team_member_week_actuals are well past (or, for actuals, closing in
+    // on) Postgrest's silent 1000-row cap, and earliestDate here can span
+    // up to a year. A plain unranged .select() was silently dropping
+    // whichever rows landed past row 1000 (arbitrary order, no error), which
+    // is what made Georgia Design's MTD CPO read a third of its real value.
+    const [laborRows, actualRows, rosterRes] = await Promise.all([
+      fetchAllRows<LaborRow>((from, to) =>
+        supabase
+          .from('weekly_labor_cost')
+          .select('employee,location,department,week_of,gross_pay')
+          .gte('week_of', earliestDate)
+          .range(from, to)
+      ),
+      fetchAllRows<ActualRow>((from, to) =>
+        supabase
+          .from('team_member_week_actuals')
+          .select('week_of,member_name,department,location,actual_hours,actual_orders')
+          .gte('week_of', earliestDate)
+          .range(from, to)
+      ),
       supabase
         .from('schedule_settings')
         .select('location,key,value')
         .in('key', ['designRoster', 'presRoster', 'ffRoster']),
     ]);
 
-    if (laborRes.error)   throw laborRes.error;
-    if (actualsRes.error) throw actualsRes.error;
     if (rosterRes.error)  throw rosterRes.error;
 
-    const laborRows:  LaborRow[]  = laborRes.data  ?? [];
-    const actualRows: ActualRow[] = actualsRes.data ?? [];
     const managerNames = buildManagerNameSet(rosterRes.data ?? []);
 
     const results: WindowResult[] = [];
@@ -898,7 +915,7 @@ export async function GET(req: NextRequest) {
       windows:   results,
       estimated,
       meta: { generatedAt: new Date().toISOString(), windowCount: results.length },
-    });
+    }, { headers: { 'Cache-Control': 'no-store, must-revalidate' } });
 
   } catch (e) {
     console.error('KPI route error:', e);

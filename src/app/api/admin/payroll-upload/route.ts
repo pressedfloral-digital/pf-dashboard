@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
+import { fetchAllRows } from '@/lib/fetchAllRows';
 
 function normalizeLocation(raw: string): string {
   if (!raw) return '';
@@ -145,18 +146,22 @@ export async function GET(req: NextRequest) {
   const to         = req.nextUrl.searchParams.get('to');
 
   try {
-    let query = supabase
-      .from('rippling_payroll')
-      .select('full_name,department,location,gross_pay,period_start,period_end,pay_type,annual_salary');
-
-    if (location)   query = query.eq('location', location);
-    if (department) query = query.eq('department', department);
-    // Match pay periods that overlap with the requested date range
-    if (from) query = query.lte('period_start', to ?? from);
-    if (to)   query = query.gte('period_end',   from ?? to);
-
-    const { data, error } = await query;
-    if (error) throw error;
+    // fetchAllRows — an unfiltered call to this route (no location/department/
+    // from/to) has nothing bounding it, and an unranged .select() silently
+    // truncates at Postgrest's 1000-row default once the table crosses it.
+    // No caller does that today, but there's no defense if one ever does.
+    // See src/lib/fetchAllRows.ts.
+    const data = await fetchAllRows<{ full_name: string; department: string; location: string; gross_pay: number; period_start: string; period_end: string; pay_type: string; annual_salary: number }>((from_, to_) => {
+      let query = supabase
+        .from('rippling_payroll')
+        .select('full_name,department,location,gross_pay,period_start,period_end,pay_type,annual_salary');
+      if (location)   query = query.eq('location', location);
+      if (department) query = query.eq('department', department);
+      // Match pay periods that overlap with the requested date range
+      if (from) query = query.lte('period_start', to ?? from);
+      if (to)   query = query.gte('period_end',   from ?? to);
+      return query.range(from_, to_);
+    });
 
     // For each pay record, calculate what fraction of pay falls in the requested range
     // using period overlap: days_overlap / period_length * gross_pay
@@ -165,7 +170,7 @@ export async function GET(req: NextRequest) {
 
     const byPerson: Record<string, { fullName: string; totalGross: number; checkCount: number }> = {};
 
-    for (const row of (data ?? [])) {
+    for (const row of data) {
       const pStart = new Date(row.period_start + 'T00:00:00');
       const pEnd   = new Date(row.period_end   + 'T23:59:59');
       const periodDays = Math.max(1, (pEnd.getTime() - pStart.getTime()) / 86400000);
