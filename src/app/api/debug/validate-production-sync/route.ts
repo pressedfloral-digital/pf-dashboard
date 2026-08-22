@@ -44,7 +44,10 @@ export async function GET(req: NextRequest) {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const numWeeks = parseInt(req.nextUrl.searchParams.get('weeks') ?? '8', 10);
+  // Capped — an unranged .select() below silently truncates at Postgrest's
+  // 1000-row default with no error, and an unbounded `weeks` value against
+  // every location/department is exactly the kind of query that hits it.
+  const numWeeks = Math.min(parseInt(req.nextUrl.searchParams.get('weeks') ?? '8', 10), 52);
   const today = new Date();
   const thisMonday = mondayOf(today);
 

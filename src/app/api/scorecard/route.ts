@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
 import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks } from '@/lib/managers';
+import { fetchAllRows } from '@/lib/fetchAllRows';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -121,24 +122,29 @@ export async function GET(req: NextRequest) {
 
   try {
     // ── Fetch labor cost data ─────────────────────────────────────────────────
-    const laborQuery = supabase
-      .from('weekly_labor_cost')
-      .select('employee,location,department,week_of,gross_pay')
-      .gte('week_of', fromDate);
-    if (locationParam !== 'both') laborQuery.eq('location', locationParam);
-    const { data: laborData, error: laborError } = await laborQuery;
-    if (laborError) throw laborError;
-    const laborRows: LaborRow[] = laborData ?? [];
+    // fetchAllRows, not a plain .select() — weekly_labor_cost/
+    // team_member_week_actuals are past (or closing in on) Postgrest's
+    // silent 1000-row cap, and this route's default 13-month, both-locations
+    // window is exactly the kind of broad query that cap truncates without
+    // any error. See src/lib/fetchAllRows.ts.
+    const laborRows = await fetchAllRows<LaborRow>((from, to) => {
+      let q = supabase
+        .from('weekly_labor_cost')
+        .select('employee,location,department,week_of,gross_pay')
+        .gte('week_of', fromDate);
+      if (locationParam !== 'both') q = q.eq('location', locationParam);
+      return q.range(from, to);
+    });
 
     // ── Fetch team actuals (hours + production) ───────────────────────────────
-    const actualsQuery = supabase
-      .from('team_member_week_actuals')
-      .select('week_of,member_name,department,location,actual_hours,actual_orders')
-      .gte('week_of', fromDate);
-    if (locationParam !== 'both') actualsQuery.eq('location', locationParam);
-    const { data: actualsData, error: actualsError } = await actualsQuery;
-    if (actualsError) throw actualsError;
-    const actualRows: ActualRow[] = actualsData ?? [];
+    const actualRows = await fetchAllRows<ActualRow>((from, to) => {
+      let q = supabase
+        .from('team_member_week_actuals')
+        .select('week_of,member_name,department,location,actual_hours,actual_orders')
+        .gte('week_of', fromDate);
+      if (locationParam !== 'both') q = q.eq('location', locationParam);
+      return q.range(from, to);
+    });
 
     // ── Fetch goals ───────────────────────────────────────────────────────────
     const { data: goalsData, error: goalsError } = await supabase
