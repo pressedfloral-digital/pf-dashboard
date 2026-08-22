@@ -531,16 +531,16 @@ function projectDept(
     if (!member.isManager) ratioHours += memberHours;
     if (member.ratio > 0) {
       const tierRatio = RATIO_TARGETS[dept][normalizeRole(member.role)];
-      // A manager's scheduled hours mix real production with supervisory
-      // time, so substituting the tier target (meant for a dedicated
-      // individual contributor at peak pace) inflates their hypothetical
-      // output well past anything realistic — a manager with 24h/week on
-      // the schedule at a 0.30h/order master target implies ~80 orders/week
-      // from them alone. Managers always use their own roster ratio here,
-      // in every mode, same as Estimate already does for everyone — their
-      // production still counts toward CPO's order total (unlike the ratio
-      // metric, which excludes them entirely via ratioProduction below).
-      const effectiveRatio = member.isManager ? member.ratio :
+      // A manager's own scheduled *production* hours (memberHours below —
+      // never their full mgrTotalHours work week, which only feeds cost)
+      // are expected to run at their role's tier pace same as anyone
+      // else's — Expected/Goal answer "at the official target ratio, how
+      // much would these hours produce," and that framing applies whether
+      // or not the person is a manager. Only the ratio *metric* itself
+      // (ratioHours/ratioProduction below) excludes managers, since judging
+      // their efficiency isn't the point — their hours/production still
+      // count fully toward CPO's totals in every mode.
+      const effectiveRatio =
         mode === 'estimate' ? member.ratio :
         mode === 'expected' ? tierRatio :
         /* goal */             Math.min(member.ratio, tierRatio);
