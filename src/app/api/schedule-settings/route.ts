@@ -1,6 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
+import { syncRosterRoles } from '@/lib/rosterRoleSync';
+
+// A roster save posts the *entire* roster object as it exists in the
+// saving browser tab's memory — if that tab has been open since before a
+// Rippling-sourced role/isManager/rate sync landed, the save silently
+// reverts those fields back to whatever the tab last knew (this is how a
+// manager's isManager flag can vanish just by someone adding an unrelated
+// team member from a stale tab). Re-running the sync right after any
+// roster-key save makes it self-healing regardless of what the client
+// posted, instead of only correcting on the next employees upload.
+const ROSTER_KEYS = new Set(['designRoster', 'presRoster', 'ffRoster', 'resinRoster']);
 
 // GET /api/schedule-settings?location=Utah
 // Returns all settings for a location as a flat object { key: value }
@@ -45,5 +56,10 @@ export async function POST(req: NextRequest) {
     );
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  if (ROSTER_KEYS.has(key)) {
+    try { await syncRosterRoles(supabase); } catch { /* best-effort — the save itself already succeeded */ }
+  }
+
   return NextResponse.json({ ok: true });
 }
