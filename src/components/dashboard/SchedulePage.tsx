@@ -2641,21 +2641,23 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           Bouquets received est.
                         </td>
                         {windowWeeks.map(w => {
-                          const weekIso = isoMonday(w);
-                          const _we = weeklyEstimates?.[weekIso]; const designEstimate = _we !== undefined ? (location === 'Utah' ? _we.ut : _we.ga) : null;
-                          const isUnderstaffed = designEstimate !== null && weeklyTotals[w] < designEstimate;
+                          // Same manual-override → last-year×multiplier → avgIntake
+                          // fallback chain as the Staffing Check tab's `demand` and
+                          // Design's Queue & Turnaround — reading the raw
+                          // weeklyEstimates override map here (as this row used to)
+                          // meant every week without an explicit manual override
+                          // showed "—", even though those other tabs already had a
+                          // perfectly good projected number for the same week.
+                          const designEstimate = bouquetsReceivedByWeek[w];
+                          const isUnderstaffed = weeklyTotals[w] < designEstimate;
                           return (
                             <td key={w} className="px-2 py-1.5 text-center">
-                              {designEstimate !== null ? (
-                                <div className="flex flex-col items-center gap-0.5">
-                                  <span className="text-[11px] font-medium text-indigo-600">{designEstimate}</span>
-                                  <div className={`text-[10px] font-medium ${!isUnderstaffed ? 'text-green-600' : 'text-red-500'}`}>
-                                    {!isUnderstaffed ? '✓' : `${round2(designEstimate - weeklyTotals[w])} short`}
-                                  </div>
+                              <div className="flex flex-col items-center gap-0.5">
+                                <span className="text-[11px] font-medium text-indigo-600">{designEstimate}</span>
+                                <div className={`text-[10px] font-medium ${!isUnderstaffed ? 'text-green-600' : 'text-red-500'}`}>
+                                  {!isUnderstaffed ? '✓' : `${round2(designEstimate - weeklyTotals[w])} short`}
                                 </div>
-                              ) : (
-                                <span className="text-[10px] text-slate-300">—</span>
-                              )}
+                              </div>
                             </td>
                           );
                         })}
