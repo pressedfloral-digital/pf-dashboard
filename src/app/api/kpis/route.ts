@@ -14,6 +14,11 @@ import { fetchAllRows } from '@/lib/fetchAllRows';
 // KPI snapshot.
 export const dynamic = 'force-dynamic';
 
+// Same pattern rosterRoleSync.ts uses to infer manager status from a
+// Rippling title — duplicated locally rather than imported since that
+// module is client-upload-focused and this is a read-only projection.
+const MANAGER_TITLE_RE = /manager|head of|director/i;
+
 const VALID_ROLES = new Set<string>(['specialist', 'senior', 'master']);
 // `member.role ?? 'specialist'` alone doesn't protect against a malformed
 // role value that isn't null/undefined but also isn't a real tier — e.g. a
@@ -510,7 +515,8 @@ function projectDept(
   dept:          WageDept,
   holidaySet:    Set<string>,
   mode:          'estimate' | 'expected' | 'goal',
-  mgrTotalHours: HoursMap
+  mgrTotalHours: HoursMap,
+  managerHomeDept: Map<string, Set<string>>
 ): { hours: number; production: number; laborCost: number; ratioHours: number; ratioProduction: number } {
   let totalHours = 0, totalProduction = 0, totalCost = 0;
   // Estimated ratio excludes managers entirely — neither their hours nor
@@ -558,11 +564,25 @@ function projectDept(
     const hourlyRate  = (member as DesignRosterEntry).hourlyRate ?? (member as PresRosterEntry).rate ?? 0;
     const annualSal   = member.annualSalary ?? 0;
 
+    // A manager can be scheduled on more than one department's roster to
+    // flex-help (their hours/production above still count fully there) —
+    // but their pay belongs only to the department Rippling actually has
+    // them under. `homeDepts` is undefined when Rippling has no manager-
+    // titled record for this person at all (nothing to compare against, so
+    // don't risk under-counting someone not yet uploaded); it's a non-empty
+    // set that excludes `dept` when we positively know they manage
+    // elsewhere — that's the only case cost gets skipped here.
+    const homeDepts = managerHomeDept.get(`${location}|${member.name.trim().toLowerCase()}`);
+    const managesElsewhere = !!member.isManager && homeDepts !== undefined && !homeDepts.has(dept);
+
     // Cost is always real pay, in every mode — only production (above) varies
     // by mode via the ratio. A raise or a promotion to a better-paying role
     // shows up here through the roster's own rate (kept current via the
     // Rippling upload/rate sync), never through a substituted role target.
-    if (payType === 'salary' && annualSal > 0) {
+    if (managesElsewhere) {
+      // Skip — their full pay already lands in their real department's
+      // projectDept call instead.
+    } else if (payType === 'salary' && annualSal > 0) {
       totalCost += (annualSal / 52) * weekOfs.length;
       costedNames.add(member.name.trim().toLowerCase());
     } else if (hourlyRate > 0) {
@@ -600,10 +620,11 @@ function buildRatioVariant(
   utahGaCost:    number,
   georgiaGaCost: number,
   paidHolidays:  string[],
-  mode:          'estimate' | 'expected' | 'goal'
+  mode:          'estimate' | 'expected' | 'goal',
+  managerHomeDept: Map<string, Set<string>>
 ): RatioVariantResult {
-  const utah    = projectMonthForLocation(settings, 'Utah',    monthKey, utahGaCost,    paidHolidays, mode);
-  const georgia = projectMonthForLocation(settings, 'Georgia', monthKey, georgiaGaCost, paidHolidays, mode);
+  const utah    = projectMonthForLocation(settings, 'Utah',    monthKey, utahGaCost,    paidHolidays, mode, managerHomeDept);
+  const georgia = projectMonthForLocation(settings, 'Georgia', monthKey, georgiaGaCost, paidHolidays, mode, managerHomeDept);
   return { utah, georgia, combined: poolLocations(utah, georgia) };
 }
 
@@ -613,7 +634,8 @@ function projectMonthForLocation(
   monthStart: string,
   gaCost:     number,
   paidHolidays: string[],
-  mode:       'estimate' | 'expected' | 'goal'
+  mode:       'estimate' | 'expected' | 'goal',
+  managerHomeDept: Map<string, Set<string>>
 ): PeriodKpis {
   const monthEnd = new Date(monthStart + 'T12:00:00');
   monthEnd.setMonth(monthEnd.getMonth() + 1);
@@ -639,9 +661,9 @@ function projectMonthForLocation(
   // Falls back to production hours per week if a manager has no entry here.
   const mgrTotalHours    = get('mgrTotalHours')    as HoursMap;
 
-  const designMetrics = projectDept(designRoster, designHours, designDailyHours, weekOfs, location, 'Design',       holidaySet, mode, mgrTotalHours);
-  const presMetrics   = projectDept(presRoster,   presHours,   presDailyHours,   weekOfs, location, 'Preservation', holidaySet, mode, mgrTotalHours);
-  const ffMetrics     = projectDept(ffRoster,     ffHours,     ffDailyHours,     weekOfs, location, 'Fulfillment',  holidaySet, mode, mgrTotalHours);
+  const designMetrics = projectDept(designRoster, designHours, designDailyHours, weekOfs, location, 'Design',       holidaySet, mode, mgrTotalHours, managerHomeDept);
+  const presMetrics   = projectDept(presRoster,   presHours,   presDailyHours,   weekOfs, location, 'Preservation', holidaySet, mode, mgrTotalHours, managerHomeDept);
+  const ffMetrics     = projectDept(ffRoster,     ffHours,     ffDailyHours,     weekOfs, location, 'Fulfillment',  holidaySet, mode, mgrTotalHours, managerHomeDept);
 
   function toMetrics(m: { hours: number; production: number; laborCost: number; ratioHours: number; ratioProduction: number }): KpiMetrics {
     return {
@@ -870,6 +892,32 @@ export async function GET(req: NextRequest) {
 
       const paidHolidays = (liveSettings.find(r => r.location === 'Global' && r.key === 'paidHolidays')?.value as string[]) ?? [];
 
+      // A manager can legitimately be scheduled to flex-help another
+      // department without that making it the department they manage —
+      // their pay should only ever land in the one department Rippling
+      // actually has them under. Without this, a manager placed on a
+      // second roster (helping out, or a stale sync fallback carrying
+      // their real title onto a roster row for a department they have no
+      // real record in) gets their full pay counted there too, double-
+      // counting a single salary/rate across two departments' CPO.
+      const { data: managerEmpRows } = await supabase
+        .from('rippling_employees')
+        .select('full_name,location,department,title')
+        .eq('active', true);
+      // name|location -> the department(s) Rippling actually has them under
+      // with a manager title. Absence of a person from this map means "no
+      // Rippling info either way" — cost still counts wherever the roster
+      // says (avoids under-counting a manager not yet uploaded); presence
+      // means we know their real department(s), so cost is skipped anywhere
+      // else they're flagged isManager on a roster.
+      const managerHomeDept = new Map<string, Set<string>>();
+      for (const e of (managerEmpRows ?? []) as { full_name: string; location: string; department: string; title: string }[]) {
+        if (!MANAGER_TITLE_RE.test(e.title ?? '')) continue;
+        const key = `${e.location}|${e.full_name.trim().toLowerCase()}`;
+        if (!managerHomeDept.has(key)) managerHomeDept.set(key, new Set());
+        managerHomeDept.get(key)!.add(e.department);
+      }
+
       estimated = {};
 
       if (requested.includes('est-current')) {
@@ -897,9 +945,9 @@ export async function GET(req: NextRequest) {
           monthStart: currentMonthKey,
           isSnapshot,
           gaSourceMonths,
-          estimate: buildRatioVariant(useSettings, currentMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'estimate'),
-          expected: buildRatioVariant(useSettings, currentMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'expected'),
-          goal:     buildRatioVariant(useSettings, currentMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'goal'),
+          estimate: buildRatioVariant(useSettings, currentMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'estimate', managerHomeDept),
+          expected: buildRatioVariant(useSettings, currentMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'expected', managerHomeDept),
+          goal:     buildRatioVariant(useSettings, currentMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'goal', managerHomeDept),
         };
       }
 
@@ -912,9 +960,9 @@ export async function GET(req: NextRequest) {
           monthStart: nextMonthKey,
           isSnapshot: false,
           gaSourceMonths,
-          estimate: buildRatioVariant(liveSettings, nextMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'estimate'),
-          expected: buildRatioVariant(liveSettings, nextMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'expected'),
-          goal:     buildRatioVariant(liveSettings, nextMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'goal'),
+          estimate: buildRatioVariant(liveSettings, nextMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'estimate', managerHomeDept),
+          expected: buildRatioVariant(liveSettings, nextMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'expected', managerHomeDept),
+          goal:     buildRatioVariant(liveSettings, nextMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'goal', managerHomeDept),
         };
       }
     }
