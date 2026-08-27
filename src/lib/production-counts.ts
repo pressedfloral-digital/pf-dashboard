@@ -56,6 +56,26 @@ export interface ProductionCounts {
   Fulfillment:  StaffRow[];
 }
 
+// The Pressed Floral production app is a separate system from Rippling/the
+// roster — it tags orders with whatever name is on that app's own user
+// account, which doesn't get updated just because someone's name changed in
+// Rippling. Without this, a name change creates a permanent split: orders
+// keep landing under the old name forever, silently missing from that
+// person's real actuals/roster-matched history. Add an entry here whenever
+// someone's name changes and PF-app orders are still coming in under the
+// old one. (staff_locations also needs a row for the current name — see
+// the sync cron.)
+const STAFF_NAME_ALIASES: Record<string, string> = {
+  'Kathryn Hill':      'Kathryn Sonntag',
+  'Chloe Leonard':     'Chloe Jensen',
+  'Izabella De Prima': 'Bella DePrima',
+  'Mia Legas':         'Mia Legas Boots',
+};
+
+function canonicalStaffName(staff: string): string {
+  return STAFF_NAME_ALIASES[staff] ?? staff;
+}
+
 function uploadStaff(details: Details, type: 'bouquet' | 'frame'): string {
   const upload = details.orderProductUploads?.find(u => u.uploadType === type);
   if (!upload) return '';
@@ -175,7 +195,7 @@ export async function computeProductionCounts(start: string, end: string): Promi
       const exactDate = new Date(rawDate).toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
       if (exactDate < start || exactDate > end) return;
 
-      const staff     = getStaff(details) || 'Unassigned';
+      const staff     = canonicalStaffName(getStaff(details) || 'Unassigned');
       const variant   = details.variantTitle ?? '';
       const eventDate = details.eventDate?.split('T')[0] ?? '';
 
