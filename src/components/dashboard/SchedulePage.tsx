@@ -1937,7 +1937,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
       .map(m => {
         const roster = presRoster[m.id];
         const hours  = presHours[m.id] ?? {};
-        return { ...m, ratio: roster?.ratio ?? m.ratio, rate: roster?.rate > 0 ? roster.rate : (employeeRates[roster?.name ?? m.name]?.hourlyRate ?? m.rate), hours, defaultHrs: m.hours[0] ?? 0, role: (roster as {role?: PresTeamMember['role']})?.role ?? m.role, isManager: (roster as {isManager?: boolean})?.isManager ?? m.isManager };
+        return { ...m, name: roster?.name ?? m.name, ratio: roster?.ratio ?? m.ratio, rate: roster?.rate > 0 ? roster.rate : (employeeRates[roster?.name ?? m.name]?.hourlyRate ?? m.rate), hours, defaultHrs: m.hours[0] ?? 0, role: (roster as {role?: PresTeamMember['role']})?.role ?? m.role, isManager: (roster as {isManager?: boolean})?.isManager ?? m.isManager };
       }) as (Omit<PresTeamMember, 'hours'> & { hours: Record<string, number>; defaultHrs: number })[];
     // Add any custom members stored in presRoster not in defaultTeam
     const defaultIds = new Set(defaultTeam.map(m => m.id));
