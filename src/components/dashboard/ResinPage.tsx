@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useScheduleSettings } from './useScheduleSettings';
+import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
 import { getMondayDate, isoMonday, getWeekLabel } from '@/lib/weekDates';
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
-import { resolveDayHours, resolveWeekHours, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
+import { resolveDayHours, resolveWeekHours, resolveWeekPayHours, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
 import { HistoricalsSection } from './HistoricalsSection';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
@@ -71,6 +71,7 @@ function mondayOf(dateStr: string): Date {
 
 function useResinSettings() {
   const { settings, loading, saveState, update } = useScheduleSettings('Utah');
+  const { holidays: paidHolidays } = usePaidHolidays();
 
   const resinDailyHours: DailyHoursMap = settings.resinDailyHours ?? {};
 
@@ -104,6 +105,7 @@ function useResinSettings() {
     roster, setRoster, hours, setHours, resinDailyHours, setResinDailyHours,
     mgrTotalHours, mgrTotalDailyHours, setMgrTotalDailyHours,
     queueFrontWeek, setQueueFrontWeek,
+    paidHolidays,
     loading, saveState,
   };
 }
@@ -132,6 +134,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
     roster, setRoster, hours, setHours, resinDailyHours, setResinDailyHours,
     mgrTotalHours, mgrTotalDailyHours, setMgrTotalDailyHours,
     queueFrontWeek, setQueueFrontWeek,
+    paidHolidays,
     loading, saveState,
   } = useResinSettings();
 
@@ -152,14 +155,30 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
   // ── Derived: weekly capacity ───────────────────────────────────────────────
   const windowWeeks = Array.from({ length: WINDOW }, (_, i) => weekOffset + i);
 
-  function memberWeekHours(weekIdx: number, m: ResinMember): number {
+  // Shared params for resolveWeekHours/resolveWeekPayHours — holidays flows
+  // through both so a paid-holiday week's production and guaranteed-pay
+  // totals stay consistent with each other and with the daily helpers below.
+  function weekHoursParams(weekIdx: number, m: ResinMember) {
     const weekIso = isoMonday(weekIdx);
-    return resolveWeekHours({
+    return {
       dailyMap: resinDailyHours, weekKey: `${weekIso}-${m.id}`,
       legacyWeeklyValue: hours[weekIso]?.[m.id],
       standardWeeklyHours: m.standardWeeklyHours,
       employment: { weekIso, startDate: m.startDate, endDate: m.endDate },
-    });
+      holidays: paidHolidays,
+    };
+  }
+
+  function memberWeekHours(weekIdx: number, m: ResinMember): number {
+    return resolveWeekHours(weekHoursParams(weekIdx, m));
+  }
+
+  // Guaranteed-pay basis for the week — equals memberWeekHours except on a
+  // paid holiday, where it's the member's standard hours for that weekday
+  // (guaranteed) plus any worked override, instead of the holiday-zeroed
+  // production number.
+  function memberWeekPayHours(weekIdx: number, m: ResinMember): number {
+    return resolveWeekPayHours(weekHoursParams(weekIdx, m));
   }
 
   function weeklyCapacity(weekIdx: number): number {
@@ -167,8 +186,10 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
   }
 
   // Same idea as Design's resolveMgrTotalWeekHours: a day's fallback is that
-  // day's already-resolved PRODUCTION hours, not a flat template.
-  function resolveMgrTotalWeekHours(weekIdx: number, m: ResinMember, productionHrs: number): number {
+  // day's already-resolved PAY hours (guaranteed-holiday-pay-aware) — this is
+  // a manager's own hours entry, which drives cost rather than units, so it
+  // should never silently drop to $0 on an unworked holiday.
+  function resolveMgrTotalWeekHours(weekIdx: number, m: ResinMember, payHrs: number): number {
     const weekIso = isoMonday(weekIdx);
     const weekKey = `${weekIso}-${m.id}`;
     const dailyOverrides = mgrTotalDailyHours[weekKey];
@@ -177,11 +198,11 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
       for (let day = 0; day < 7; day++) {
         const override = dailyOverrides[day];
         sum += override != null ? override : resolveDayHours(resinDailyHours, weekKey, day, m.standardWeeklyHours,
-          { weekIso, startDate: m.startDate, endDate: m.endDate }).hours;
+          { weekIso, startDate: m.startDate, endDate: m.endDate }, paidHolidays).payHours;
       }
       return sum;
     }
-    return mgrTotalHours[m.id]?.[weekIso] ?? productionHrs;
+    return mgrTotalHours[m.id]?.[weekIso] ?? payHrs;
   }
 
   // Production hours drive units/ratio; managers' total hours (production +
@@ -190,7 +211,8 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
   function weekMemberStats(weekIdx: number, m: ResinMember) {
     const hrs      = memberWeekHours(weekIdx, m);
     const units    = m.ratio > 0 ? hrs / m.ratio : 0;
-    const totalHrs = m.isManager ? resolveMgrTotalWeekHours(weekIdx, m, hrs) : hrs;
+    const payHrs   = memberWeekPayHours(weekIdx, m);
+    const totalHrs = m.isManager ? resolveMgrTotalWeekHours(weekIdx, m, payHrs) : payHrs;
     const cost     = m.payType === 'salary' ? m.annualSalary / 52 : totalHrs * m.hourlyRate;
     const cpo      = !m.isManager && units > 0 && cost > 0 ? cost / units : null;
     return { hrs, units, cost, cpo };
@@ -306,14 +328,37 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate }).hours;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate }, paidHolidays).hours;
+  }
+
+  // Guaranteed-pay basis for the day — see resolveDayHours' payHours.
+  function getDHPay(memberId: string, weekIdx: number, di: number): number {
+    const m = roster.find(m => m.id === memberId);
+    const weekIso = isoMonday(weekIdx);
+    return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate }, paidHolidays).payHours;
   }
 
   function isDHOverride(memberId: string, weekIdx: number, di: number): boolean {
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate }).isOverride;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate }, paidHolidays).isOverride;
+  }
+
+  function isDHHoliday(memberId: string, weekIdx: number, di: number): boolean {
+    const m = roster.find(m => m.id === memberId);
+    const weekIso = isoMonday(weekIdx);
+    return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate }, paidHolidays).isHoliday;
+  }
+
+  // Member-agnostic holiday check for a whole day column (header, Day total
+  // row) — paid holidays are a global calendar, not per-member.
+  function isHolidayColumn(weekIdx: number, di: number): boolean {
+    const date = getMondayDate(weekIdx);
+    date.setDate(date.getDate() + di);
+    return paidHolidays.includes(date.toISOString().split('T')[0]);
   }
 
   function setDH(memberId: string, weekIdx: number, di: number, val: number) {
@@ -326,7 +371,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
 
   function getMgrTotalDH(memberId: string, weekIdx: number, di: number): number {
     const override = mgrTotalDailyHours[`${isoMonday(weekIdx)}-${memberId}`]?.[di];
-    return override != null ? override : getDH(memberId, weekIdx, di);
+    return override != null ? override : getDHPay(memberId, weekIdx, di);
   }
 
   function setMgrTotalDH(memberId: string, weekIdx: number, di: number, val: number) {
@@ -338,7 +383,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
   }
 
   function dailyCost(m: ResinMember, weekIdx: number, di: number): number {
-    const h = m.isManager ? getMgrTotalDH(m.id, weekIdx, di) : getDH(m.id, weekIdx, di);
+    const h = m.isManager ? getMgrTotalDH(m.id, weekIdx, di) : getDHPay(m.id, weekIdx, di);
     return m.payType === 'salary' ? m.annualSalary / 260 : h * m.hourlyRate;
   }
 
@@ -679,9 +724,13 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
                     const date = getMondayDate(thisWeekOffset);
                     date.setDate(date.getDate() + di);
                     const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                    const isHoliday = isHolidayColumn(thisWeekOffset, di);
                     return (
-                      <th key={d} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[70px]">
-                        {d}<br /><span className="font-normal text-[10px] text-slate-400">{dateStr}</span>
+                      <th key={d} className={`px-3 py-2 text-center font-medium whitespace-nowrap min-w-[70px] ${
+                        isHoliday ? 'bg-amber-50 text-amber-700' : 'text-slate-500'
+                      }`}>
+                        {d}<br /><span className={`font-normal text-[10px] ${isHoliday ? 'text-amber-500' : 'text-slate-400'}`}>{dateStr}</span>
+                        {isHoliday && <div className="text-[9px] font-semibold text-amber-600 mt-0.5">Holiday</div>}
                       </th>
                     );
                   })}
@@ -703,16 +752,19 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
                       {[0,1,2,3,4,5,6].map(di => {
                         const dayVal = getDH(m.id, thisWeekOffset, di);
                         const isOverride = isDHOverride(m.id, thisWeekOffset, di);
+                        const isHoliday = isDHHoliday(m.id, thisWeekOffset, di);
                         const dayUnits = m.ratio > 0 ? dayVal / m.ratio : 0;
                         const totalDayVal = m.isManager ? getMgrTotalDH(m.id, thisWeekOffset, di) : dayVal;
                         const cost = dailyCost(m, thisWeekOffset, di);
                         const cpo = !m.isManager && dayUnits > 0 && cost > 0 ? cost / dayUnits : null;
                         return (
-                          <td key={di} className={`px-1 py-1.5 text-center ${di === 0 ? 'bg-indigo-50/20' : ''}`}>
+                          <td key={di} className={`px-1 py-1.5 text-center ${isHoliday ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/20' : ''}`}>
                             <input type="number"
                               value={resinInputMode === 'output' ? (dayUnits ? round2(dayUnits) : '') : (dayVal || '')}
                               placeholder="0" min={0} step={resinInputMode === 'output' ? 0.1 : 0.5}
-                              title={isOverride ? 'Explicit override for this day' : 'Following the standard weekly schedule — edit to override just this day'}
+                              title={isHoliday
+                                ? (isOverride ? 'Paid holiday — worked hours, paid on top of guaranteed holiday pay' : 'Paid holiday — no production expected, staff still paid. Enter hours if someone worked.')
+                                : (isOverride ? 'Explicit override for this day' : 'Following the standard weekly schedule — edit to override just this day')}
                               onChange={e => {
                                 const raw = parseFloat(e.target.value) || 0;
                                 const newHours = resinInputMode === 'output' ? hoursFromOutput(raw, m.ratio) : raw;
@@ -732,6 +784,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
                               ? (dayVal > 0 && <div className="text-[10px] text-slate-400 mt-0.5">{round2(dayVal)}h</div>)
                               : (dayUnits > 0 && <div className="text-[10px] text-slate-400 mt-0.5">{round2(dayUnits)}u</div>)}
                             {hasRates && cpo !== null && <div className="text-[10px] text-purple-500">${cpo.toFixed(2)}</div>}
+                            {isHoliday && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay</div>}
                           </td>
                         );
                       })}
@@ -750,10 +803,12 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
                     const dayUnits = roster.reduce((s, m) => s + (m.ratio > 0 ? getDH(m.id, thisWeekOffset, di) / m.ratio : 0), 0);
                     const dayCost  = roster.reduce((s, m) => s + dailyCost(m, thisWeekOffset, di), 0);
                     const dayCPO   = dayUnits > 0 && dayCost > 0 ? dayCost / dayUnits : null;
+                    const isHoliday = isHolidayColumn(thisWeekOffset, di);
                     return (
-                      <td key={di} className="px-2 py-2 text-center text-xs text-purple-700">
+                      <td key={di} className={`px-2 py-2 text-center text-xs text-purple-700 ${isHoliday ? 'bg-amber-50/50' : ''}`}>
                         {dayTotal > 0 ? <><div>{dayTotal.toFixed(1)}h</div><div className="text-[10px]">{dayUnits.toFixed(1)}u</div></> : <span className="text-slate-300">—</span>}
                         {hasRates && dayCPO !== null && <div className="text-[10px]">${dayCPO.toFixed(2)}</div>}
+                        {isHoliday && dayCost > 0 && <div className="text-[9px] text-amber-600">${dayCost.toFixed(2)} paid</div>}
                       </td>
                     );
                   })}
