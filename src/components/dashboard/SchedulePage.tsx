@@ -4198,7 +4198,7 @@ export function SchedulePage({
   }
 
   function setWeeklyMultiplier(weekOf: string, val: number) {
-    const existing = weeklyMultipliers[weekOf] ?? { ut: DEFAULT_INTAKE_MULTIPLIER, ga: DEFAULT_INTAKE_MULTIPLIER };
+    const existing = weeklyMultipliers[weekOf] ?? { ut: rollingIntakeMultiplier, ga: rollingIntakeMultiplier };
     const updated = location === 'Utah'
       ? { ...existing, ut: val }
       : { ...existing, ga: val };
@@ -4450,9 +4450,30 @@ export function SchedulePage({
     return map;
   }, [location, teamActuals, presActuals]);
 
+  // Default growth multiplier for a not-yet-manually-set future week: the
+  // average realized multiplier (actual intake ÷ same week last year) across
+  // the 4 most recent ACTUAL weeks that have both sides of that comparison —
+  // i.e. exactly the ×N figures already shown next to received weeks in the
+  // table below, just averaged instead of read one at a time. Recomputes
+  // automatically as new actual weeks land, so it's a rolling window with no
+  // manual upkeep; DEFAULT_INTAKE_MULTIPLIER is only the fallback for when
+  // there isn't yet enough realized history to average (e.g. a new market).
+  const rollingIntakeMultiplier = useMemo(() => {
+    const ratios: number[] = [];
+    for (let w = -1; w >= -104 && ratios.length < 4; w--) {
+      const weekOf = isoMonday(w);
+      const actual = actualIntakeByWeek[weekOf];
+      if (actual === undefined) continue;
+      const lastYear = actualIntakeByWeek[addDays(weekOf, -364)];
+      if (lastYear === undefined || lastYear <= 0) continue;
+      ratios.push(actual / lastYear);
+    }
+    return ratios.length > 0 ? ratios.reduce((s, r) => s + r, 0) / ratios.length : DEFAULT_INTAKE_MULTIPLIER;
+  }, [actualIntakeByWeek]);
+
   const intakeMultiplierKey = location === 'Utah' ? 'ut' : 'ga';
   function getIntakeMultiplier(weekOf: string): number {
-    return weeklyMultipliers[weekOf]?.[intakeMultiplierKey] ?? DEFAULT_INTAKE_MULTIPLIER;
+    return weeklyMultipliers[weekOf]?.[intakeMultiplierKey] ?? rollingIntakeMultiplier;
   }
   // Projected intake = same week last year's actual × that week's multiplier (default 1.2).
   function getProjectedIntake(weekOf: string): number | undefined {
@@ -5781,7 +5802,7 @@ export function SchedulePage({
                                           min="0"
                                           value={multiplier}
                                           disabled={hasOverride}
-                                          onChange={e => setWeeklyMultiplier(row.weekOf, parseFloat(e.target.value) || DEFAULT_INTAKE_MULTIPLIER)}
+                                          onChange={e => setWeeklyMultiplier(row.weekOf, parseFloat(e.target.value) || rollingIntakeMultiplier)}
                                           className="w-12 border border-slate-200 rounded px-1 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300 disabled:bg-slate-50 disabled:text-slate-300"
                                           title={hasOverride ? 'Clear the bq override to use the LY projection' : 'Multiplier applied to last year’s same week'}
                                         />
