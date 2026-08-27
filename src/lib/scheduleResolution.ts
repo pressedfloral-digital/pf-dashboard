@@ -48,21 +48,73 @@ export function distributeHours(total: number): number[] {
   return Array.from({ length: 7 }, (_, i) => i < 5 ? (i < rem ? base + 1 : base) : 0);
 }
 
+// True if the calendar date at weekIso+dayIdx is a paid holiday. Staff are
+// paid whether or not they produce anything that day, so this only ever
+// affects PRODUCTION hours, never the guaranteed-pay basis — see payHours
+// below.
+function isPaidHolidayDate(weekIso: string | undefined, dayIdx: number, holidays?: string[]): boolean {
+  if (!weekIso || !holidays || holidays.length === 0) return false;
+  return holidays.includes(addIsoDays(weekIso, dayIdx));
+}
+
 // employment, when passed, forces hours to 0 for any day outside the
 // member's [startDate, endDate] window — taking priority over an explicit
 // override, so a member's schedule zeroes itself out from their last day
 // forward without anyone having to go back and clear entered hours.
+//
+// holidays, when passed, zeroes PRODUCTION hours (the `hours` field) for a
+// paid-holiday day that has no explicit override — but never touches
+// `payHours`, which is what hourly cost should be computed from instead:
+// on a holiday, payHours is the member's guaranteed standard hours for that
+// weekday, and if a manager enters an explicit override anyway (someone
+// chose to work), payHours becomes guaranteed-pay PLUS the worked hours,
+// not just the worked hours.
+//
+// holidayPayStacksOnOverride controls what "an explicit override already
+// exists" means on a holiday, because it's ambiguous which of two very
+// different things that override represents:
+//  - true (default — the live Scheduling UI): the override was just entered
+//    by someone looking at the holiday-flagged cell right now, so it's a
+//    deliberate "they worked N hours today" — guaranteed pay stacks with it.
+//  - false (the Estimated-KPI projection route): the override may be stale
+//    data that predates the holiday ever being declared (e.g. a projected
+//    future week's redistributed hours), not a live confirmation — treating
+//    it as "worked" and stacking guaranteed pay on top of it would manufacture
+//    cost with no corresponding production, so it's left exactly as it would
+//    read without the holiday instead.
 export function resolveDayHours(
   dailyMap: DailyHoursMap,
   weekKey: string,
   dayIdx: number,
   standardWeeklyHours: number[] | undefined,
   employment?: EmploymentWindow,
-): { hours: number; isOverride: boolean } {
-  if (!isWithinEmployment(dayIdx, employment)) return { hours: 0, isOverride: true };
+  holidays?: string[],
+  holidayPayStacksOnOverride: boolean = true,
+): { hours: number; isOverride: boolean; payHours: number; isHoliday: boolean } {
+  if (!isWithinEmployment(dayIdx, employment)) return { hours: 0, isOverride: true, payHours: 0, isHoliday: false };
+  const isHoliday = isPaidHolidayDate(employment?.weekIso, dayIdx, holidays);
   const override = dailyMap[weekKey]?.[dayIdx];
-  if (override != null) return { hours: override, isOverride: true };
-  return { hours: standardWeeklyHours?.[dayIdx] ?? 0, isOverride: false };
+  const standard = standardWeeklyHours?.[dayIdx] ?? 0;
+  if (override != null) {
+    const payHours = isHoliday
+      ? (holidayPayStacksOnOverride ? standard + override : override)
+      : override;
+    return { hours: override, isOverride: true, payHours, isHoliday };
+  }
+  if (isHoliday) return { hours: 0, isOverride: false, payHours: standard, isHoliday: true };
+  return { hours: standard, isOverride: false, payHours: standard, isHoliday: false };
+}
+
+export interface ResolveWeekHoursParams {
+  dailyMap: DailyHoursMap;
+  weekKey: string;
+  legacyWeeklyValue?: number;
+  standardWeeklyHours?: number[];
+  hardcodedDefault?: number;
+  employment?: EmploymentWindow;
+  holidays?: string[];
+  // See resolveDayHours — defaults to true (stacking) when omitted.
+  holidayPayStacksOnOverride?: boolean;
 }
 
 // Full per-member-per-week fallback chain, highest to lowest priority:
@@ -75,20 +127,23 @@ export function resolveDayHours(
 // resolves: a week fully outside the window returns 0, a week fully inside
 // is untouched, and a week the member starts or ends mid-way through is
 // pro-rated to just the days actually within the window.
-export function resolveWeekHours(params: {
-  dailyMap: DailyHoursMap;
-  weekKey: string;
-  legacyWeeklyValue?: number;
-  standardWeeklyHours?: number[];
-  hardcodedDefault?: number;
-  employment?: EmploymentWindow;
-}): number {
-  const { dailyMap, weekKey, legacyWeeklyValue, standardWeeklyHours, hardcodedDefault, employment } = params;
+//
+// Returns BOTH the production (`hours`, holiday-zeroed) and guaranteed-pay
+// (`payHours`) totals together — see resolveDayHours for what distinguishes
+// them on a holiday. The two public exports below are thin views onto this,
+// so most callers (capacity/turnaround math, which only ever wanted
+// production hours) don't need to change at all beyond passing `holidays`.
+function resolveWeekHoursBoth(params: ResolveWeekHoursParams): { hours: number; payHours: number } {
+  const { dailyMap, weekKey, legacyWeeklyValue, standardWeeklyHours, hardcodedDefault, employment, holidays, holidayPayStacksOnOverride } = params;
   const daily = dailyMap[weekKey];
   if (daily !== undefined) {
-    let sum = 0;
-    for (let d = 0; d < 7; d++) sum += resolveDayHours(dailyMap, weekKey, d, standardWeeklyHours, employment).hours;
-    return sum;
+    let hours = 0, payHours = 0;
+    for (let d = 0; d < 7; d++) {
+      const r = resolveDayHours(dailyMap, weekKey, d, standardWeeklyHours, employment, holidays, holidayPayStacksOnOverride);
+      hours += r.hours;
+      payHours += r.payHours;
+    }
+    return { hours, payHours };
   }
 
   const weekTotal = legacyWeeklyValue !== undefined
@@ -96,13 +151,35 @@ export function resolveWeekHours(params: {
     : standardWeeklyHours !== undefined
       ? standardWeeklyHours.reduce((s, h) => s + (h ?? 0), 0)
       : (hardcodedDefault ?? 0);
+  if (weekTotal <= 0) return { hours: weekTotal, payHours: weekTotal };
 
-  if (!employment || weekTotal <= 0) return weekTotal;
+  const weekIso = employment?.weekIso;
   const daysIn = Array.from({ length: 7 }, (_, d) => isWithinEmployment(d, employment));
-  if (daysIn.every(Boolean)) return weekTotal;
-  if (daysIn.every(v => !v)) return 0;
+  const hasHoliday = !!weekIso && daysIn.some((inWindow, d) => inWindow && isPaidHolidayDate(weekIso, d, holidays));
+  if (daysIn.every(Boolean) && !hasHoliday) return { hours: weekTotal, payHours: weekTotal };
+  if (daysIn.every(v => !v)) return { hours: 0, payHours: 0 };
+
   const perDay = standardWeeklyHours ?? distributeHours(weekTotal);
-  return perDay.reduce((s, h, d) => s + (daysIn[d] ? (h ?? 0) : 0), 0);
+  let hours = 0, payHours = 0;
+  for (let d = 0; d < 7; d++) {
+    if (!daysIn[d]) continue;
+    const h = perDay[d] ?? 0;
+    payHours += h;
+    hours += isPaidHolidayDate(weekIso, d, holidays) ? 0 : h;
+  }
+  return { hours, payHours };
+}
+
+export function resolveWeekHours(params: ResolveWeekHoursParams): number {
+  return resolveWeekHoursBoth(params).hours;
+}
+
+// Guaranteed-pay-basis version of resolveWeekHours, for the smaller set of
+// callers that compute an HOURLY member's weekly COST rather than their
+// production capacity — see resolveDayHours' payHours for the exact holiday
+// semantics (guaranteed standard hours, plus any worked override on top).
+export function resolveWeekPayHours(params: ResolveWeekHoursParams): number {
+  return resolveWeekHoursBoth(params).payHours;
 }
 
 // Returns the 7-element array a daily-hours setter should start mutating from

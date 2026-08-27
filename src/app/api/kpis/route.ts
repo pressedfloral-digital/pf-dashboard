@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks, getGmCostForWeeks } from '@/lib/managers';
 import { RATIO_TARGETS, type RatioTier } from '@/lib/ratioTargets';
 import type { WageDept } from '@/lib/wageTargets';
-import { resolveWeekHours } from '@/lib/scheduleResolution';
+import { resolveWeekHours, resolveWeekPayHours } from '@/lib/scheduleResolution';
 import { fetchAllRows } from '@/lib/fetchAllRows';
 
 // MTD/QTD/YTD figures need to reflect whatever's in weekly_labor_cost right
@@ -455,20 +455,26 @@ interface PresRosterEntry    { ratio: number; rate?: number;    payType?: string
 interface HoursMap           { [memberId: string]: Record<string, number> }
 interface DailyHoursMap      { [weekOfMemberKey: string]: number[] }  // "${isoMonday}-${memberId}" -> [mon..fri]
 
-// A member's hours for one week, resolved through the same fallback chain
-// the Scheduling UI uses (explicit daily overrides -> standard weekly
-// template -> legacy pre-template weekly value -> 0), rather than reading
-// the legacy weekly map directly. Most of a roster relies entirely on the
-// standard-schedule template for weeks nobody has hand-touched — reading
-// `hours[memberId]?.[weekOf]` alone (the old behavior) silently treated
-// every such week as 0 hours worked, undercounting Estimated/Expected/Goal
-// production for anyone without an explicit per-week override.
+// A member's PRODUCTION hours for one week, resolved through the same
+// fallback chain the Scheduling UI uses (explicit daily overrides ->
+// standard weekly template -> legacy pre-template weekly value -> 0),
+// rather than reading the legacy weekly map directly. Most of a roster
+// relies entirely on the standard-schedule template for weeks nobody has
+// hand-touched — reading `hours[memberId]?.[weekOf]` alone (the old
+// behavior) silently treated every such week as 0 hours worked,
+// undercounting Estimated/Expected/Goal production for anyone without an
+// explicit per-week override.
+//
+// On a paid holiday with no explicit override, this already comes back 0
+// for that day (staff produce nothing) — see resolveWeekHours/resolveDayHours
+// in scheduleResolution.ts for the exact per-weekday holiday logic.
 function resolveMemberWeekHours(
   memberId:  string,
   weekOf:    string,
   hours:     HoursMap,
   dailyHours: DailyHoursMap,
   member:    DesignRosterEntry | PresRosterEntry,
+  holidays?: string[],
 ): number {
   return resolveWeekHours({
     dailyMap:            dailyHours,
@@ -476,34 +482,38 @@ function resolveMemberWeekHours(
     legacyWeeklyValue:    hours[memberId]?.[weekOf],
     standardWeeklyHours:  member.standardWeeklyHours,
     employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate },
+    holidays,
   });
 }
 
-// Paid holidays fall on staff pay (hours/cost unchanged — they're paid whether
-// productive or not) but zero production. Estimate each member's lost hours
-// for a holiday from that specific week's daily breakdown if one was entered,
-// else fall back to an even 1/5 split of that week's total scheduled hours.
-function holidayHoursForMember(
-  memberId:     string,
-  weekOfs:      string[],
-  hours:        HoursMap,
-  dailyHours:   DailyHoursMap,
-  holidaySet:   Set<string>,
-  member:       DesignRosterEntry | PresRosterEntry,
+// Guaranteed-PAY basis for one week — equals resolveMemberWeekHours except on
+// a paid holiday, where staff are still paid (their standard hours for that
+// weekday) whether or not they produced anything.
+//
+// holidayPayStacksOnOverride is deliberately false here (unlike the live
+// Scheduling UI's default): an existing daily entry read by this projection
+// may be stale data that predates the holiday ever being declared (e.g. a
+// projected future week's redistributed hours) rather than a live "they
+// worked N hours today" confirmation — stacking guaranteed pay on top of it
+// would manufacture cost with no corresponding production. A day with no
+// existing entry at all still gets full guaranteed pay as normal.
+function resolveMemberWeekPayHours(
+  memberId:  string,
+  weekOf:    string,
+  hours:     HoursMap,
+  dailyHours: DailyHoursMap,
+  member:    DesignRosterEntry | PresRosterEntry,
+  holidays?: string[],
 ): number {
-  if (holidaySet.size === 0) return 0;
-  let holidayHours = 0;
-  for (const weekOf of weekOfs) {
-    const weekTotal = resolveMemberWeekHours(memberId, weekOf, hours, dailyHours, member);
-    for (let dayOffset = 0; dayOffset < 5; dayOffset++) {
-      const d = new Date(weekOf + 'T12:00:00');
-      d.setDate(d.getDate() + dayOffset);
-      if (!holidaySet.has(isoDate(d))) continue;
-      const daily = dailyHours[`${weekOf}-${memberId}`]?.[dayOffset];
-      holidayHours += daily ?? (weekTotal / 5);
-    }
-  }
-  return holidayHours;
+  return resolveWeekPayHours({
+    dailyMap:            dailyHours,
+    weekKey:              `${weekOf}-${memberId}`,
+    legacyWeeklyValue:    hours[memberId]?.[weekOf],
+    standardWeeklyHours:  member.standardWeeklyHours,
+    employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate },
+    holidays,
+    holidayPayStacksOnOverride: false,
+  });
 }
 
 function projectDept(
@@ -512,12 +522,13 @@ function projectDept(
   dailyHours:    DailyHoursMap,
   weekOfs:       string[],         // Mondays in the month (isoMonday strings)
   location:      string,
-  dept:          WageDept,
+  dept:          WageDept | 'Resin',
   holidaySet:    Set<string>,
   mode:          'estimate' | 'expected' | 'goal',
   mgrTotalHours: HoursMap,
   managerHomeDept: Map<string, Set<string>>
 ): { hours: number; production: number; laborCost: number; ratioHours: number; ratioProduction: number } {
+  const holidays = Array.from(holidaySet);
   let totalHours = 0, totalProduction = 0, totalCost = 0;
   // Estimated ratio excludes managers entirely — neither their hours nor
   // their (roster-ratio-derived) production count toward it.
@@ -531,7 +542,13 @@ function projectDept(
   for (const [memberId, member] of Object.entries(roster)) {
     if ((member as { _removed?: boolean })._removed) continue;
 
-    const memberHours = weekOfs.reduce((sum, w) => sum + resolveMemberWeekHours(memberId, w, hours, dailyHours, member), 0);
+    // PRODUCTION hours — already holiday-zeroed for any day with no explicit
+    // override (staff still get paid; see memberPayHours below for that).
+    const memberHours = weekOfs.reduce((sum, w) => sum + resolveMemberWeekHours(memberId, w, hours, dailyHours, member, holidays), 0);
+    // Guaranteed-PAY basis — equals memberHours on non-holiday weeks, but on
+    // a holiday reflects the member's standard hours for that weekday (paid
+    // regardless) plus any worked hours a manager entered on top.
+    const memberPayHours = weekOfs.reduce((sum, w) => sum + resolveMemberWeekPayHours(memberId, w, hours, dailyHours, member, holidays), 0);
 
     totalHours += memberHours;
     if (!member.isManager) ratioHours += memberHours;
@@ -551,10 +568,8 @@ function projectDept(
         mode === 'expected' ? tierRatio :
         /* goal */             Math.min(member.ratio, tierRatio);
 
-      const holidayHours   = holidayHoursForMember(memberId, weekOfs, hours, dailyHours, holidaySet, member);
-      const productiveHours = Math.max(0, memberHours - holidayHours);
       if (effectiveRatio > 0) {
-        const memberProduction = productiveHours / effectiveRatio;
+        const memberProduction = memberHours / effectiveRatio;
         totalProduction += memberProduction;
         if (!member.isManager) ratioProduction += memberProduction;
       }
@@ -595,8 +610,8 @@ function projectDept(
       const totalTemplateWeekly = (member as DesignRosterEntry).standardTotalWeeklyHours
         ?.reduce((s, h) => s + (h ?? 0), 0);
       const payHours = member.isManager
-        ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? totalTemplateWeekly ?? resolveMemberWeekHours(memberId, w, hours, dailyHours, member)), 0)
-        : memberHours;
+        ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? totalTemplateWeekly ?? resolveMemberWeekPayHours(memberId, w, hours, dailyHours, member, holidays)), 0)
+        : memberPayHours;
       totalCost += payHours * hourlyRate;
       costedNames.add(member.name.trim().toLowerCase());
     }
@@ -661,9 +676,23 @@ function projectMonthForLocation(
   // Falls back to production hours per week if a manager has no entry here.
   const mgrTotalHours    = get('mgrTotalHours')    as HoursMap;
 
+  // Resin's roster is stored as a plain array (see ResinPage.tsx), not the
+  // memberId-keyed Record the other three departments use — key it the same
+  // way before handing it to projectDept, which otherwise reuses the exact
+  // same roster-entry shape (ratio/payType/hourlyRate/annualSalary/isManager/
+  // standardWeeklyHours/employment dates) with no other changes needed.
+  // Resin is a single shared (Utah-only) roster in practice, so this reads
+  // as empty/zero for Georgia rather than needing a special case.
+  const resinRosterRaw = get('resinRoster');
+  const resinRosterArr = Array.isArray(resinRosterRaw) ? resinRosterRaw as (DesignRosterEntry & { id: string })[] : [];
+  const resinRoster: Record<string, DesignRosterEntry> = Object.fromEntries(resinRosterArr.map(m => [m.id, m]));
+  const resinHours       = get('resinHours')       as HoursMap;
+  const resinDailyHours  = get('resinDailyHours')  as DailyHoursMap;
+
   const designMetrics = projectDept(designRoster, designHours, designDailyHours, weekOfs, location, 'Design',       holidaySet, mode, mgrTotalHours, managerHomeDept);
   const presMetrics   = projectDept(presRoster,   presHours,   presDailyHours,   weekOfs, location, 'Preservation', holidaySet, mode, mgrTotalHours, managerHomeDept);
   const ffMetrics     = projectDept(ffRoster,     ffHours,     ffDailyHours,     weekOfs, location, 'Fulfillment',  holidaySet, mode, mgrTotalHours, managerHomeDept);
+  const resinMetrics  = projectDept(resinRoster,  resinHours,  resinDailyHours,  weekOfs, location, 'Resin',        holidaySet, mode, mgrTotalHours, managerHomeDept);
 
   function toMetrics(m: { hours: number; production: number; laborCost: number; ratioHours: number; ratioProduction: number }): KpiMetrics {
     return {
@@ -682,8 +711,12 @@ function projectMonthForLocation(
   const design       = toMetrics(designMetrics);
   const preservation = toMetrics(presMetrics);
   const fulfillment  = toMetrics(ffMetrics);
-  const resin: KpiMetrics = { hours: 0, production: 0, laborCost: 0, ratioHours: 0, ratioProduction: 0, ratio: null, cpo: null, cpoWithGM: null, hasData: false };
+  const resin        = toMetrics(resinMetrics);
 
+  // Resin is intentionally excluded from totalProdOrders/combined/ga below —
+  // matches its existing treatment everywhere else in this route (e.g.
+  // computePeriodKpis' ALL_DEPTS-based org totals), not a side effect of
+  // adding it here. It's still returned as its own field for the Resin tab.
   const totalProdOrders = design.production + preservation.production + fulfillment.production;
 
   // G&A has no production of its own — mirror computePeriodKpis, which spreads
