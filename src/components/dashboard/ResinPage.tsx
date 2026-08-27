@@ -33,6 +33,7 @@ interface CohortRow {
   units:        number;   // resin units that entered queue this week
   weeksElapsed: number;   // weeks since this intake week, i.e. its current age
   weeksToComplete: number | null;
+  estimated:    boolean;  // no real order yet — projected at the recent average intake pace
 }
 
 interface QueueSummary {
@@ -238,6 +239,31 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
   const cohortRows: CohortRow[] = (() => {
     if (activeCohorts.length === 0) return [];
 
+    // Real, already-booked cohorts only run as far out as customers have
+    // actually placed orders with event dates, which tends to trail off a
+    // few months ahead. Past that point, project the remaining weeks up to
+    // the full 52-week horizon at the recent average intake pace — same
+    // idea as avgWeeklyCapacity's trailing average — so this table reads
+    // out as far as the other departments' Queue & Turnaround tabs instead
+    // of just stopping once real bookings run out. These projected weeks
+    // are flagged `estimated` and don't count toward the "active units in
+    // queue" total shown above, since they aren't real orders yet.
+    const todayIso = isoMonday(0);
+    const lastRealWeek = activeCohorts.reduce((max, c) => (c.weekOf > max ? c.weekOf : max), todayIso);
+    const recentReal = activeCohorts.filter(c => c.weekOf >= isoMonday(-8)).map(c => c.units);
+    const avgRecentIntake = recentReal.length > 0 ? recentReal.reduce((s, u) => s + u, 0) / recentReal.length : 0;
+
+    const projectedCohorts: { weekOf: string; units: number; estimated: boolean }[] =
+      activeCohorts.map(c => ({ ...c, estimated: false }));
+    if (avgRecentIntake > 0) {
+      for (let w = 0; w < WEEKS; w++) {
+        const weekIso = isoMonday(w);
+        if (weekIso <= lastRealWeek) continue;
+        projectedCohorts.push({ weekOf: weekIso, units: Math.round(avgRecentIntake), estimated: true });
+      }
+    }
+    projectedCohorts.sort((a, b) => a.weekOf.localeCompare(b.weekOf));
+
     // Cumulative units from the front of the (active) queue through each
     // cohort, matched against cumulative real capacity going forward — a
     // cohort's completion week is whenever running capacity first reaches its
@@ -254,16 +280,22 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
 
     const today = getMondayDate(0);
     let cumulativeUnits = 0;
-    return activeCohorts.map(({ weekOf, units }) => {
+    return projectedCohorts.map(({ weekOf, units, estimated }) => {
       cumulativeUnits += units;
-      const weeksFromNow = cumCapByWeek.findIndex(cc => cc >= cumulativeUnits);
+      const rawWeeksFromNow = cumCapByWeek.findIndex(cc => cc >= cumulativeUnits);
       const weeksElapsed = Math.round((today.getTime() - mondayOf(weekOf).getTime()) / (7 * 24 * 60 * 60 * 1000));
+      // A cohort can't finish before its own intake week arrives — matters
+      // once projected weeks push cohorts far enough out that capacity
+      // "catches up" to cumulative demand before the cohort itself is even
+      // received, which would otherwise read as a negative total turnaround.
+      const weeksFromNow = rawWeeksFromNow === -1 ? -1 : Math.max(rawWeeksFromNow, -weeksElapsed);
       return {
         weekOf,
         weekLabel: mondayOf(weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
         units,
         weeksElapsed,
         weeksToComplete: weeksFromNow === -1 ? null : weeksFromNow,
+        estimated,
       };
     });
   })();
@@ -643,9 +675,16 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-100">
                   <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 min-w-[160px]">Team Member</th>
-                  {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => (
-                    <th key={d} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[70px]">{d}</th>
-                  ))}
+                  {WEEKDAY_LABELS.map((d, di) => {
+                    const date = getMondayDate(thisWeekOffset);
+                    date.setDate(date.getDate() + di);
+                    const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                    return (
+                      <th key={d} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[70px]">
+                        {d}<br /><span className="font-normal text-[10px] text-slate-400">{dateStr}</span>
+                      </th>
+                    );
+                  })}
                   <th className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap">Week total</th>
                 </tr>
               </thead>
@@ -890,6 +929,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
               Based on {activeCohorts.reduce((s, c) => s + c.units, 0).toLocaleString()} active units in queue
               · per-week scheduled capacity from the 52-week planner · FIFO sort.
               Intake week = event date + {queueSummary?.offsetDays ?? 4} days (falls back to order date when an order has no event-date tag).
+              Weeks marked <span className="bg-slate-100 text-slate-500 rounded px-1 py-px">est.</span> have no real order yet — projected at the recent average intake pace out to a 52-week horizon.
               {!queueFrontWeek && queueSummary?.oldestEventDate && (
                 <> Oldest still-open order has an event date of <strong>{new Date(queueSummary.oldestEventDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</strong> — set &quot;Currently designing as of&quot; above once you know the real front, so stuck stragglers like that one stop anchoring the math.</>
               )}
@@ -919,8 +959,11 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
                       const wks = row.weeksToComplete;
                       const totalTurnaround = wks !== null ? row.weeksElapsed + wks : null;
                       return (
-                        <tr key={row.weekOf} className={`border-b border-slate-50 ${wks === 0 ? 'bg-indigo-50/40' : 'hover:bg-slate-50'}`}>
-                          <td className="px-4 py-2 font-medium text-slate-700 whitespace-nowrap">{row.weekLabel}</td>
+                        <tr key={row.weekOf} className={`border-b border-slate-50 ${wks === 0 ? 'bg-indigo-50/40' : row.estimated ? 'bg-slate-50/40' : 'hover:bg-slate-50'}`}>
+                          <td className="px-4 py-2 font-medium text-slate-700 whitespace-nowrap">
+                            {row.weekLabel}
+                            {row.estimated && <span className="ml-2 text-[10px] bg-slate-100 text-slate-400 rounded px-1 py-px" title="No real order yet for this week — projected at the recent average intake pace">est.</span>}
+                          </td>
                           <td className="px-3 py-2 text-right text-slate-600">{row.units}</td>
                           <td className="px-3 py-2 text-right">
                             {wks === 0 ? (
