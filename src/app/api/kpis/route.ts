@@ -488,15 +488,10 @@ function resolveMemberWeekHours(
 
 // Guaranteed-PAY basis for one week — equals resolveMemberWeekHours except on
 // a paid holiday, where staff are still paid (their standard hours for that
-// weekday) whether or not they produced anything.
-//
-// holidayPayStacksOnOverride is deliberately false here (unlike the live
-// Scheduling UI's default): an existing daily entry read by this projection
-// may be stale data that predates the holiday ever being declared (e.g. a
-// projected future week's redistributed hours) rather than a live "they
-// worked N hours today" confirmation — stacking guaranteed pay on top of it
-// would manufacture cost with no corresponding production. A day with no
-// existing entry at all still gets full guaranteed pay as normal.
+// weekday) whether or not they produced anything, plus whatever's already
+// recorded for that day (worked hours, or a placeholder entered before the
+// day was declared a holiday — either way, guaranteed pay still applies on
+// top of it). See resolveDayHours' payHours for the exact semantics.
 function resolveMemberWeekPayHours(
   memberId:  string,
   weekOf:    string,
@@ -512,7 +507,6 @@ function resolveMemberWeekPayHours(
     standardWeeklyHours:  member.standardWeeklyHours,
     employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate },
     holidays,
-    holidayPayStacksOnOverride: false,
   });
 }
 
