@@ -18,6 +18,7 @@ import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './Inpu
 import { distributeHours, resolveDayHours, resolveWeekHours, isWithinEmployment, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
 import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './BloomUpdateModal';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
+import { useVisibleManagerCPO } from '@/hooks/useVisibleManagerCPO';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1720,7 +1721,7 @@ function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove
 }
 
 function PreservationSection({ location, preservationQueue, countsLoading, teamActuals, onActualsSaved,
-  presHours, presDailyHours, presCheckHours, onPresDailyHoursChange, onPresCheckHoursChange, presRoster, presSettings, mgrTotalHours, mgrTotalDailyHours, onPresHoursChange, onPresRosterChange, onPresSettingsChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {}, weeklyEstimates = {}, presActuals = {}, onReceivedSaved, canViewCPO = true, userRole = 'admin',
+  presHours, presDailyHours, presCheckHours, onPresDailyHoursChange, onPresCheckHoursChange, presRoster, presSettings, mgrTotalHours, mgrTotalDailyHours, onPresHoursChange, onPresRosterChange, onPresSettingsChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {}, weeklyEstimates = {}, presActuals = {}, onReceivedSaved, canViewCPO = true, userRole = 'admin', canSeeManagerCPO = () => false,
   bouquetsReceivedByWeek, presNewHireHours, onPresNewHireHoursChange }: {
   location:              'Utah' | 'Georgia';
   preservationQueue:     number;
@@ -1747,6 +1748,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   onReceivedSaved?:      () => void;
   canViewCPO?:           boolean;
   userRole?:             string;
+  canSeeManagerCPO?:     (name: string) => boolean;
   // Same "Bouquets received" estimate stream shown on Design's Queue &
   // Turnaround tab (52 weeks) — Preservation's own turnaround uses this as
   // its arrivals, rather than a separately-edited estimate.
@@ -2315,7 +2317,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           const orders = m.ratio > 0 ? prodH / m.ratio : 0;
                           const hasRate = m.rate > 0 || m.annualSalary > 0;
                           const cost = m.payType === 'salary' ? m.annualSalary / 260 : totalH * m.rate;
-                          const cpo = !m.isManager && hasRate && orders > 0 && cost > 0 ? cost / orders : null;
+                          const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && hasRate && orders > 0 && cost > 0 ? cost / orders : null;
                           return (
                             <td key={di} className={`px-2 py-1.5 text-center ${di === 0 ? 'bg-indigo-50/30' : ''}`}>
                               <div className="flex items-center gap-1">
@@ -2546,7 +2548,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                             const totalH = m.isManager ? resolvePresMgrTotalWeekHours(w, m.id, prodH) : prodH;
                             const orders = m.ratio > 0 ? prodH / m.ratio : 0;
                             const cost = m.payType === 'salary' ? (m.annualSalary / 52) : totalH * m.rate;
-                            const cpo = !m.isManager && orders > 0 && cost > 0 ? cost / orders : null;
+                            const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && orders > 0 && cost > 0 ? cost / orders : null;
                             return (
                               <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
                                 <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This Week tab (one-off exceptions) — the 52-week planner is a read-only view">
@@ -2776,6 +2778,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
           excludeFromCPONames={['Zac Williams', 'Lauren Boyd']}
           presActuals={presActuals}
           onReceivedSaved={onReceivedSaved}
+          canSeeManagerCPO={canSeeManagerCPO}
         />
       )}
     </div>
@@ -2786,7 +2789,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
 
 function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamActuals, onActualsSaved,
   ffHours, ffRoster, mgrTotalHours, mgrTotalDailyHours, onFfHoursChange, onFfRosterChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {},
-  ffDailyHoursProp, onFfDailyHoursChange, canViewCPO = true, userRole = 'admin',
+  ffDailyHoursProp, onFfDailyHoursChange, canViewCPO = true, userRole = 'admin', canSeeManagerCPO = () => false,
   ffNewHireHours, onFfNewHireHoursChange, ffCohortIntake,
   fullPipelineRemaining }: {
   location:        'Utah' | 'Georgia';
@@ -2807,6 +2810,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   onFfDailyHoursChange?: (h: DailyHoursMap) => void;
   canViewCPO?:           boolean;
   userRole?:             string;
+  canSeeManagerCPO?:     (name: string) => boolean;
   ffNewHireHours:        Record<string, number>;
   onFfNewHireHoursChange:(h: Record<string, number>) => void;
   // Cohorts that have already left Design — the pool Fulfillment's own
@@ -3158,7 +3162,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                           const totalH = m.isManager ? getMgrTotalFFH(m.id, dayIdx) : h;
                           const orders = m.ratio > 0 && h > 0 ? h / m.ratio : 0;
                           const cost = ffDailyCost(m, dayIdx);
-                          const cpo = !m.isManager && orders > 0 && cost > 0 ? cost / orders : null;
+                          const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && orders > 0 && cost > 0 ? cost / orders : null;
                           return (
                             <td key={dayIdx} className={`px-2 py-1.5 text-center ${dayIdx === 0 ? 'bg-amber-50/30' : ''}`}>
                               <input type="number"
@@ -3188,7 +3192,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         <td className="px-3 py-2 text-center">
                           <div className="font-medium text-amber-700">{Math.round(weekOrders * 100) / 100} ord</div>
                           <div className="text-slate-400 text-[10px]">{weekHrs}h</div>
-                          {ffHasRates && !m.isManager && weekCPO !== null && <div className="text-amber-600 text-[10px]">{fmt$(weekCPO)}</div>}
+                          {ffHasRates && (!m.isManager || canSeeManagerCPO(m.name)) && weekCPO !== null && <div className="text-amber-600 text-[10px]">{fmt$(weekCPO)}</div>}
                         </td>
                       </tr>
                     );
@@ -3272,7 +3276,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         const totalH = m.isManager ? resolveFfMgrTotalWeekHours(w, m.id, prodH) : prodH;
                         const o = m.ratio > 0 ? prodH / m.ratio : 0;
                         const cost = m.payType === 'salary' ? m.annualSalary / 52 : totalH * m.rate;
-                        const cpo = !m.isManager && o > 0 && cost > 0 ? cost / o : null;
+                        const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && o > 0 && cost > 0 ? cost / o : null;
                         return (
                           <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
                             <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This Week tab (one-off exceptions) — Weekly Schedule is a read-only view">
@@ -3535,7 +3539,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
           members={team.map(m => ({ id: m.id, name: m.name, payType: m.payType ?? 'hourly', hourlyRate: m.rate, annualSalary: m.annualSalary ?? 0, isManager: m.isManager, excludeFromCPO: (m as {excludeFromCPO?:boolean}).excludeFromCPO }))}
           ordersLabel="orders"
           excludeFromCPONames={['Zac Williams', 'Lauren Boyd']}
-
+          canSeeManagerCPO={canSeeManagerCPO}
         />
       )}
     </div>
@@ -4017,6 +4021,7 @@ export function SchedulePage({
   userRole          = 'admin',
 }: SchedulePageProps) {
 
+  const { canSeeManagerCPO } = useVisibleManagerCPO();
   const defaultLocation = (userLocation === 'Georgia' ? 'Georgia' : 'Utah') as 'Utah' | 'Georgia';
   const [location, setLocation] = useState<'Utah' | 'Georgia'>(defaultLocation);
   // Permission derived from current location
@@ -4379,7 +4384,7 @@ export function SchedulePage({
     const isDesignMgr = !!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager);
     const totalHrs = isDesignMgr ? resolveMgrTotalWeekHours(weekIdx, d.id, hrs) : hrs;
     const cost   = d.payType === 'salary' ? d.annualSalary / 52 : totalHrs * d.hourlyRate;
-    const cpo    = !isDesignMgr && frames > 0 && cost > 0 ? cost / frames : null;
+    const cpo    = (!isDesignMgr || canSeeManagerCPO(d.name)) && frames > 0 && cost > 0 ? cost / frames : null;
     return { hrs, frames, cost, cpo, totalHrs };
   }
 
@@ -5163,6 +5168,7 @@ export function SchedulePage({
           countsLoading={countsLoading}
           teamActuals={teamActuals}
           canViewCPO={canViewCPO}
+          canSeeManagerCPO={canSeeManagerCPO}
           presHours={settings.presHours}
           presDailyHours={presDailyHours}
           presCheckHours={presCheckHours}
@@ -5218,6 +5224,7 @@ export function SchedulePage({
           countsLoading={countsLoading}
           teamActuals={teamActuals}
           canViewCPO={canViewCPO}
+          canSeeManagerCPO={canSeeManagerCPO}
           ffHours={settings.ffHours}
           ffRoster={settings.ffRoster}
           mgrTotalHours={settings.mgrTotalHours}
@@ -5412,7 +5419,7 @@ export function SchedulePage({
                               const totalH = isMgr ? getMgrTotalDH(d.id, dayIdx) : h;
                               const frames = d.ratio > 0 && h > 0 ? h / d.ratio : 0;
                               const cost = dDailyCost(d, dayIdx);
-                              const cpo = !isMgr && frames > 0 && cost > 0 ? cost / frames : null;
+                              const cpo = (!isMgr || canSeeManagerCPO(d.name)) && frames > 0 && cost > 0 ? cost / frames : null;
                               return (
                                 <td key={dayIdx} className={`px-2 py-1.5 text-center ${dayIdx === 0 ? 'bg-indigo-50/30' : ''}`}>
                                   <input type="number"
@@ -5442,7 +5449,7 @@ export function SchedulePage({
                             <td className="px-3 py-2 text-center">
                               <div className="font-medium text-indigo-700">{Math.round(weekFrames * 100) / 100}f</div>
                               <div className="text-slate-400 text-[10px]">{weekHrs}h</div>
-                              {hasRates && !isMgr && weekCPO !== null && <div className="text-amber-600 text-[10px]">{fmt$(weekCPO)}</div>}
+                              {hasRates && (!isMgr || canSeeManagerCPO(d.name)) && weekCPO !== null && <div className="text-amber-600 text-[10px]">{fmt$(weekCPO)}</div>}
                             </td>
                           </tr>
                         );
@@ -5539,7 +5546,7 @@ export function SchedulePage({
                               {designInputMode === 'output'
                                 ? (hrs > 0 && <div className="text-slate-400 mt-0.5">{round2(hrs)}h</div>)
                                 : (frames > 0 && <div className="text-slate-400 mt-0.5">{Math.round(frames)}f</div>)}
-                              {showCPO && !isDesignMgr && cpo !== null && (
+                              {showCPO && (!isDesignMgr || canSeeManagerCPO(d.name)) && cpo !== null && (
                                 <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>
                               )}
                             </td>
@@ -6061,9 +6068,10 @@ export function SchedulePage({
               <HistoricalsSection
                 department="design"
                 location={location}
-                members={designers.map(d => ({ id: d.id, name: d.name, payType: d.payType, hourlyRate: d.hourlyRate, annualSalary: d.annualSalary, excludeFromCPO: (d as {excludeFromCPO?:boolean}).excludeFromCPO }))}
+                members={designers.map(d => ({ id: d.id, name: d.name, payType: d.payType, hourlyRate: d.hourlyRate, annualSalary: d.annualSalary, isManager: (d as {isManager?:boolean}).isManager, excludeFromCPO: (d as {excludeFromCPO?:boolean}).excludeFromCPO }))}
                 ordersLabel="frames"
                 excludeFromCPONames={['Zac Williams', 'Lauren Boyd']}
+                canSeeManagerCPO={canSeeManagerCPO}
               />
               <DisapprovalRateSection
                 location={location}
@@ -6091,7 +6099,7 @@ export function SchedulePage({
       {dept === 'resin' && (
         <>
         <DeptKPIBar dept="resin" location="Utah" kpiState={kpiMetrics} showCPO={hasAnyRates} />
-        <ResinPage canViewCPO={canViewCPO} />
+        <ResinPage canViewCPO={canViewCPO} canSeeManagerCPO={canSeeManagerCPO} />
         </>
       )}
       {dept === 'master' && (
