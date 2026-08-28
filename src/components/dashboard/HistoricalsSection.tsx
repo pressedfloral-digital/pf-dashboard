@@ -24,6 +24,7 @@ interface HistoricalsSectionProps {
   onRatioUpdate?: (memberId: string, ratio: number) => void;
   presActuals?:  Record<string, number>;
   onReceivedSaved?: () => void;
+  canSeeManagerCPO?: (name: string) => boolean;
 }
 
 function fmt$(n: number): string {
@@ -59,7 +60,7 @@ function getAllWeeks(): string[] {
   return weeks;
 }
 
-export function HistoricalsSection({ department, location, members, ordersLabel, onRatioUpdate, excludeFromCPONames = [], presActuals = {}, onReceivedSaved }: HistoricalsSectionProps) {
+export function HistoricalsSection({ department, location, members, ordersLabel, onRatioUpdate, excludeFromCPONames = [], presActuals = {}, onReceivedSaved, canSeeManagerCPO = () => false }: HistoricalsSectionProps) {
   const { enrichedActuals, loading, refresh, getWeekCosts, getRateForWeek } = useActualsWithPayroll(location);
   // team_member_week_actuals stores resin rows as 'Resin' (capitalized) — the
   // other three departments store lowercase. This is the one place that
@@ -329,7 +330,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                                 {(e.hours / e.orders).toFixed(2)} h/ord
                               </div>
                             )}
-                            {cpo !== null && hasRates && (
+                            {cpo !== null && hasRates && (!member?.isManager || canSeeManagerCPO(name)) && (
                               <div className={`text-[9px] px-1 pb-0.5 text-center font-semibold ${e.isActual ? 'text-green-700' : 'text-amber-600'}`}>
                                 {fmt$(cpo)}
                               </div>
@@ -497,7 +498,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                               {ratio.toFixed(2)} h/ord
                             </div>
                           )}
-                          {cpo !== null && (
+                          {cpo !== null && (!member?.isManager || canSeeManagerCPO(name)) && (
                             <div className={`text-[10px] font-semibold ${d.isActual ? 'text-green-700' : 'text-amber-600'}`}>
                               {fmt$(cpo)}
                             </div>

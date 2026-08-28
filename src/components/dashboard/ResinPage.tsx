@@ -115,9 +115,10 @@ function useResinSettings() {
 interface ResinPageProps {
   resinQueue?: number;  // live count from dashboard (if wired up)
   canViewCPO?: boolean;
+  canSeeManagerCPO?: (name: string) => boolean;
 }
 
-export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPageProps) {
+export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManagerCPO = () => false }: ResinPageProps) {
   const [activeTab, setActiveTab] = useState<'thisweek' | 'schedule' | 'queue' | 'historicals'>('thisweek');
   const [thisWeekOffset, setThisWeekOffset] = useState(0);
   const [weekOffset, setWeekOffset] = useState(0);
@@ -206,15 +207,15 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
   }
 
   // Production hours drive units/ratio; managers' total hours (production +
-  // managerial) drive cost instead, and managers are excluded from CPO since
-  // their per-unit number isn't meaningful. Mirrors Design's weekStats.
+  // managerial) drive cost instead. A manager's own CPO is only shown to
+  // viewers the pay-privacy chain (see canSeeManagerCPO) allows.
   function weekMemberStats(weekIdx: number, m: ResinMember) {
     const hrs      = memberWeekHours(weekIdx, m);
     const units    = m.ratio > 0 ? hrs / m.ratio : 0;
     const payHrs   = memberWeekPayHours(weekIdx, m);
     const totalHrs = m.isManager ? resolveMgrTotalWeekHours(weekIdx, m, payHrs) : payHrs;
     const cost     = m.payType === 'salary' ? m.annualSalary / 52 : totalHrs * m.hourlyRate;
-    const cpo      = !m.isManager && units > 0 && cost > 0 ? cost / units : null;
+    const cpo      = (!m.isManager || canSeeManagerCPO(m.name)) && units > 0 && cost > 0 ? cost / units : null;
     return { hrs, units, cost, cpo };
   }
 
@@ -742,7 +743,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
                   const weekTotal = [0,1,2,3,4,5,6].reduce((s, di) => s + getDH(m.id, thisWeekOffset, di), 0);
                   const units = m.ratio > 0 ? weekTotal / m.ratio : 0;
                   const weekCost = [0,1,2,3,4,5,6].reduce((s, di) => s + dailyCost(m, thisWeekOffset, di), 0);
-                  const weekCPO = !m.isManager && units > 0 && weekCost > 0 ? weekCost / units : null;
+                  const weekCPO = (!m.isManager || canSeeManagerCPO(m.name)) && units > 0 && weekCost > 0 ? weekCost / units : null;
                   return (
                     <tr key={m.id} className={`border-b border-slate-50 ${mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
                       <td className="sticky left-0 bg-inherit px-4 py-2 font-medium text-slate-700 whitespace-nowrap">
@@ -756,7 +757,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
                         const dayUnits = m.ratio > 0 ? dayVal / m.ratio : 0;
                         const totalDayVal = m.isManager ? getMgrTotalDH(m.id, thisWeekOffset, di) : dayVal;
                         const cost = dailyCost(m, thisWeekOffset, di);
-                        const cpo = !m.isManager && dayUnits > 0 && cost > 0 ? cost / dayUnits : null;
+                        const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && dayUnits > 0 && cost > 0 ? cost / dayUnits : null;
                         return (
                           <td key={di} className={`px-1 py-1.5 text-center ${isHoliday ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/20' : ''}`}>
                             <input type="number"
@@ -1092,6 +1093,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true }: ResinPagePr
           }))}
           ordersLabel="pieces"
           onRatioUpdate={(id, ratio) => updateRosterField(id, 'ratio', ratio)}
+          canSeeManagerCPO={canSeeManagerCPO}
         />
       )}
     </div>
