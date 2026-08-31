@@ -50,6 +50,17 @@ interface ActualRow {
   actual_orders: number;
 }
 
+// Monthly performance bonuses -- only fetched/injected for the Monthly
+// series (see the `monthlySeries` block in GET below). location/department
+// are null for rows whose employee didn't match rippling_employees at
+// upload time; those are excluded from department attribution here.
+interface BonusRow {
+  location:    string | null;
+  department:  string | null;
+  bonus_month: string;   // ISO date, first-of-month
+  gross_pay:   number;
+}
+
 interface ScheduleSettingRow {
   location: string;
   key:      string;
@@ -60,6 +71,12 @@ export interface KpiMetrics {
   hours:        number;
   production:   number;
   laborCost:    number;
+  // Monthly performance bonus $ attributed to this dept (0 outside the
+  // Monthly-series window — see buildWindowResult/computePeriodKpis).
+  // Unlike GM cost, bonus IS attributable per department (per-employee
+  // data joined to the directory at upload time), so it folds directly
+  // into each dept's own laborCost rather than being spread org-wide.
+  bonusCost:    number;
   // ratio excludes managers entirely — neither their hours nor their
   // production count toward it. A manager's hours mix in non-production
   // (managerial/admin) time that would skew hrs/frame, so ratioHours/
@@ -70,6 +87,8 @@ export interface KpiMetrics {
   ratio:        number | null;   // ratioHours / ratioProduction
   cpo:          number | null;   // laborCost / production
   cpoWithGM:    number | null;   // (laborCost + GM salary) / production — combined only
+  cpoWithBonus:   number | null; // (laborCost + bonusCost) / production
+  cpoWithGMBonus: number | null; // (laborCost + bonusCost + GM share) / production — combined only
   hasData:      boolean;
 }
 
@@ -216,7 +235,8 @@ function computePeriodKpis(
   actualRows:   ActualRow[],
   location:     string,
   weekOfs:      string[],
-  managerNames: Set<string>   // `${location}|${dept}|${name lowercased}` — see buildManagerNameSet
+  managerNames: Set<string>,  // `${location}|${dept}|${name lowercased}` — see buildManagerNameSet
+  bonusByDept?: Record<string, number>   // dept -> $ — Monthly-series callers only, see buildWindowResult
 ): PeriodKpis {
   const PROD_DEPTS = ['Design', 'Preservation', 'Fulfillment'] as const;
   const ALL_DEPTS  = [...PROD_DEPTS, 'G&A', 'Resin'] as const;
@@ -258,18 +278,22 @@ function computePeriodKpis(
     const hours          = hoursByDept[dept] ?? 0;
     const production     = overrideProduction ?? (prodByDept[dept] ?? 0);
     const laborCost      = laborByDept[dept] ?? 0;
+    const bonusCost       = bonusByDept?.[dept] ?? 0;
     const ratioHours      = ratioHoursByDept[dept] ?? 0;
     const ratioProduction = ratioProdByDept[dept] ?? 0;
     return {
       hours,
       production,
       laborCost,
+      bonusCost,
       ratioHours,
       ratioProduction,
-      ratio:     (ratioHours > 0 && ratioProduction > 0) ? ratioHours / ratioProduction : null,
-      cpo:       (laborCost > 0 && production > 0) ? laborCost / production : null,
-      cpoWithGM: null,
-      hasData:   hours > 0 || production > 0 || laborCost > 0,
+      ratio:          (ratioHours > 0 && ratioProduction > 0) ? ratioHours / ratioProduction : null,
+      cpo:            (laborCost > 0 && production > 0) ? laborCost / production : null,
+      cpoWithGM:      null,
+      cpoWithBonus:   ((laborCost + bonusCost) > 0 && production > 0) ? (laborCost + bonusCost) / production : null,
+      cpoWithGMBonus: null,
+      hasData:        hours > 0 || production > 0 || laborCost > 0 || bonusCost > 0,
     };
   }
 
@@ -310,6 +334,28 @@ function computePeriodKpis(
         ? blendedCPO
         : null;
 
+  // Bonus-inclusive blended CPO, mirroring the GM-inclusive block above but
+  // additive per-dept (bonus IS attributable per department, unlike GM).
+  let blendedCPOWithBonus: number | null = null;
+  let blendedSumWithBonus = 0;
+  let blendedHasDataWithBonus = false;
+  for (const m of [design, preservation, fulfillment]) {
+    if (m.cpoWithBonus !== null) { blendedSumWithBonus += m.cpoWithBonus; blendedHasDataWithBonus = true; }
+  }
+  const gaCostWithBonus = gaCost + ga.bonusCost;
+  if (gaCostWithBonus > 0 && totalProdOrders > 0) {
+    blendedSumWithBonus += gaCostWithBonus / totalProdOrders;
+    blendedHasDataWithBonus = true;
+  }
+  if (blendedHasDataWithBonus) blendedCPOWithBonus = blendedSumWithBonus;
+
+  const blendedCPOWithGMBonus =
+    blendedCPOWithBonus !== null && totalProdOrders > 0
+      ? blendedCPOWithBonus + gmCostPerLocation / totalProdOrders
+      : blendedCPOWithBonus;
+
+  const combinedBonusCost = design.bonusCost + preservation.bonusCost + fulfillment.bonusCost + ga.bonusCost;
+
   // Combined ratio: sum of per-dept ratios (additive, mirrors scorecard)
   let combinedRatio: number | null = null;
   let ratioSum = 0; let ratioHasData = false;
@@ -326,11 +372,14 @@ function computePeriodKpis(
     hours:      totalHours,
     production: totalProdOrders,
     laborCost:  combinedLaborCost,
+    bonusCost:  combinedBonusCost,
     ratioHours:      combinedRatioHours,
     ratioProduction: combinedRatioProduction,
     ratio:      combinedRatio,
     cpo:        blendedCPO,
     cpoWithGM:  blendedCPOWithGM,
+    cpoWithBonus:   blendedCPOWithBonus,
+    cpoWithGMBonus: blendedCPOWithGMBonus,
     hasData:    totalHours > 0 || totalProdOrders > 0 || combinedLaborCost > 0,
   };
 
@@ -342,14 +391,17 @@ function poolLocations(utah: PeriodKpis, georgia: PeriodKpis): PeriodKpis {
     const hours          = a.hours          + b.hours;
     const production     = a.production     + b.production;
     const laborCost      = a.laborCost      + b.laborCost;
+    const bonusCost       = a.bonusCost      + b.bonusCost;
     const ratioHours      = a.ratioHours      + b.ratioHours;
     const ratioProduction = a.ratioProduction + b.ratioProduction;
     return {
-      hours, production, laborCost, ratioHours, ratioProduction,
-      ratio:     (ratioHours > 0 && ratioProduction > 0) ? ratioHours / ratioProduction : null,
-      cpo:       (laborCost > 0 && production > 0) ? laborCost / production : null,
-      cpoWithGM: null,
-      hasData:   hours > 0 || production > 0 || laborCost > 0,
+      hours, production, laborCost, bonusCost, ratioHours, ratioProduction,
+      ratio:          (ratioHours > 0 && ratioProduction > 0) ? ratioHours / ratioProduction : null,
+      cpo:            (laborCost > 0 && production > 0) ? laborCost / production : null,
+      cpoWithGM:      null,
+      cpoWithBonus:   ((laborCost + bonusCost) > 0 && production > 0) ? (laborCost + bonusCost) / production : null,
+      cpoWithGMBonus: null,
+      hasData:        hours > 0 || production > 0 || laborCost > 0 || bonusCost > 0,
     };
   }
 
@@ -384,6 +436,26 @@ function poolLocations(utah: PeriodKpis, georgia: PeriodKpis): PeriodKpis {
       ? blendedCPO + totalGMCost / totalProdOrders
       : blendedCPO;
 
+  // Bonus is already additive per pooled dept (no reverse-derivation needed
+  // the way GM cost requires, since bonusCost isn't spread org-wide).
+  let blendedCPOWithBonus: number | null = null;
+  let blendedSumWithBonus = 0; let blendedHasDataWithBonus = false;
+  for (const m of [design, preservation, fulfillment]) {
+    if (m.cpoWithBonus !== null) { blendedSumWithBonus += m.cpoWithBonus; blendedHasDataWithBonus = true; }
+  }
+  const gaCostWithBonus = ga.laborCost + ga.bonusCost;
+  if (gaCostWithBonus > 0 && totalProdOrders > 0) {
+    blendedSumWithBonus += gaCostWithBonus / totalProdOrders; blendedHasDataWithBonus = true;
+  }
+  if (blendedHasDataWithBonus) blendedCPOWithBonus = blendedSumWithBonus;
+
+  const blendedCPOWithGMBonus =
+    blendedCPOWithBonus !== null && totalProdOrders > 0
+      ? blendedCPOWithBonus + totalGMCost / totalProdOrders
+      : blendedCPOWithBonus;
+
+  const combinedBonusCost = design.bonusCost + preservation.bonusCost + fulfillment.bonusCost + ga.bonusCost;
+
   let combinedRatio: number | null = null;
   let ratioSum = 0; let ratioHasData = false;
   for (const m of [design, preservation, fulfillment]) {
@@ -398,8 +470,10 @@ function poolLocations(utah: PeriodKpis, georgia: PeriodKpis): PeriodKpis {
 
   const combined: KpiMetrics = {
     hours: totalHours, production: totalProdOrders, laborCost: combinedLaborCost,
+    bonusCost: combinedBonusCost,
     ratioHours: combinedRatioHours, ratioProduction: combinedRatioProduction,
     ratio: combinedRatio, cpo: blendedCPO, cpoWithGM: blendedCPOWithGM,
+    cpoWithBonus: blendedCPOWithBonus, cpoWithGMBonus: blendedCPOWithGMBonus,
     hasData: totalHours > 0 || totalProdOrders > 0,
   };
 
@@ -412,11 +486,12 @@ function buildWindowResult(
   end:          string,
   laborRows:    LaborRow[],
   actualRows:   ActualRow[],
-  managerNames: Set<string>
+  managerNames: Set<string>,
+  bonusByLocDept?: Record<string, Record<string, number>>  // location -> dept -> $ — Monthly-series only
 ): WindowResult {
   const weekOfs = getWeekMondays(start, end);
-  const utah    = computePeriodKpis(laborRows, actualRows, 'Utah',    weekOfs, managerNames);
-  const georgia = computePeriodKpis(laborRows, actualRows, 'Georgia', weekOfs, managerNames);
+  const utah    = computePeriodKpis(laborRows, actualRows, 'Utah',    weekOfs, managerNames, bonusByLocDept?.['Utah']);
+  const georgia = computePeriodKpis(laborRows, actualRows, 'Georgia', weekOfs, managerNames, bonusByLocDept?.['Georgia']);
   return { label, periodStart: start, periodEnd: end, utah, georgia, combined: poolLocations(utah, georgia) };
 }
 
@@ -693,11 +768,14 @@ function projectMonthForLocation(
       hours:      m.hours,
       production: m.production,
       laborCost:  m.laborCost,
+      bonusCost:  0,   // est-current/est-next never have bonus data by design
       ratioHours:      m.ratioHours,
       ratioProduction: m.ratioProduction,
       ratio:      m.ratioHours > 0 && m.ratioProduction > 0 ? m.ratioHours / m.ratioProduction : null,
       cpo:        m.laborCost > 0 && m.production > 0 ? m.laborCost / m.production : null,
       cpoWithGM:  null,
+      cpoWithBonus:   null,
+      cpoWithGMBonus: null,
       hasData:    m.hours > 0 || m.production > 0 || m.laborCost > 0,
     };
   }
@@ -717,10 +795,13 @@ function projectMonthForLocation(
   // it across total org production so its CPO ($/unit) is computable.
   const ga: KpiMetrics = {
     hours: 0, production: totalProdOrders, laborCost: gaCost,
+    bonusCost: 0,
     ratioHours: 0, ratioProduction: 0,
     ratio: null,
     cpo: gaCost > 0 && totalProdOrders > 0 ? gaCost / totalProdOrders : null,
     cpoWithGM: null,
+    cpoWithBonus: null,
+    cpoWithGMBonus: null,
     hasData: gaCost > 0,
   };
 
@@ -758,8 +839,10 @@ function projectMonthForLocation(
 
   const combined: KpiMetrics = {
     hours: totalHours, production: totalProdOrders, laborCost: combinedLaborCost,
+    bonusCost: 0,
     ratioHours: combinedRatioHours, ratioProduction: combinedRatioProduction,
     ratio: combinedRatio, cpo: blendedCPO, cpoWithGM: blendedCPOWithGM,
+    cpoWithBonus: null, cpoWithGMBonus: null,
     hasData: totalHours > 0 || totalProdOrders > 0 || combinedLaborCost > 0,
   };
 
@@ -818,7 +901,7 @@ export async function GET(req: NextRequest) {
     // up to a year. A plain unranged .select() was silently dropping
     // whichever rows landed past row 1000 (arbitrary order, no error), which
     // is what made Georgia Design's MTD CPO read a third of its real value.
-    const [laborRows, actualRows, rosterRes] = await Promise.all([
+    const [laborRows, actualRows, rosterRes, bonusRows] = await Promise.all([
       fetchAllRows<LaborRow>((from, to) =>
         supabase
           .from('weekly_labor_cost')
@@ -837,6 +920,15 @@ export async function GET(req: NextRequest) {
         .from('schedule_settings')
         .select('location,key,value')
         .in('key', ['designRoster', 'presRoster', 'ffRoster']),
+      // Only ever consumed by the Monthly series below — fetched here
+      // alongside everything else so it's available for that block.
+      fetchAllRows<BonusRow>((from, to) =>
+        supabase
+          .from('monthly_bonus')
+          .select('location,department,bonus_month,gross_pay')
+          .gte('bonus_month', earliestDate)
+          .range(from, to)
+      ),
     ]);
 
     if (rosterRes.error)  throw rosterRes.error;
@@ -879,12 +971,30 @@ export async function GET(req: NextRequest) {
     // ── Monthly series ────────────────────────────────────────────────────────
     const monthlySeries = requested.find(w => w.startsWith('monthly-'));
     if (monthlySeries) {
+      // location -> monthKey ("YYYY-MM") -> dept -> $. Unmatched employees
+      // (null location/department at upload time) are excluded here — see
+      // monthly-bonus-upload's `unmatched` response field for reconciliation.
+      const bonusByLocDeptMonth: Record<string, Record<string, Record<string, number>>> = {};
+      for (const row of bonusRows) {
+        if (!row.location || !row.department) continue;
+        const monthKey = row.bonus_month.slice(0, 7);
+        const dept     = normDept(row.department);
+        bonusByLocDeptMonth[row.location] ??= {};
+        bonusByLocDeptMonth[row.location][monthKey] ??= {};
+        bonusByLocDeptMonth[row.location][monthKey][dept] =
+          (bonusByLocDeptMonth[row.location][monthKey][dept] ?? 0) + row.gross_pay;
+      }
+
       const n = parseInt(monthlySeries.split('-')[1]) || 12;
       for (let i = n; i >= 1; i--) {
         const first = new Date(now.getFullYear(), now.getMonth() - i, 1);
         const last  = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
         const key   = isoDate(first).slice(0, 7);
-        results.push(buildWindowResult(monthLabel(key), isoDate(first), isoDate(last), laborRows, actualRows, managerNames));
+        const bonusForMonth = {
+          Utah:    bonusByLocDeptMonth['Utah']?.[key],
+          Georgia: bonusByLocDeptMonth['Georgia']?.[key],
+        };
+        results.push(buildWindowResult(monthLabel(key), isoDate(first), isoDate(last), laborRows, actualRows, managerNames, bonusForMonth));
       }
     }
 
