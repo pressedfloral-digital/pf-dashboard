@@ -4,6 +4,8 @@ import { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { parseWeeklyLaborXLSX } from './weeklyLaborParser';
 import type { WeeklyLaborRow } from './weeklyLaborParser';
+import { parseMonthlyBonusXLSX } from './monthlyBonusParser';
+import type { MonthlyBonusRow } from './monthlyBonusParser';
 
 function fmt$(n: number) {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
@@ -151,7 +153,7 @@ function parsePayrollXLSX(file: File): Promise<PayrollRow[]> {
 
 // ─── Upload Card ───────────────────────────────────────────────────────────────
 
-type UploadType = 'employees' | 'hours' | 'payroll' | 'weeklylabor';
+type UploadType = 'employees' | 'hours' | 'payroll' | 'weeklylabor' | 'bonus';
 
 interface UploadCardProps {
   type:        UploadType;
@@ -176,6 +178,7 @@ function UploadCard({ type, title, description, frequency, accentColor }: Upload
       if (type === 'hours')          rows = await parseHoursXLSX(file);
       if (type === 'payroll')        rows = await parsePayrollXLSX(file);
       if (type === 'weeklylabor')   rows = await parseWeeklyLaborXLSX(file);
+      if (type === 'bonus')          rows = await parseMonthlyBonusXLSX(file);
       setPreview(rows);
       setStatus('preview');
     } catch (err) { setErrorMsg(`Parse failed: ${err instanceof Error ? err.message : JSON.stringify(err)}`); setStatus('error'); }
@@ -188,6 +191,7 @@ function UploadCard({ type, title, description, frequency, accentColor }: Upload
       const endpoint = type === 'employees'  ? '/api/admin/employees-upload'
                      : type === 'hours'      ? '/api/admin/hours-upload'
                      : type === 'weeklylabor' ? '/api/admin/weekly-labor-upload'
+                     : type === 'bonus'       ? '/api/admin/monthly-bonus-upload'
                      : '/api/admin/payroll-upload';
       const bodyKey  = type === 'employees' ? 'employees' : 'rows';
       const res  = await fetch(endpoint, {
@@ -238,6 +242,13 @@ function UploadCard({ type, title, description, frequency, accentColor }: Upload
               {type === 'hours'     && ` (${new Set((preview as HoursRow[]).map(r => r.employee)).size} people, ${new Set((preview as HoursRow[]).map(r => r.date.slice(0,7))).size} months)`}
               {type === 'payroll'   && ` (${new Set((preview as PayrollRow[]).map(r => r.employee)).size} people — ${fmt$((preview as PayrollRow[]).reduce((s,r) => s + r.grossPay, 0))} total gross)`}
               {type === 'weeklylabor' && ` (${new Set((preview as WeeklyLaborRow[]).map(r => r.employee)).size} people, ${new Set((preview as WeeklyLaborRow[]).map(r => r.weekOf)).size} weeks — ${fmt$((preview as WeeklyLaborRow[]).reduce((s,r) => s + r.grossPay, 0))} total)`}
+              {type === 'bonus' && (() => {
+                const rows = preview as MonthlyBonusRow[];
+                const skippedCount = rows.filter(r => !r.bonusMonth || !r.checkDate).length;
+                const months = new Set(rows.filter(r => r.bonusMonth).map(r => r.bonusMonth)).size;
+                return ` (${new Set(rows.map(r => r.employee)).size} people, ${months} months — ${fmt$(rows.reduce((s,r) => s + r.grossPay, 0))} total`
+                  + (skippedCount > 0 ? `, ${skippedCount} row${skippedCount === 1 ? '' : 's'} will be skipped — unrecognized pay run name)` : ')');
+              })()}
             </div>
             <div className="flex gap-2">
               <button onClick={handleUpload} className="px-4 py-1.5 text-xs font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors">
@@ -269,6 +280,23 @@ function UploadCard({ type, title, description, frequency, accentColor }: Upload
                 <p><span className="font-medium">{String(result.people)}</span> people · <span className="font-medium">{String(result.inserted)}</span> pay records</p>
                 {result.dateRange && <p>Period: {fmtDate(String((result.dateRange as {from:string}).from))} – {fmtDate(String((result.dateRange as {to:string}).to))}</p>}
                 <p>Total gross: <span className="font-medium">{fmt$(Number(result.totalGross))}</span></p>
+              </>}
+              {type === 'bonus' && <>
+                <p><span className="font-medium">{String(result.inserted)}</span> bonus records saved
+                  {Number(result.skipped) > 0 && <span className="text-amber-600"> · {String(result.skipped)} skipped (unrecognized pay run name)</span>}
+                </p>
+                {result.dateRange && <p>Months: {fmtDate(String((result.dateRange as {from:string}).from))} – {fmtDate(String((result.dateRange as {to:string}).to))}</p>}
+                <p>Total gross: <span className="font-medium">{fmt$(Number(result.totalGross))}</span></p>
+                {Array.isArray(result.unmatched) && result.unmatched.length > 0 && (
+                  <div className="bg-amber-50 text-amber-800 rounded p-2 mt-1">
+                    <p className="font-medium">{result.unmatched.length} row(s) excluded from department/location CPO totals until fixed:</p>
+                    <ul className="list-disc list-inside">
+                      {(result.unmatched as {employee:string; grossPay:number; reason?:string}[]).map((u, i) => (
+                        <li key={`${u.employee}-${i}`}>{u.employee} — {fmt$(u.grossPay)}{u.reason ? ` (${u.reason})` : ''}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </>}
             </div>
             <button onClick={() => { setStatus('idle'); setResult(null); if (inputRef.current) inputRef.current.value = ''; }}
@@ -319,6 +347,13 @@ export function PayrollUploadPanel() {
         description='Upload "Weekly_Earnings_by_Location__Department" from Rippling. Used for accurate CPO calculations — includes G&A allocation and salary manager costs.'
         frequency="weekly"
         accentColor="bg-green-50 text-green-700"
+      />
+      <UploadCard
+        type="bonus"
+        title="Monthly Bonus Upload"
+        description='Upload the monthly bonus payroll report from Rippling. Per-employee bonus payouts are matched to the Employee Directory by name to attribute cost to department/location for the "Incl. Bonus" toggle on the Monthly CPO view. Paid ~monthly, 3-4 weeks after the month earned.'
+        frequency="~monthly"
+        accentColor="bg-amber-50 text-amber-700"
       />
     </div>
   );

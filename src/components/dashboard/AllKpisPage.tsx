@@ -49,6 +49,12 @@ const TIME_WINDOWS: { id: TimeWindow; label: string }[] = [
   { id: 'est-next',   label: 'Est. next month' },
 ];
 
+// Singular form of DEPT_PRODUCTION_UNIT, for a per-unit rate like
+// "+$2.29/frame" where the plural ("frames") would read oddly.
+const SINGULAR_UNIT: Record<KpiDept, string> = {
+  design: 'frame', preservation: 'bouquet', fulfillment: 'order', resin: 'piece', ga: 'order', combined: 'order',
+};
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function TabBar<T extends string>({
@@ -85,12 +91,14 @@ function KpiCell({
   metrics,
   section,
   showGM,
+  showBonus = false,
   dept,
   colorClassOverride,
 }: {
   metrics:  KpiMetrics;
   section:  KpiSection;
   showGM:   boolean;
+  showBonus?: boolean;
   dept:     KpiDept;
   colorClassOverride?: string;
 }) {
@@ -114,8 +122,32 @@ function KpiCell({
     );
   }
 
-  // CPO section
-  const cpoVal = showGM ? metrics.cpoWithGM : metrics.cpo;
+  // CPO section — deliberately no fallback chain: with showGM=true, a
+  // per-dept cell shows "—" regardless of showBonus, since GM cost still has
+  // no department attribution (only Combined gets the fully-blended value).
+  // Falling back to bonus-only would misleadingly imply GM was included.
+  const cpoVal =
+    showGM && showBonus ? metrics.cpoWithGMBonus :
+    showGM              ? metrics.cpoWithGM :
+    showBonus           ? metrics.cpoWithBonus :
+                           metrics.cpo;
+  // Only meaningful in bonus-aware mode: the bonus's own contribution to
+  // CPO ($/unit, not a raw dollar total that says nothing about scale), and
+  // what % that added on top of non-bonus labor cost. G&A has no unit of
+  // its own, but metrics.production for G&A is already overridden to the
+  // org-wide total production it's spread across (same basis its own CPO
+  // uses — see makeMetrics('G&A', totalProdOrders) in the API route), so
+  // this division is valid there too.
+  const bonusPerOrder = showBonus && metrics.bonusCost > 0 && metrics.production > 0
+    ? metrics.bonusCost / metrics.production
+    : null;
+  const bonusPct = showBonus && metrics.bonusCost > 0 && metrics.laborCost > 0
+    ? (metrics.bonusCost / metrics.laborCost) * 100
+    : null;
+  // Ties bonus payout to actual performance that same month — a department
+  // that got bonus $ while below its baseline (Specialist) tier is worth a
+  // second look at how the bonus goal was set.
+  const tier = showBonus ? classifyTier(dept, metrics.ratio) : null;
   return (
     <div className="space-y-0.5">
       <div className={`text-lg font-semibold tabular-nums ${cpoVal == null ? 'text-slate-300' : 'text-slate-800'}`}>
@@ -131,6 +163,18 @@ function KpiCell({
           {fmtCPO(metrics.laborCost)} total cost
         </div>
       )}
+      {showBonus && metrics.bonusCost > 0 && (
+        <div className="text-xs text-amber-600 tabular-nums">
+          {bonusPerOrder != null
+            ? `+${fmtCPO(bonusPerOrder)}/${SINGULAR_UNIT[dept]}`
+            : `+${fmtCPO(metrics.bonusCost)}`} bonus{bonusPct != null ? ` (+${bonusPct.toFixed(1)}% of cost)` : ''}
+        </div>
+      )}
+      {tier && (
+        <div className={`text-xs font-medium ${tier.colorClass}`}>
+          {tier.label} tier · {tier.aboveGoal ? 'at/above goal' : 'below goal'}
+        </div>
+      )}
     </div>
   );
 }
@@ -142,12 +186,14 @@ function HistoricalRow({
   location,
   depts,
   showGM,
+  showBonus = false,
 }: {
   window:   WindowResult;
   section:  KpiSection;
   location: KpiLocation;
   depts:    KpiDept[];
   showGM:   boolean;
+  showBonus?: boolean;
 }) {
   const period = selectLocation(w, location);
   return (
@@ -163,6 +209,7 @@ function HistoricalRow({
               metrics={selectDept(period, dept)}
               section={section}
               showGM={showGM}
+              showBonus={showBonus}
               dept={dept}
             />
           </td>
@@ -215,14 +262,29 @@ const RATIO_TIER_DEPT: Partial<Record<KpiDept, RatioDept>> = {
   fulfillment:  'Fulfillment',
 };
 
-function tierColorClass(dept: KpiDept, ratio: number | null): string | undefined {
+interface TierResult {
+  label:      string;
+  aboveGoal:  boolean;   // "goal" = at least Specialist (the baseline every roster tier is expected to clear)
+  colorClass: string;
+}
+
+// Classifies a department's actual ratio into the same Master/Senior/
+// Specialist tiers used for individual roster targets (RATIO_TARGETS) —
+// used both for coloring (tierColorClass) and, on the Monthly CPO view, to
+// surface whether a department that got a bonus that month was actually
+// performing at or above its baseline (Specialist) tier.
+function classifyTier(dept: KpiDept, ratio: number | null): TierResult | null {
   const key = RATIO_TIER_DEPT[dept];
-  if (!key || ratio == null) return undefined;
+  if (!key || ratio == null) return null;
   const t = RATIO_TARGETS[key];
-  if (ratio <= t.master)     return 'text-green-700';
-  if (ratio <= t.senior)     return 'text-amber-600';
-  if (ratio <= t.specialist) return 'text-slate-600';
-  return 'text-red-600';
+  if (ratio <= t.master)     return { label: 'Master',             aboveGoal: true,  colorClass: 'text-green-700' };
+  if (ratio <= t.senior)     return { label: 'Senior',             aboveGoal: true,  colorClass: 'text-amber-600' };
+  if (ratio <= t.specialist) return { label: 'Specialist',         aboveGoal: true,  colorClass: 'text-slate-600' };
+  return                            { label: 'Below Specialist',   aboveGoal: false, colorClass: 'text-red-600'  };
+}
+
+function tierColorClass(dept: KpiDept, ratio: number | null): string | undefined {
+  return classifyTier(dept, ratio)?.colorClass;
 }
 
 const EXPECTATION_DEPTS: Record<KpiSection, KpiDept[]> = {
@@ -344,12 +406,14 @@ function HistoricalTable({
   location,
   depts,
   showGM,
+  showBonus = false,
 }: {
   windows:  WindowResult[];
   section:  KpiSection;
   location: KpiLocation;
   depts:    KpiDept[];
   showGM:   boolean;
+  showBonus?: boolean;
 }) {
   if (windows.length === 0) {
     return <div className="text-sm text-slate-400 py-8 text-center">No data for this period</div>;
@@ -382,6 +446,7 @@ function HistoricalTable({
                 location={location}
                 depts={depts}
                 showGM={showGM}
+                showBonus={showBonus}
               />
             ))}
           </tbody>
@@ -400,6 +465,7 @@ export default function AllKpisPage() {
   const [section,    setSection]    = useState<KpiSection>('ratio');
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('mtd');
   const [showGM,     setShowGM]     = useState(false);
+  const [showBonus,  setShowBonus]  = useState(false);
 
   const depts = section === 'ratio' ? RATIO_DEPTS : CPO_DEPTS;
 
@@ -486,6 +552,33 @@ export default function AllKpisPage() {
             </div>
           </div>
         )}
+
+        {/* Bonus toggle — CPO + Monthly only, since bonus data always lags
+            the month it was earned by 3-4 weeks and is only meaningful once
+            a month has fully closed. */}
+        {section === 'cpo' && timeWindow === 'monthly' && (
+          <div className="space-y-1.5">
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bonus cost</div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowBonus(false)}
+                className={`text-xs px-3.5 py-2.5 sm:px-3 sm:py-1.5 rounded-md border font-medium transition-colors ${
+                  !showBonus ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 active:bg-slate-100'
+                }`}
+              >
+                Excl. Bonus
+              </button>
+              <button
+                onClick={() => setShowBonus(true)}
+                className={`text-xs px-3.5 py-2.5 sm:px-3 sm:py-1.5 rounded-md border font-medium transition-colors ${
+                  showBonus ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 active:bg-slate-100'
+                }`}
+              >
+                Incl. Bonus
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Dept column legend ── */}
@@ -547,7 +640,7 @@ export default function AllKpisPage() {
               <div className="px-5 py-4 border-b border-slate-100">
                 <div className="text-sm font-medium text-slate-700">Monthly — {monthlyWindows.length} months</div>
               </div>
-              <HistoricalTable windows={monthlyWindows} section={section} location={location} depts={depts} showGM={showGM} />
+              <HistoricalTable windows={monthlyWindows} section={section} location={location} depts={depts} showGM={showGM} showBonus={showBonus} />
             </div>
           )}
 
@@ -603,6 +696,12 @@ export default function AllKpisPage() {
             <p><strong>CPO</strong> = total labor cost ÷ production. Includes manager pay. Excludes GM unless &quot;Incl. GM&quot; is selected.</p>
             <p><strong>Combined CPO</strong> = Design CPO + Preservation CPO + Fulfillment CPO + (G&A cost ÷ total production).</p>
             <p>Salary manager costs are computed at annual salary ÷ 52 weeks and split across their departments.</p>
+            {timeWindow === 'monthly' && (
+              <>
+                <p><strong>Incl. Bonus</strong> adds each department&apos;s monthly performance bonuses (paid ~3-4 weeks after month-end) into that month&apos;s labor cost — only available on the Monthly view, since bonus data always lags the month it was earned. Bonus rows whose employee couldn&apos;t be matched to the Employee Directory are excluded from department totals until reconciled.</p>
+                <p>With <strong>Incl. Bonus</strong> on, each dept cell also shows what the bonus itself added to CPO (per frame/bouquet/order) and what % that was on top of that month&apos;s non-bonus labor cost, plus the tier (Master/Senior/Specialist/Below Specialist) that department&apos;s actual ratio hit that month — a bonus paid out in a month a department was below its Specialist baseline is worth a second look at how that bonus was calculated.</p>
+              </>
+            )}
             {(timeWindow === 'est-current' || timeWindow === 'est-next') && (
               <>
                 <p>Cost is always each team member&apos;s real pay (rate or salary) × their scheduled hours — the same across all three tiers below. Only the ratio used for production changes.</p>
