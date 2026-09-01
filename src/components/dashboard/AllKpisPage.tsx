@@ -133,16 +133,20 @@ function KpiCell({
                            metrics.cpo;
   // Only meaningful in bonus-aware mode: the bonus's own contribution to
   // CPO ($/unit, not a raw dollar total that says nothing about scale), and
-  // what % that added on top of non-bonus labor cost. G&A has no unit of
-  // its own, but metrics.production for G&A is already overridden to the
-  // org-wide total production it's spread across (same basis its own CPO
-  // uses — see makeMetrics('G&A', totalProdOrders) in the API route), so
-  // this division is valid there too.
-  const bonusPerOrder = showBonus && metrics.bonusCost > 0 && metrics.production > 0
-    ? metrics.bonusCost / metrics.production
+  // what % that added on top of the non-bonus CPO. Derived as the literal
+  // difference between the shown CPO and its no-bonus counterpart (holding
+  // GM constant) rather than re-derived from bonusCost/production — for a
+  // single dept those are the same number, but Combined's CPO is a sum of
+  // each dept's own $/unit (see combined.cpo in the API route), not
+  // combinedBonusCost/combinedProduction, so re-deriving it that way
+  // silently mixes frames+bouquets+orders into one denominator and
+  // understates the real per-unit bonus impact.
+  const cpoBase = showGM ? metrics.cpoWithGM : metrics.cpo;
+  const bonusPerOrder = showBonus && cpoVal != null && cpoBase != null
+    ? cpoVal - cpoBase
     : null;
-  const bonusPct = showBonus && metrics.bonusCost > 0 && metrics.laborCost > 0
-    ? (metrics.bonusCost / metrics.laborCost) * 100
+  const bonusPct = showBonus && bonusPerOrder != null && cpoBase != null && cpoBase > 0
+    ? (bonusPerOrder / cpoBase) * 100
     : null;
   // Ties bonus payout to actual performance that same month — a department
   // that got bonus $ while below its baseline (Specialist) tier is worth a
