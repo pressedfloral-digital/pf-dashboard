@@ -37,6 +37,15 @@ function weekMonth(weekOf: string): string {
   return weekOf.slice(0, 7);
 }
 
+// Monday of the week containing the given date, as "YYYY-MM-DD"
+function getMondayOf(d: Date): string {
+  const dow  = d.getDay();
+  const diff = dow === 0 ? -6 : 1 - dow;
+  const monday = new Date(d);
+  monday.setDate(d.getDate() + diff);
+  return `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+}
+
 // All week_of dates whose Monday falls in a given month key ("2026-03")
 function weeksInMonth(weekOfs: string[], monthKey: string): string[] {
   return weekOfs.filter(w => weekMonth(w) === monthKey);
@@ -104,7 +113,10 @@ export async function GET(req: NextRequest) {
 
   // Build month range
   const now = new Date();
-  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  // Business-month convention: "current" is whichever calendar month
+  // contains the Monday of the current week (matches weekMonth's Monday
+  // attribution for bucketing weeks, and kpis/route.ts's est-current/MTD).
+  const currentMonth = weekMonth(getMondayOf(now));
   const targetMonth  = monthParam ?? (() => {
     const d = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;

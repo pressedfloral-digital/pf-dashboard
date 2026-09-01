@@ -876,6 +876,15 @@ export async function GET(req: NextRequest) {
   const now   = new Date();
   const today = isoDate(now);
 
+  // Business-month convention: the "current" month is whichever calendar
+  // month contains the Monday of the current week — the same first-Monday
+  // attribution getWeekMondays already uses to bucket weeks into months.
+  // Without this, MTD/estimates flip over to the next calendar month a day
+  // or two before the business week that owns those trailing days is done.
+  const businessMonthKey    = getMondayOf(today).slice(0, 7); // "YYYY-MM"
+  const [businessYear, businessMonthNum] = businessMonthKey.split('-').map(Number); // businessMonthNum is 1-indexed
+  const businessMonthDate   = new Date(businessYear, businessMonthNum - 1, 1);
+
   // Determine how far back we need data
   const monthsBack   = Math.max(...requested.filter(w => w.startsWith('monthly-')).map(w => parseInt(w.split('-')[1]) || 12),   12);
   const quartersBack = Math.max(...requested.filter(w => w.startsWith('quarterly-')).map(w => parseInt(w.split('-')[1]) || 4), 4);
@@ -939,7 +948,7 @@ export async function GET(req: NextRequest) {
 
     // ── MTD ───────────────────────────────────────────────────────────────────
     if (requested.includes('mtd')) {
-      const mtdStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+      const mtdStart = `${businessMonthKey}-01`;
       results.push(buildWindowResult(`${monthLabel(mtdStart.slice(0, 7))} MTD`, mtdStart, today, laborRows, actualRows, managerNames));
     }
 
@@ -1023,8 +1032,8 @@ export async function GET(req: NextRequest) {
       // G&A has no schedule/roster to project from — use a trailing 3-month
       // actual average instead. Same window applies to both current and next
       // month estimates (there's no actual G&A data for either to draw on).
-      const utahGa    = averageGaCostForMonths(laborRows, 'Utah',    now);
-      const georgiaGa = averageGaCostForMonths(laborRows, 'Georgia', now);
+      const utahGa    = averageGaCostForMonths(laborRows, 'Utah',    businessMonthDate);
+      const georgiaGa = averageGaCostForMonths(laborRows, 'Georgia', businessMonthDate);
       const gaSourceMonths = utahGa.monthKeys.map(monthLabel);
 
       const paidHolidays = (liveSettings.find(r => r.location === 'Global' && r.key === 'paidHolidays')?.value as string[]) ?? [];
@@ -1058,7 +1067,7 @@ export async function GET(req: NextRequest) {
       estimated = {};
 
       if (requested.includes('est-current')) {
-        const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+        const currentMonthKey = `${businessMonthKey}-01`;
 
         // Try month-end snapshot first (locked, immutable)
         const { data: snapData } = await supabase
@@ -1089,7 +1098,9 @@ export async function GET(req: NextRequest) {
       }
 
       if (requested.includes('est-next')) {
-        const nextMonthDate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        // businessMonthNum is the 1-indexed current month, which is also
+        // next month's 0-indexed Date value — no +1 needed here.
+        const nextMonthDate = new Date(businessYear, businessMonthNum, 1);
         const nextMonthKey  = isoDate(nextMonthDate);
 
         estimated.next = {
