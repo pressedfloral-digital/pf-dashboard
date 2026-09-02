@@ -55,6 +55,100 @@ const SINGULAR_UNIT: Record<KpiDept, string> = {
   design: 'frame', preservation: 'bouquet', fulfillment: 'order', resin: 'piece', ga: 'order', combined: 'order',
 };
 
+// The CPO figure actually shown for a cell, given the GM/Bonus toggles —
+// shared by KpiCell (rendering) and the heatmap stats below (coloring), so
+// the two can never drift apart on which number is "the" CPO.
+function getCpoValue(metrics: KpiMetrics, showGM: boolean, showBonus: boolean): number | null {
+  return showGM && showBonus ? metrics.cpoWithGMBonus :
+         showGM              ? metrics.cpoWithGM :
+         showBonus           ? metrics.cpoWithBonus :
+                                metrics.cpo;
+}
+
+// The value a cell's heatmap shading (and its big number) is based on —
+// Ratio uses hrs/unit directly; both sections agree lower is better (see
+// classifyTier), so one scale direction works for either.
+function getSectionValue(metrics: KpiMetrics, section: KpiSection, showGM: boolean, showBonus: boolean): number | null {
+  return section === 'ratio' ? metrics.ratio : getCpoValue(metrics, showGM, showBonus);
+}
+
+interface HeatColumnStats { min: number; max: number; median: number }
+
+function median(sorted: number[]): number {
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+// Per-dept min/max/median (Ratio or CPO, per `section`) across every row
+// currently in a historical table, so each cell can be shaded relative to
+// its own column's history — a department with a $0.10-$1 CPO (G&A) and one
+// with a $10-$50 CPO (Design) need independent scales, not one shared
+// across the whole table. Median (not mean) anchors the midpoint — matches
+// Sheets' min/50th-percentile/max color scale, and keeps a single outlier
+// month (e.g. a slow holiday month) from dragging the whole column toward
+// one color the way a mean would.
+function computeColumnStats(
+  windows:   WindowResult[],
+  location:  KpiLocation,
+  depts:     KpiDept[],
+  section:   KpiSection,
+  showGM:    boolean,
+  showBonus: boolean,
+): Partial<Record<KpiDept, HeatColumnStats>> {
+  const stats: Partial<Record<KpiDept, HeatColumnStats>> = {};
+  for (const dept of depts) {
+    const values: number[] = [];
+    for (const w of windows) {
+      if (!showResin(location, dept)) continue;
+      const metrics = selectDept(selectLocation(w, location), dept);
+      if (!metrics.hasData) continue;
+      const v = getSectionValue(metrics, section, showGM, showBonus);
+      if (v != null) values.push(v);
+    }
+    if (values.length === 0) continue;
+    values.sort((a, b) => a - b);
+    stats[dept] = { min: values[0], max: values[values.length - 1], median: median(values) };
+  }
+  return stats;
+}
+
+const HEAT_GREEN:  [number, number, number] = [87, 187, 138];  // best  (min)
+const HEAT_YELLOW: [number, number, number] = [255, 214, 102]; // mid   (median)
+const HEAT_RED:    [number, number, number] = [230, 124, 115]; // worst (max)
+
+function lerpRgb(a: [number, number, number], b: [number, number, number], t: number): string {
+  const r = a[0] + (b[0] - a[0]) * t;
+  const g = a[1] + (b[1] - a[1]) * t;
+  const bl = a[2] + (b[2] - a[2]) * t;
+  return `rgb(${r}, ${g}, ${bl})`;
+}
+
+// Three-stop scale — green at the column's best (lowest) value, yellow at
+// its median, red at its worst (highest) — matching the min/50th-
+// percentile/max color scale used on the Google Sheet this replaces.
+function heatBackground(value: number | null, stats: HeatColumnStats | undefined): string | undefined {
+  if (value == null || !stats) return undefined;
+  const { min, max, median: mid } = stats;
+  if (value <= mid) {
+    const t = mid > min ? (mid - value) / (mid - min) : 0; // 0 at median, 1 at min
+    return lerpRgb(HEAT_YELLOW, HEAT_GREEN, t);
+  } else {
+    const t = max > mid ? (value - mid) / (max - mid) : 0; // 0 at median, 1 at max
+    return lerpRgb(HEAT_YELLOW, HEAT_RED, t);
+  }
+}
+
+// Legend for the heatmap shading — shown next to each historical table's header.
+function HeatLegend() {
+  return (
+    <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+      <span>Best</span>
+      <div className="w-16 h-2 rounded-full" style={{ background: `linear-gradient(to right, rgb(${HEAT_GREEN.join(',')}), rgb(${HEAT_YELLOW.join(',')}), rgb(${HEAT_RED.join(',')}))` }} />
+      <span>Worst</span>
+    </div>
+  );
+}
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function TabBar<T extends string>({
@@ -94,6 +188,7 @@ function KpiCell({
   showBonus = false,
   dept,
   colorClassOverride,
+  heatShaded = false,
 }: {
   metrics:  KpiMetrics;
   section:  KpiSection;
@@ -101,6 +196,7 @@ function KpiCell({
   showBonus?: boolean;
   dept:     KpiDept;
   colorClassOverride?: string;
+  heatShaded?: boolean; // cell sits on a heatmap background — darken the muted/accent text that's tuned for a white cell
 }) {
   if (!metrics.hasData) {
     return <span className="text-slate-300 text-sm">—</span>;
@@ -114,7 +210,7 @@ function KpiCell({
           {fmtRatio(val)}
         </div>
         {val != null && (
-          <div className="text-xs text-slate-400 tabular-nums">
+          <div className={`text-xs tabular-nums ${heatShaded ? 'text-slate-800' : 'text-slate-400'}`}>
             {fmtHours(metrics.ratioHours)}h / {fmtUnits(metrics.ratioProduction)} {DEPT_PRODUCTION_UNIT[dept]}
           </div>
         )}
@@ -126,11 +222,7 @@ function KpiCell({
   // per-dept cell shows "—" regardless of showBonus, since GM cost still has
   // no department attribution (only Combined gets the fully-blended value).
   // Falling back to bonus-only would misleadingly imply GM was included.
-  const cpoVal =
-    showGM && showBonus ? metrics.cpoWithGMBonus :
-    showGM              ? metrics.cpoWithGM :
-    showBonus           ? metrics.cpoWithBonus :
-                           metrics.cpo;
+  const cpoVal = getCpoValue(metrics, showGM, showBonus);
   // Only meaningful in bonus-aware mode: the bonus's own contribution to
   // CPO ($/unit, not a raw dollar total that says nothing about scale), and
   // what % that added on top of the non-bonus CPO. Derived as the literal
@@ -152,30 +244,37 @@ function KpiCell({
   // that got bonus $ while below its baseline (Specialist) tier is worth a
   // second look at how the bonus goal was set.
   const tier = showBonus ? classifyTier(dept, metrics.ratio) : null;
+  // On the heat backgrounds, slate-400/amber-600 (tuned for a white cell)
+  // fall to ~1-2:1 contrast — nearly invisible. slate-800 stays 5-10:1
+  // across green/yellow/red, so secondary lines switch to it too instead of
+  // white, which would actually make the bold CPO number itself worse
+  // (white on the yellow midpoint is ~1.4:1).
   return (
     <div className="space-y-0.5">
-      <div className={`text-lg font-semibold tabular-nums ${cpoVal == null ? 'text-slate-300' : 'text-slate-800'}`}>
+      <div className={`text-lg font-semibold tabular-nums ${
+        cpoVal == null ? 'text-slate-300' : 'text-slate-800'
+      }`}>
         {fmtCPO(cpoVal)}
       </div>
       {cpoVal != null && dept !== 'ga' && (
-        <div className="text-xs text-slate-400 tabular-nums">
+        <div className={`text-xs tabular-nums ${heatShaded ? 'text-slate-800' : 'text-slate-400'}`}>
           {fmtCPO(metrics.laborCost)} / {fmtUnits(metrics.production)} {DEPT_PRODUCTION_UNIT[dept]}
         </div>
       )}
       {cpoVal != null && dept === 'ga' && (
-        <div className="text-xs text-slate-400 tabular-nums">
+        <div className={`text-xs tabular-nums ${heatShaded ? 'text-slate-800' : 'text-slate-400'}`}>
           {fmtCPO(metrics.laborCost)} total cost
         </div>
       )}
       {showBonus && metrics.bonusCost > 0 && (
-        <div className="text-xs text-amber-600 tabular-nums">
+        <div className={`text-xs tabular-nums font-medium ${heatShaded ? 'text-amber-950' : 'text-amber-600'}`}>
           {bonusPerOrder != null
             ? `+${fmtCPO(bonusPerOrder)}/${SINGULAR_UNIT[dept]}`
             : `+${fmtCPO(metrics.bonusCost)}`} bonus{bonusPct != null ? ` (+${bonusPct.toFixed(1)}% of cost)` : ''}
         </div>
       )}
       {tier && (
-        <div className={`text-xs font-medium ${tier.colorClass}`}>
+        <div className={`text-xs font-medium ${heatShaded ? 'text-slate-800' : tier.colorClass}`}>
           {tier.label} tier · {tier.aboveGoal ? 'at/above goal' : 'below goal'}
         </div>
       )}
@@ -191,6 +290,7 @@ function HistoricalRow({
   depts,
   showGM,
   showBonus = false,
+  columnStats,
 }: {
   window:   WindowResult;
   section:  KpiSection;
@@ -198,6 +298,7 @@ function HistoricalRow({
   depts:    KpiDept[];
   showGM:   boolean;
   showBonus?: boolean;
+  columnStats?: Partial<Record<KpiDept, HeatColumnStats>>;
 }) {
   const period = selectLocation(w, location);
   return (
@@ -207,13 +308,16 @@ function HistoricalRow({
         if (!showResin(location, dept)) {
           return <td key={dept} className="py-3 px-4 text-xs text-slate-300 text-center">Utah only</td>;
         }
+        const metrics = selectDept(period, dept);
+        const heatBg = heatBackground(getSectionValue(metrics, section, showGM, showBonus), columnStats?.[dept]);
         return (
-          <td key={dept} className="py-3 px-4">
+          <td key={dept} className="py-3 px-4" style={heatBg ? { backgroundColor: heatBg } : undefined}>
             <KpiCell
-              metrics={selectDept(period, dept)}
+              metrics={metrics}
               section={section}
               showGM={showGM}
               showBonus={showBonus}
+              heatShaded={heatBg != null}
               dept={dept}
             />
           </td>
@@ -422,6 +526,7 @@ function HistoricalTable({
   if (windows.length === 0) {
     return <div className="text-sm text-slate-400 py-8 text-center">No data for this period</div>;
   }
+  const columnStats = computeColumnStats(windows, location, depts, section, showGM, showBonus);
   return (
     <div>
       <div className="sm:hidden flex items-center gap-1 text-[10px] text-slate-400 px-4 pt-2 pb-1.5">
@@ -451,6 +556,7 @@ function HistoricalTable({
                 depts={depts}
                 showGM={showGM}
                 showBonus={showBonus}
+                columnStats={columnStats}
               />
             ))}
           </tbody>
@@ -631,8 +737,9 @@ export default function AllKpisPage() {
           {/* Weekly historical table */}
           {timeWindow === 'weekly' && (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-100">
+              <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
                 <div className="text-sm font-medium text-slate-700">Weekly — {weeklyWindows.length} weeks</div>
+                <HeatLegend />
               </div>
               <HistoricalTable windows={weeklyWindows} section={section} location={location} depts={depts} showGM={showGM} />
             </div>
@@ -641,8 +748,9 @@ export default function AllKpisPage() {
           {/* Monthly historical table */}
           {timeWindow === 'monthly' && (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-100">
+              <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
                 <div className="text-sm font-medium text-slate-700">Monthly — {monthlyWindows.length} months</div>
+                <HeatLegend />
               </div>
               <HistoricalTable windows={monthlyWindows} section={section} location={location} depts={depts} showGM={showGM} showBonus={showBonus} />
             </div>
@@ -651,8 +759,9 @@ export default function AllKpisPage() {
           {/* Quarterly historical table */}
           {timeWindow === 'quarterly' && (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-100">
+              <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
                 <div className="text-sm font-medium text-slate-700">Quarterly — {quarterlyWindows.length} quarters</div>
+                <HeatLegend />
               </div>
               <HistoricalTable windows={quarterlyWindows} section={section} location={location} depts={depts} showGM={showGM} />
             </div>
