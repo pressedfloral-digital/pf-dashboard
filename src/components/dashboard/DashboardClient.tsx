@@ -7,7 +7,6 @@ import { SortedLocationSection } from './SortedLocationSection';
 import ScorecardTab from "./ScorecardTab";
 import AllKpisPage from "./AllKpisPage";
 import { SchedulePage } from './SchedulePage';
-import ResinPage from './ResinPage';
 import UserManagementPage from './UserManagementPage';
 import MyDashboardClient from './MyDashboardClient';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
@@ -27,7 +26,7 @@ interface LocationCounts {
 export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
   const [mainTab, setMainTab] = useState<'dashboard' | 'scheduling' | 'scorecards' | 'kpis' | 'team'>('dashboard');
   // Redirect user role to personal dashboard handled server-side
-  const { user } = useCurrentUser();
+  const { user, loading: userLoading, error: userError } = useCurrentUser();
 
   // ── Shared location counts (used by both SortedLocationSection and SchedulePage) ──
   const [locationCounts, setLocationCounts] = useState<LocationCounts | null>(null);
@@ -45,6 +44,22 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
   }, [pipeline]);
 
   const [location, setLocation] = useState('Utah');
+
+  if (userLoading) {
+    return (
+      <div className="py-16 text-center text-sm text-slate-500">
+        Loading your dashboard…
+      </div>
+    );
+  }
+
+  if (userError || !user) {
+    return (
+      <div className="py-16 text-center text-sm text-rose-600">
+        Unable to load your dashboard access. Please refresh and try again.
+      </div>
+    );
+  }
 
   // ── Derived queue numbers passed into SchedulePage ──────────────────────────
   // Design queues: Ready to Frame + Almost Ready to Frame
@@ -69,7 +84,7 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
 
   // User role sees their personal dashboard inline
   if (user && user.profile.role === 'user') {
-    return <MyDashboardClient profile={user.profile as any} />;
+    return <MyDashboardClient profile={user.profile} />;
   }
 
   return (

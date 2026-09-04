@@ -3,19 +3,37 @@
  * All calls are server-side only — credentials never reach the browser.
  */
 
-const API_URL   = process.env.PF_API_URL!.replace(/\/$/, '');
-const API_EMAIL = process.env.PF_API_EMAIL!;
-const API_PASS  = process.env.PF_API_PASSWORD!;
+type ApiConfig = {
+  url: string;
+  email: string;
+  password: string;
+};
+
+function getApiConfig(): ApiConfig {
+  const url = process.env.PF_API_URL?.replace(/\/$/, '');
+  const email = process.env.PF_API_EMAIL;
+  const password = process.env.PF_API_PASSWORD;
+
+  if (!url || !email || !password) {
+    throw new Error(
+      'PF API is not configured. Set PF_API_URL, PF_API_EMAIL, and PF_API_PASSWORD.'
+    );
+  }
+
+  return { url, email, password };
+}
 
 let cachedToken: { token: string; expiresAt: number } | null = null;
 
 async function getToken(): Promise<string> {
   if (cachedToken && Date.now() < cachedToken.expiresAt) return cachedToken.token;
 
-  const res = await fetch(`${API_URL}/Authentication/Login`, {
+  const { url, email, password } = getApiConfig();
+
+  const res = await fetch(`${url}/Authentication/Login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: API_EMAIL, password: API_PASS }),
+    body: JSON.stringify({ email, password }),
     cache: 'no-store',
   });
   const json = await res.json();
@@ -28,8 +46,9 @@ async function getToken(): Promise<string> {
 }
 
 export async function pfGet<T>(path: string): Promise<T> {
+  const { url } = getApiConfig();
   const token = await getToken();
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetch(`${url}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
     next: { revalidate: 300 }, // 5-min cache
   });
@@ -38,8 +57,9 @@ export async function pfGet<T>(path: string): Promise<T> {
 }
 
 export async function pfPost<T>(path: string, body: unknown): Promise<T> {
+  const { url } = getApiConfig();
   const token = await getToken();
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetch(`${url}${path}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -51,10 +71,11 @@ export async function pfPost<T>(path: string, body: unknown): Promise<T> {
 
 /** Fetch multiple URLs in parallel (like GAS fetchAll) */
 export async function pfGetAll<T>(paths: string[]): Promise<(T | null)[]> {
+  const { url } = getApiConfig();
   const token = await getToken();
   return Promise.all(
     paths.map(path =>
-      fetch(`${API_URL}${path}`, {
+      fetch(`${url}${path}`, {
         headers: { Authorization: `Bearer ${token}` },
         next: { revalidate: 300 },
       })
