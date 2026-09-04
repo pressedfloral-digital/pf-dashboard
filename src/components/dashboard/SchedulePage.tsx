@@ -19,6 +19,7 @@ import { distributeHours, resolveDayHours, resolveWeekHours, isWithinEmployment,
 import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './BloomUpdateModal';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { useVisibleManagerCPO } from '@/hooks/useVisibleManagerCPO';
+import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -277,6 +278,30 @@ function buildDefaultGeorgiaSchedule(): WeekSchedule[] {
 
 function fmt$(n: number): string {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
+}
+
+function sumActuals(values: (number | null)[]): number | null {
+  const available = values.filter((value): value is number => value !== null);
+  return available.length > 0 ? available.reduce((sum, value) => sum + value, 0) : null;
+}
+
+function ProductionActual({ value, loading, unit }: { value: number | null; loading: boolean; unit: string }) {
+  return (
+    <div className="mt-0.5 text-[10px] font-semibold text-sky-600 tabular-nums" title="Live assignment count from the production app">
+      Actual {loading && value === null ? '…' : `${value ?? '—'}${value === null ? '' : unit}`}
+    </div>
+  );
+}
+
+function ProductionActualsStatus({ loading, error, refreshedAt }: { loading: boolean; error: string | null; refreshedAt: string | null }) {
+  if (error) return <span className="text-[11px] font-medium text-red-600" title={error}>Production actuals unavailable</span>;
+  if (loading) return <span className="text-[11px] text-slate-400">Loading production actuals…</span>;
+  if (!refreshedAt) return null;
+  return (
+    <span className="text-[11px] text-sky-600" title="Uses the same MT assignment totals as Support Assistant">
+      MT actuals · updated {new Date(refreshedAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+    </span>
+  );
 }
 
 function fmtDate(iso: string): string {
@@ -1960,6 +1985,11 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   };
   const team = buildPresTeam(false);
   const fullTeam = buildPresTeam(true);
+  const preservationActuals = useProductionAssignmentCounts({
+    names: team.map(member => member.name),
+    dates: days.map(day => day.iso),
+    enabled: presTab === 'thisweek',
+  });
 
   // ── Weekly Preservation capacity (orders/bouquets), 52 weeks ───────────────
   // Same resolveWeekHours chain the 52-week planner reads per-cell, summed
@@ -2274,7 +2304,10 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
 
           <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
               <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
-                <h3 className="text-sm font-semibold text-slate-700">Hours per team member — {presThisWeekOffset === 0 ? 'this week' : presThisWeekOffset === 1 ? 'next week' : `week +${presThisWeekOffset}`}</h3>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Hours per team member — {presThisWeekOffset === 0 ? 'this week' : presThisWeekOffset === 1 ? 'next week' : `week +${presThisWeekOffset}`}</h3>
+                  <ProductionActualsStatus loading={preservationActuals.loading} error={preservationActuals.error} refreshedAt={preservationActuals.refreshedAt} />
+                </div>
                 <div className="flex items-center gap-2">
                   {hasRates && <span className="text-xs text-slate-400 mr-2">CPO shown when rate is set</span>}
                   <InputModeToggle mode={presInputMode} onChange={setPresInputMode} unitLabel="Frames" />
@@ -2302,6 +2335,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           <div className="text-slate-400">{m.ratio} h/ord
                             <span className={`ml-1.5 text-[10px] rounded px-1 py-px ${tagStyle[m.pay] ?? 'bg-slate-100 text-slate-600'}`}>{m.pay}</span>
                           </div>
+                          {preservationActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
                         </td>
                         {days.map((_, di) => {
                           const weekIso = isoMonday(presThisWeekOffset);
@@ -2356,6 +2390,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                               {presInputMode === 'output'
                                 ? (prodH > 0 && <div className="text-slate-400 mt-0.5">{round2(prodH)}h</div>)
                                 : (orders > 0 && <div className="text-slate-400 mt-0.5">{round2(orders)} ord</div>)}
+                              <ProductionActual value={preservationActuals.getCount(m.name, days[di].iso, 'preservation')} loading={preservationActuals.loading} unit=" bouq" />
                               {cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
                             </td>
                           );
@@ -2489,6 +2524,21 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                         })}
                       </tr>
                     ))}
+                    <tr className="border-t-2 border-sky-200 bg-sky-50/60 font-semibold">
+                      <td className="sticky left-0 bg-sky-50 px-4 py-2 text-xs text-sky-800">
+                        <div>Actual total</div>
+                        <div className="text-[9px] font-normal text-sky-600">MT production</div>
+                      </td>
+                      {days.map(day => (
+                        <td key={day.iso} className="px-2 py-2 text-center">
+                          <ProductionActual
+                            value={sumActuals(team.map(member => preservationActuals.getCount(member.name, day.iso, 'preservation')))}
+                            loading={preservationActuals.loading}
+                            unit=" bouq"
+                          />
+                        </td>
+                      ))}
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -2872,6 +2922,12 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   };
   const team = buildFfTeam(false);
   const fullTeam = buildFfTeam(true);
+  const ffActualDays = getWeekdays(ffThisWeekOffset);
+  const fulfillmentActuals = useProductionAssignmentCounts({
+    names: team.map(member => member.name),
+    dates: ffActualDays.map(day => day.iso),
+    enabled: ffTab === 'thisweek',
+  });
 
   // Real actuals-derived backlog figure — used both in the queue table's
   // description text and (at the SchedulePage level) as the shared pipeline
@@ -3069,7 +3125,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
       </div>
 
       {ffTab === 'thisweek' && (() => {
-        const days = getWeekdays(ffThisWeekOffset);
+        const days = ffActualDays;
         function getFFH(id: string, di: number) {
           const weekIso = isoMonday(ffThisWeekOffset);
           return resolveDayHours(ffDailyHours, `${weekIso}-${id}`, di, ffRoster[id]?.standardWeeklyHours,
@@ -3123,6 +3179,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
               <div>
                 <h3 className="text-sm font-semibold text-slate-700">Hours per team member per day — {ffThisWeekOffset === 0 ? 'this week' : ffThisWeekOffset === 1 ? 'next week' : `week +${ffThisWeekOffset}`}</h3>
                 <p className="text-xs text-slate-400 mt-0.5">{days[0]?.dateStr} – {days[4]?.dateStr} · Orders calculated from each member&apos;s ratio.</p>
+                <ProductionActualsStatus loading={fulfillmentActuals.loading} error={fulfillmentActuals.error} refreshedAt={fulfillmentActuals.refreshedAt} />
               </div>
               <div className="flex items-center gap-2">
                 {ffHasRates && <span className="text-xs text-slate-400 mr-2">CPO shown when rate is set</span>}
@@ -3155,6 +3212,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         <td className="sticky left-0 bg-inherit px-4 py-2 whitespace-nowrap">
                           <div className="font-medium text-slate-700">{m.name}</div>
                           <div className="text-slate-400">{m.ratio} h/ord</div>
+                          {fulfillmentActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
                         </td>
                         {days.map((_, dayIdx) => {
                           const h = getFFH(m.id, dayIdx);
@@ -3185,6 +3243,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                               {ffInputMode === 'output'
                                 ? (h > 0 && <div className="text-slate-400 mt-0.5">{round2(h)}h</div>)
                                 : (orders > 0 && <div className="text-slate-400 mt-0.5">{round2(orders)} ord</div>)}
+                              <ProductionActual value={fulfillmentActuals.getCount(m.name, days[dayIdx].iso, 'fulfillment')} loading={fulfillmentActuals.loading} unit=" ord" />
                               {ffHasRates && cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
                             </td>
                           );
@@ -3192,13 +3251,18 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         <td className="px-3 py-2 text-center">
                           <div className="font-medium text-amber-700">{Math.round(weekOrders * 100) / 100} ord</div>
                           <div className="text-slate-400 text-[10px]">{weekHrs}h</div>
+                          <ProductionActual
+                            value={sumActuals(days.map(day => fulfillmentActuals.getCount(m.name, day.iso, 'fulfillment')))}
+                            loading={fulfillmentActuals.loading}
+                            unit=" ord"
+                          />
                           {ffHasRates && (!m.isManager || canSeeManagerCPO(m.name)) && weekCPO !== null && <div className="text-amber-600 text-[10px]">{fmt$(weekCPO)}</div>}
                         </td>
                       </tr>
                     );
                   })}
                   <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
-                    <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Daily total</td>
+                    <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Planned total</td>
                     {days.map((_, di) => {
                       const o = teamDailyOrders(di); const cc = teamDailyCost(di);
                       const cpo = o > 0 && cc > 0 ? cc / o : null;
@@ -3222,6 +3286,28 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                       );
                     })}
                     <td className="px-3 py-2 text-center font-semibold text-amber-700">{Math.round(teamWeekOrders * 100) / 100} ord</td>
+                  </tr>
+                  <tr className="border-t-2 border-sky-200 bg-sky-50/60 font-semibold">
+                    <td className="sticky left-0 bg-sky-50 px-4 py-2 text-xs text-sky-800">
+                      <div>Actual total</div>
+                      <div className="text-[9px] font-normal text-sky-600">MT production</div>
+                    </td>
+                    {days.map(day => (
+                      <td key={day.iso} className="px-2 py-2 text-center">
+                        <ProductionActual
+                          value={sumActuals(team.map(member => fulfillmentActuals.getCount(member.name, day.iso, 'fulfillment')))}
+                          loading={fulfillmentActuals.loading}
+                          unit=" ord"
+                        />
+                      </td>
+                    ))}
+                    <td className="px-3 py-2 text-center">
+                      <ProductionActual
+                        value={sumActuals(team.flatMap(member => days.map(day => fulfillmentActuals.getCount(member.name, day.iso, 'fulfillment'))))}
+                        loading={fulfillmentActuals.loading}
+                        unit=" ord"
+                      />
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -4220,6 +4306,12 @@ export function SchedulePage({
   const [activeTab,    setActiveTab]   = useState<'thisweek' | 'schedule' | 'monthly' | 'queue' | 'historicals'>('thisweek');
   const [showDoneCohorts, setShowDoneCohorts] = useState(false);
   const [designThisWeekOffset, setDesignThisWeekOffset] = useState(0);
+  const designActualDays = getWeekdays(designThisWeekOffset);
+  const designActuals = useProductionAssignmentCounts({
+    names: designers.map(designer => designer.name),
+    dates: designActualDays.map(day => day.iso),
+    enabled: dept === 'design' && activeTab === 'thisweek',
+  });
   // "This Week" needs to reach as far out as "Weekly Schedule" does — now that
   // Weekly Schedule is read-only, far-future one-off exceptions can only be
   // entered here.
@@ -5324,7 +5416,7 @@ export function SchedulePage({
 
           {/* ── WEEKLY SCHEDULE TAB ─────────────────────────────────────────── */}
           {activeTab === 'thisweek' && (() => {
-            const days = getWeekdays(designThisWeekOffset);
+            const days = designActualDays;
             function getDH(id: string, di: number) {
               const weekIso = isoMonday(designThisWeekOffset);
               return resolveDayHours(designDailyHours, `${weekIso}-${id}`, di, settings.designRoster[id]?.standardWeeklyHours,
@@ -5378,6 +5470,7 @@ export function SchedulePage({
                   <div>
                     <h3 className="text-sm font-semibold text-slate-700">Hours per designer per day — {designThisWeekOffset === 0 ? 'this week' : designThisWeekOffset === 1 ? 'next week' : `week +${designThisWeekOffset}`}</h3>
                     <p className="text-xs text-slate-400 mt-0.5">{days[0]?.dateStr} – {days[4]?.dateStr} · Frames calculated from each designer&apos;s ratio.</p>
+                    <ProductionActualsStatus loading={designActuals.loading} error={designActuals.error} refreshedAt={designActuals.refreshedAt} />
                   </div>
                   <div className="flex items-center gap-2">
                     {hasRates && <span className="text-xs text-slate-400 mr-2">CPO shown when rate is set</span>}
@@ -5412,6 +5505,7 @@ export function SchedulePage({
                               <div className="font-medium text-slate-700">{d.name}</div>
                               <div className="text-slate-400">{d.ratio} h/f</div>
                               {d.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
+                              {designActuals.unmatched.has(d.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
                             </td>
                             {days.map((_, dayIdx) => {
                               const h = getDH(d.id, dayIdx);
@@ -5442,6 +5536,7 @@ export function SchedulePage({
                                   {designInputMode === 'output'
                                     ? (h > 0 && <div className="text-slate-400 mt-0.5">{round2(h)}h</div>)
                                     : (frames > 0 && <div className="text-slate-400 mt-0.5">{round2(frames)}f</div>)}
+                                  <ProductionActual value={designActuals.getCount(d.name, days[dayIdx].iso, 'design')} loading={designActuals.loading} unit="f" />
                                   {hasRates && cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
                                 </td>
                               );
@@ -5449,13 +5544,18 @@ export function SchedulePage({
                             <td className="px-3 py-2 text-center">
                               <div className="font-medium text-indigo-700">{Math.round(weekFrames * 100) / 100}f</div>
                               <div className="text-slate-400 text-[10px]">{weekHrs}h</div>
+                              <ProductionActual
+                                value={sumActuals(days.map(day => designActuals.getCount(d.name, day.iso, 'design')))}
+                                loading={designActuals.loading}
+                                unit="f"
+                              />
                               {hasRates && (!isMgr || canSeeManagerCPO(d.name)) && weekCPO !== null && <div className="text-amber-600 text-[10px]">{fmt$(weekCPO)}</div>}
                             </td>
                           </tr>
                         );
                       })}
                       <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
-                        <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Daily total</td>
+                        <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Planned total</td>
                         {days.map((_, di) => {
                           const f = Math.round(teamDailyFrames(di) * 100) / 100; const cc = teamDailyCost(di);
                           const cpo = f > 0 && cc > 0 ? cc / f : null;
@@ -5480,6 +5580,28 @@ export function SchedulePage({
                           );
                         })}
                         <td className="px-3 py-2 text-center font-semibold text-indigo-700">{Math.round(teamWeekFrames * 100) / 100}f</td>
+                      </tr>
+                      <tr className="border-t-2 border-sky-200 bg-sky-50/60 font-semibold">
+                        <td className="sticky left-0 bg-sky-50 px-4 py-2 text-xs text-sky-800">
+                          <div>Actual total</div>
+                          <div className="text-[9px] font-normal text-sky-600">MT production</div>
+                        </td>
+                        {days.map(day => (
+                          <td key={day.iso} className="px-2 py-2 text-center">
+                            <ProductionActual
+                              value={sumActuals(designers.map(designer => designActuals.getCount(designer.name, day.iso, 'design')))}
+                              loading={designActuals.loading}
+                              unit="f"
+                            />
+                          </td>
+                        ))}
+                        <td className="px-3 py-2 text-center">
+                          <ProductionActual
+                            value={sumActuals(designers.flatMap(designer => days.map(day => designActuals.getCount(designer.name, day.iso, 'design'))))}
+                            loading={designActuals.loading}
+                            unit="f"
+                          />
+                        </td>
                       </tr>
                     </tbody>
                   </table>
