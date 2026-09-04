@@ -5,6 +5,7 @@ import {
   useKpiMetrics,
   getWindowsByType,
   selectLocation,
+  selectPlanned,
   selectDept,
   selectEstimated,
   fmtRatio,
@@ -55,6 +56,13 @@ const SINGULAR_UNIT: Record<KpiDept, string> = {
   design: 'frame', preservation: 'bouquet', fulfillment: 'order', resin: 'piece', ga: 'order', combined: 'order',
 };
 
+// Display label for each `planned` comparison mode — same three variants as
+// the Est. this/next month view (see EXPECTATION_ROWS below), just applied
+// to a past window instead of a future one.
+const PLANNED_VARIANT_LABEL: Record<RatioVariant, string> = {
+  goal: 'Goal', expected: 'Expected', estimate: 'Estimated',
+};
+
 // The CPO figure actually shown for a cell, given the GM/Bonus toggles —
 // shared by KpiCell (rendering) and the heatmap stats below (coloring), so
 // the two can never drift apart on which number is "the" CPO.
@@ -70,6 +78,45 @@ function getCpoValue(metrics: KpiMetrics, showGM: boolean, showBonus: boolean): 
 // classifyTier), so one scale direction works for either.
 function getSectionValue(metrics: KpiMetrics, section: KpiSection, showGM: boolean, showBonus: boolean): number | null {
   return section === 'ratio' ? metrics.ratio : getCpoValue(metrics, showGM, showBonus);
+}
+
+// "Planned" (schedule-projected) value to compare a historical cell against
+// — only meaningful in the section's base measure: Ratio always compares
+// hrs/unit directly, but CPO's planned figure only ever models the plain
+// labor-cost basis (see WindowResult.planned's comment — GM/bonus have no
+// schedule-side counterpart), so a planned comparison is withheld once
+// either toggle is on rather than silently comparing against a number that
+// doesn't include what the actual figure does.
+function getPlannedValue(planned: KpiMetrics | null, section: KpiSection, showGM: boolean, showBonus: boolean): number | null {
+  if (!planned || !planned.hasData) return null;
+  if (section === 'ratio') return planned.ratio;
+  return showGM || showBonus ? null : planned.cpo;
+}
+
+// Delta line under a cell's actual value — how that period's real CPO/ratio
+// compared to what the same period's own saved schedule implied it would
+// be. Lower is better for both sections (see getSectionValue's comment), so
+// actual < planned always renders green/▼ regardless of section.
+function PlannedDelta({ actual, planned, section, heatShaded, variantLabel }: {
+  actual: number; planned: number | null; section: KpiSection; heatShaded: boolean; variantLabel: string;
+}) {
+  if (planned == null) return null;
+  const delta = actual - planned;
+  const better = delta < 0;
+  const flat = Math.abs(delta) < (section === 'ratio' ? 0.005 : 0.005);
+  const color = flat
+    ? (heatShaded ? 'text-slate-700' : 'text-slate-400')
+    : better
+      ? (heatShaded ? 'text-green-800' : 'text-green-600')
+      : (heatShaded ? 'text-red-900' : 'text-red-600');
+  const arrow = flat ? '' : better ? '▼ ' : '▲ ';
+  const deltaText = section === 'ratio' ? fmtRatio(Math.abs(delta)) : fmtCPO(Math.abs(delta));
+  const plannedText = section === 'ratio' ? `${fmtRatio(planned)} h/f` : fmtCPO(planned);
+  return (
+    <div className={`text-xs tabular-nums font-medium ${color}`} title={`${variantLabel} (from that period's saved schedule): ${plannedText}`}>
+      {flat ? `On ${variantLabel.toLowerCase()}` : `${arrow}${deltaText} vs ${variantLabel.toLowerCase()}`}
+    </div>
+  );
 }
 
 interface HeatColumnStats { min: number; max: number; median: number }
@@ -189,6 +236,8 @@ function KpiCell({
   dept,
   colorClassOverride,
   heatShaded = false,
+  planned = null,
+  plannedVariant = 'estimate',
 }: {
   metrics:  KpiMetrics;
   section:  KpiSection;
@@ -197,10 +246,15 @@ function KpiCell({
   dept:     KpiDept;
   colorClassOverride?: string;
   heatShaded?: boolean; // cell sits on a heatmap background — darken the muted/accent text that's tuned for a white cell
+  planned?: KpiMetrics | null; // that period's own saved-schedule projection, for the "vs planned" delta line
+  plannedVariant?: RatioVariant; // which projection `planned` is — Estimated/Expected/Goal, see PLANNED_VARIANT_LABEL
 }) {
   if (!metrics.hasData) {
     return <span className="text-slate-300 text-sm">—</span>;
   }
+
+  const plannedVal = getPlannedValue(planned, section, showGM, showBonus);
+  const plannedLabel = PLANNED_VARIANT_LABEL[plannedVariant];
 
   if (section === 'ratio') {
     const val = metrics.ratio;
@@ -214,6 +268,7 @@ function KpiCell({
             {fmtHours(metrics.ratioHours)}h / {fmtUnits(metrics.ratioProduction)} {DEPT_PRODUCTION_UNIT[dept]}
           </div>
         )}
+        {val != null && <PlannedDelta actual={val} planned={plannedVal} section={section} heatShaded={heatShaded} variantLabel={plannedLabel} />}
       </div>
     );
   }
@@ -278,6 +333,7 @@ function KpiCell({
           {tier.label} tier · {tier.aboveGoal ? 'at/above goal' : 'below goal'}
         </div>
       )}
+      {cpoVal != null && <PlannedDelta actual={cpoVal} planned={plannedVal} section={section} heatShaded={heatShaded} variantLabel={plannedLabel} />}
     </div>
   );
 }
@@ -290,6 +346,7 @@ function HistoricalRow({
   depts,
   showGM,
   showBonus = false,
+  plannedVariant,
   columnStats,
 }: {
   window:   WindowResult;
@@ -298,9 +355,11 @@ function HistoricalRow({
   depts:    KpiDept[];
   showGM:   boolean;
   showBonus?: boolean;
+  plannedVariant: RatioVariant;
   columnStats?: Partial<Record<KpiDept, HeatColumnStats>>;
 }) {
-  const period = selectLocation(w, location);
+  const period        = selectLocation(w, location);
+  const plannedPeriod = selectPlanned(w, location, plannedVariant);
   return (
     <tr className="border-t border-slate-100 hover:bg-slate-50">
       <td className="py-3 px-4 text-sm text-slate-600 font-medium whitespace-nowrap">{w.label}</td>
@@ -319,6 +378,8 @@ function HistoricalRow({
               showBonus={showBonus}
               heatShaded={heatBg != null}
               dept={dept}
+              planned={plannedPeriod ? selectDept(plannedPeriod, dept) : null}
+              plannedVariant={plannedVariant}
             />
           </td>
         );
@@ -515,6 +576,7 @@ function HistoricalTable({
   depts,
   showGM,
   showBonus = false,
+  plannedVariant,
 }: {
   windows:  WindowResult[];
   section:  KpiSection;
@@ -522,6 +584,7 @@ function HistoricalTable({
   depts:    KpiDept[];
   showGM:   boolean;
   showBonus?: boolean;
+  plannedVariant: RatioVariant;
 }) {
   if (windows.length === 0) {
     return <div className="text-sm text-slate-400 py-8 text-center">No data for this period</div>;
@@ -556,6 +619,7 @@ function HistoricalTable({
                 depts={depts}
                 showGM={showGM}
                 showBonus={showBonus}
+                plannedVariant={plannedVariant}
                 columnStats={columnStats}
               />
             ))}
@@ -576,6 +640,7 @@ export default function AllKpisPage() {
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('mtd');
   const [showGM,     setShowGM]     = useState(false);
   const [showBonus,  setShowBonus]  = useState(false);
+  const [plannedVariant, setPlannedVariant] = useState<RatioVariant>('estimate');
 
   const depts = section === 'ratio' ? RATIO_DEPTS : CPO_DEPTS;
 
@@ -637,6 +702,25 @@ export default function AllKpisPage() {
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Time window</div>
           <TabBar tabs={TIME_WINDOWS} active={timeWindow} onChange={setTimeWindow} small />
         </div>
+
+        {/* Planned-comparison variant — Historicals only (weekly/monthly/
+            quarterly), since that's the only place a `planned` figure
+            exists to compare against (see WindowResult.planned). */}
+        {(timeWindow === 'weekly' || timeWindow === 'monthly' || timeWindow === 'quarterly') && (
+          <div className="space-y-1.5">
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Compare to</div>
+            <TabBar
+              tabs={[
+                { id: 'estimate' as RatioVariant, label: 'Estimated' },
+                { id: 'expected' as RatioVariant, label: 'Expected'  },
+                { id: 'goal'     as RatioVariant, label: 'Goal'      },
+              ]}
+              active={plannedVariant}
+              onChange={setPlannedVariant}
+              small
+            />
+          </div>
+        )}
 
         {/* GM toggle — CPO only */}
         {section === 'cpo' && (
@@ -741,7 +825,7 @@ export default function AllKpisPage() {
                 <div className="text-sm font-medium text-slate-700">Weekly — {weeklyWindows.length} weeks</div>
                 <HeatLegend />
               </div>
-              <HistoricalTable windows={weeklyWindows} section={section} location={location} depts={depts} showGM={showGM} />
+              <HistoricalTable windows={weeklyWindows} section={section} location={location} depts={depts} showGM={showGM} plannedVariant={plannedVariant} />
             </div>
           )}
 
@@ -752,7 +836,7 @@ export default function AllKpisPage() {
                 <div className="text-sm font-medium text-slate-700">Monthly — {monthlyWindows.length} months</div>
                 <HeatLegend />
               </div>
-              <HistoricalTable windows={monthlyWindows} section={section} location={location} depts={depts} showGM={showGM} showBonus={showBonus} />
+              <HistoricalTable windows={monthlyWindows} section={section} location={location} depts={depts} showGM={showGM} showBonus={showBonus} plannedVariant={plannedVariant} />
             </div>
           )}
 
@@ -763,7 +847,7 @@ export default function AllKpisPage() {
                 <div className="text-sm font-medium text-slate-700">Quarterly — {quarterlyWindows.length} quarters</div>
                 <HeatLegend />
               </div>
-              <HistoricalTable windows={quarterlyWindows} section={section} location={location} depts={depts} showGM={showGM} />
+              <HistoricalTable windows={quarterlyWindows} section={section} location={location} depts={depts} showGM={showGM} plannedVariant={plannedVariant} />
             </div>
           )}
 
@@ -795,6 +879,9 @@ export default function AllKpisPage() {
             <p><strong>Ratio</strong> = hours worked ÷ production completed. Lower is more efficient.</p>
             <p><strong>Combined ratio</strong> = Design ratio + Preservation ratio + Fulfillment ratio (additive, not averaged).</p>
             <p>Resin ratio = resin hours ÷ resin production. Utah only.</p>
+            {(timeWindow === 'weekly' || timeWindow === 'monthly' || timeWindow === 'quarterly') && (
+              <p>The delta line under each cell compares that period&apos;s actual ratio to what its own saved schedule implied, in whichever mode the <strong>Compare to</strong> toggle above has selected — <strong>Estimated</strong> (each member&apos;s own roster ratio), <strong>Expected</strong> (their role-tier target ratio), or <strong>Goal</strong> (whichever of the two is stricter), all computed from that period&apos;s scheduled hours rather than today&apos;s. ▼ green = beat the plan; ▲ red = fell short.</p>
+            )}
             {(timeWindow === 'est-current' || timeWindow === 'est-next') && (
               <>
                 <p><strong>Estimated</strong> = each team member&apos;s own roster ratio × their scheduled hours for the month.</p>
@@ -809,6 +896,9 @@ export default function AllKpisPage() {
             <p><strong>CPO</strong> = total labor cost ÷ production. Includes manager pay. Excludes GM unless &quot;Incl. GM&quot; is selected.</p>
             <p><strong>Combined CPO</strong> = Design CPO + Preservation CPO + Fulfillment CPO + (G&A cost ÷ total production).</p>
             <p>Salary manager costs are computed at annual salary ÷ 52 weeks and split across their departments.</p>
+            {(timeWindow === 'weekly' || timeWindow === 'monthly' || timeWindow === 'quarterly') && (
+              <p>The delta line under each cell compares actual CPO to what that period&apos;s own saved schedule implied it would cost — real pay × scheduled hours ÷ production at, per the <strong>Compare to</strong> toggle above, either each member&apos;s own roster ratio (Estimated), their role-tier target ratio (Expected), or whichever of the two is stricter (Goal). G&amp;A&apos;s planned figure reuses its real cost — there&apos;s no schedule to project G&amp;A spend from — so it only shows what a difference in planned vs actual org-wide production would have done to its $/unit. Only shown Excl. GM / Excl. Bonus, since neither has a schedule-side counterpart to compare against.</p>
+            )}
             {timeWindow === 'monthly' && (
               <>
                 <p><strong>Incl. Bonus</strong> adds each department&apos;s monthly performance bonuses (paid ~3-4 weeks after month-end) into that month&apos;s labor cost — only available on the Monthly view, since bonus data always lags the month it was earned. Bonus rows whose employee couldn&apos;t be matched to the Employee Directory are excluded from department totals until reconciled.</p>

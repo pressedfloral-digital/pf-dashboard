@@ -108,6 +108,20 @@ export interface WindowResult {
   utah:        PeriodKpis;
   georgia:     PeriodKpis;
   combined:    PeriodKpis;   // Utah + Georgia pooled
+  // What that same period's own saved schedule (schedule_settings, which
+  // keeps every past week's hours indefinitely — see designHours' "past
+  // weeks kept as historical record" comment in SchedulePage.tsx) implied
+  // for CPO/ratio — the same Estimate/Expected/Goal math used for
+  // est-current/est-next (see projectDept's `mode`), just pointed at a past
+  // window instead of a future one. Weekly/monthly/quarterly series only
+  // (see buildWindowResult's plannedCtx param); undefined for MTD/QTD/YTD.
+  planned?:    PlannedResult;
+}
+
+export interface PlannedResult {
+  estimate: RatioVariantResult;
+  expected: RatioVariantResult;
+  goal:     RatioVariantResult;
 }
 
 export interface RatioVariantResult {
@@ -169,6 +183,19 @@ function getWeekMondays(start: string, end: string): string[] {
     cur.setDate(cur.getDate() + 7);
   }
   return mondays;
+}
+
+// The n Mondays immediately before `monday` (nearest first) — the trailing
+// lookback window buildTrailingRatioOverrides uses to find each member's
+// recent actual ratio as of a given period's start.
+function getMondaysBefore(monday: string, n: number): string[] {
+  const out: string[] = [];
+  for (let i = 1; i <= n; i++) {
+    const d = new Date(monday + 'T12:00:00');
+    d.setDate(d.getDate() - i * 7);
+    out.push(isoDate(d));
+  }
+  return out;
 }
 
 function getQuarterStart(date: Date): Date {
@@ -480,6 +507,16 @@ function poolLocations(utah: PeriodKpis, georgia: PeriodKpis): PeriodKpis {
   return { design, preservation, fulfillment, resin, ga, combined };
 }
 
+// Context needed to also compute a window's `planned` comparison — only
+// passed by the weekly/monthly/quarterly series (see the GET handler),
+// since MTD/QTD/YTD are "where do we stand right now" cards, not the
+// completed-period comparison "planned vs actual" is about.
+interface PlannedCtx {
+  settings:        ScheduleSettingRow[];
+  paidHolidays:    string[];
+  managerHomeDept: Map<string, Set<string>>;
+}
+
 function buildWindowResult(
   label:        string,
   start:        string,
@@ -487,12 +524,85 @@ function buildWindowResult(
   laborRows:    LaborRow[],
   actualRows:   ActualRow[],
   managerNames: Set<string>,
-  bonusByLocDept?: Record<string, Record<string, number>>  // location -> dept -> $ — Monthly-series only
+  bonusByLocDept?: Record<string, Record<string, number>>,  // location -> dept -> $ — Monthly-series only
+  plannedCtx?:  PlannedCtx
 ): WindowResult {
   const weekOfs = getWeekMondays(start, end);
   const utah    = computePeriodKpis(laborRows, actualRows, 'Utah',    weekOfs, managerNames, bonusByLocDept?.['Utah']);
   const georgia = computePeriodKpis(laborRows, actualRows, 'Georgia', weekOfs, managerNames, bonusByLocDept?.['Georgia']);
-  return { label, periodStart: start, periodEnd: end, utah, georgia, combined: poolLocations(utah, georgia) };
+  const result: WindowResult = { label, periodStart: start, periodEnd: end, utah, georgia, combined: poolLocations(utah, georgia) };
+  if (plannedCtx) result.planned = buildPlannedWindowResult(plannedCtx, weekOfs, actualRows, utah.ga.laborCost, georgia.ga.laborCost);
+  return result;
+}
+
+// A member's own ratio can improve (or slip) fast enough that today's
+// roster ratio is a poor stand-in for what it was months ago — so Estimated/
+// Goal's "own ratio" component, for a past window, uses each member's own
+// actual ratio (hours-weighted: sum(actual_hours)/sum(actual_orders), not an
+// average of weekly ratios, since a single 0-production week would otherwise
+// spike or void it) over the 4 completed weeks immediately before that
+// window starts, rather than their current roster ratio. 4 (not a longer
+// lookback) so a big jump in someone's pace shows up in the comparison
+// promptly instead of getting smoothed out — especially for a wide window
+// like a full month, where the ratio at the window's start can otherwise be
+// stale by the time the window ends. Falls back to the roster ratio for
+// anyone with no actuals in that lookback (new hire, or a window early
+// enough that 4 prior weeks of tracked actuals don't exist yet). Keyed
+// `${dept}|${name}` (dept = the same 'Design'/'Preservation'/'Fulfillment'/
+// 'Resin' strings projectDept is called with) since one map covers every
+// department's roster in a single pass.
+function buildTrailingRatioOverrides(
+  actualRows:  ActualRow[],
+  location:    string,
+  periodStart: string,
+  lookbackWeeks = 4,
+): Map<string, number> {
+  const trailingWeeks = new Set(getMondaysBefore(periodStart, lookbackWeeks));
+  const hoursByKey: Record<string, number> = {};
+  const prodByKey:  Record<string, number> = {};
+  for (const row of actualRows) {
+    if (row.location !== location || !trailingWeeks.has(row.week_of)) continue;
+    const key = `${normDept(row.department)}|${row.member_name.trim().toLowerCase()}`;
+    hoursByKey[key] = (hoursByKey[key] ?? 0) + row.actual_hours;
+    prodByKey[key]  = (prodByKey[key]  ?? 0) + row.actual_orders;
+  }
+  const overrides = new Map<string, number>();
+  for (const key of Object.keys(hoursByKey)) {
+    const hours = hoursByKey[key], production = prodByKey[key];
+    if (hours > 0 && production > 0) overrides.set(key, hours / production);
+  }
+  return overrides;
+}
+
+// What this same window's own saved schedule implied for CPO/ratio, in all
+// three modes projectPeriodForLocation supports — mirrors est-current/
+// est-next's Estimate/Expected/Goal exactly, just pointed at a past window
+// instead of a future one (and, unlike that future-facing call, feeding it
+// each member's trailing-actual ratio in place of their current roster
+// ratio — see buildTrailingRatioOverrides). G&A has no schedule to project
+// from in either direction; unlike a future month (which has to fall back to
+// a trailing actual average, see averageGaCostForMonths), a past window's
+// real G&A spend is already known, so that actual figure is reused as-is
+// here rather than inventing a "planned G&A cost" that doesn't exist — this
+// only lets planned G&A *production* (the org's projected order/frame/
+// bouquet total) differ from actual, which is the only lever a schedule can
+// pull anyway.
+function buildPlannedWindowResult(
+  ctx:            PlannedCtx,
+  weekOfs:        string[],
+  actualRows:     ActualRow[],
+  utahGaCost:     number,
+  georgiaGaCost:  number,
+): PlannedResult {
+  const periodStart          = weekOfs[0];
+  const utahRatioOverride    = periodStart ? buildTrailingRatioOverrides(actualRows, 'Utah',    periodStart) : undefined;
+  const georgiaRatioOverride = periodStart ? buildTrailingRatioOverrides(actualRows, 'Georgia', periodStart) : undefined;
+  function variant(mode: 'estimate' | 'expected' | 'goal'): RatioVariantResult {
+    const utah    = projectPeriodForLocation(ctx.settings, 'Utah',    weekOfs, utahGaCost,    ctx.paidHolidays, mode, ctx.managerHomeDept, utahRatioOverride);
+    const georgia = projectPeriodForLocation(ctx.settings, 'Georgia', weekOfs, georgiaGaCost, ctx.paidHolidays, mode, ctx.managerHomeDept, georgiaRatioOverride);
+    return { utah, georgia, combined: poolLocations(utah, georgia) };
+  }
+  return { estimate: variant('estimate'), expected: variant('expected'), goal: variant('goal') };
 }
 
 // Trailing N-completed-calendar-months average of actual G&A labor cost for a
@@ -595,7 +705,14 @@ function projectDept(
   holidaySet:    Set<string>,
   mode:          'estimate' | 'expected' | 'goal',
   mgrTotalHours: HoursMap,
-  managerHomeDept: Map<string, Set<string>>
+  managerHomeDept: Map<string, Set<string>>,
+  // Per-member "own ratio" to use instead of their current roster ratio —
+  // keyed `${dept}|${name lowercased}`, see buildTrailingRatioOverrides.
+  // Only ever passed for a past window's planned comparison; future months
+  // (est-current/est-next) have no trailing actuals to build one from, so
+  // this is undefined there and every member falls back to their roster
+  // ratio, same as before this param existed.
+  ratioOverride?: Map<string, number>
 ): { hours: number; production: number; laborCost: number; ratioHours: number; ratioProduction: number } {
   const holidays = Array.from(holidaySet);
   let totalHours = 0, totalProduction = 0, totalCost = 0;
@@ -621,7 +738,13 @@ function projectDept(
 
     totalHours += memberHours;
     if (!member.isManager) ratioHours += memberHours;
-    if (member.ratio > 0) {
+    // A member's own ratio can improve (or slip) fast enough that today's
+    // roster ratio is a poor stand-in for what it was as of a past window —
+    // prefer their trailing-actual ratio there when one's available (see
+    // buildTrailingRatioOverrides); otherwise (future months, or no actuals
+    // in the lookback) fall back to the roster's own ratio field.
+    const ownRatio = ratioOverride?.get(`${dept}|${member.name.trim().toLowerCase()}`) ?? member.ratio;
+    if (ownRatio > 0) {
       const tierRatio = RATIO_TARGETS[dept][normalizeRole(member.role)];
       // A manager's own scheduled *production* hours (memberHours below —
       // never their full mgrTotalHours work week, which only feeds cost)
@@ -633,9 +756,9 @@ function projectDept(
       // their efficiency isn't the point — their hours/production still
       // count fully toward CPO's totals in every mode.
       const effectiveRatio =
-        mode === 'estimate' ? member.ratio :
+        mode === 'estimate' ? ownRatio :
         mode === 'expected' ? tierRatio :
-        /* goal */             Math.min(member.ratio, tierRatio);
+        /* goal */             Math.min(ownRatio, tierRatio);
 
       if (effectiveRatio > 0) {
         const memberProduction = memberHours / effectiveRatio;
@@ -712,6 +835,8 @@ function buildRatioVariant(
   return { utah, georgia, combined: poolLocations(utah, georgia) };
 }
 
+// Month-based wrapper for est-current/est-next — computes weekOfs from a
+// calendar month and defers to projectPeriodForLocation below.
 function projectMonthForLocation(
   settings:   ScheduleSettingRow[],
   location:   string,
@@ -724,8 +849,28 @@ function projectMonthForLocation(
   const monthEnd = new Date(monthStart + 'T12:00:00');
   monthEnd.setMonth(monthEnd.getMonth() + 1);
   monthEnd.setDate(0);
-  const weekOfs      = getWeekMondays(monthStart, isoDate(monthEnd));
-  const holidaySet   = new Set(paidHolidays);
+  const weekOfs = getWeekMondays(monthStart, isoDate(monthEnd));
+  return projectPeriodForLocation(settings, location, weekOfs, gaCost, paidHolidays, mode, managerHomeDept);
+}
+
+// What a location's saved schedule (schedule_settings) implies for
+// CPO/ratio over an arbitrary set of weeks — future (est-current/est-next,
+// via projectMonthForLocation above) or past (buildPlannedWindowResult
+// below, for the Historicals "planned vs actual" comparison). weekOfs need
+// not be a calendar month; a past window's own saved designHours/
+// designDailyHours entries are read the same way regardless of how old
+// they are (see SchedulePage.tsx's "past weeks kept as historical record").
+function projectPeriodForLocation(
+  settings:   ScheduleSettingRow[],
+  location:   string,
+  weekOfs:    string[],
+  gaCost:     number,
+  paidHolidays: string[],
+  mode:       'estimate' | 'expected' | 'goal',
+  managerHomeDept: Map<string, Set<string>>,
+  ratioOverride?: Map<string, number>  // see projectDept's own param of the same name
+): PeriodKpis {
+  const holidaySet = new Set(paidHolidays);
 
   const get = (key: string) => settings.find(r => r.location === location && r.key === key)?.value ?? {};
 
@@ -758,10 +903,10 @@ function projectMonthForLocation(
   const resinHours       = get('resinHours')       as HoursMap;
   const resinDailyHours  = get('resinDailyHours')  as DailyHoursMap;
 
-  const designMetrics = projectDept(designRoster, designHours, designDailyHours, weekOfs, location, 'Design',       holidaySet, mode, mgrTotalHours, managerHomeDept);
-  const presMetrics   = projectDept(presRoster,   presHours,   presDailyHours,   weekOfs, location, 'Preservation', holidaySet, mode, mgrTotalHours, managerHomeDept);
-  const ffMetrics     = projectDept(ffRoster,     ffHours,     ffDailyHours,     weekOfs, location, 'Fulfillment',  holidaySet, mode, mgrTotalHours, managerHomeDept);
-  const resinMetrics  = projectDept(resinRoster,  resinHours,  resinDailyHours,  weekOfs, location, 'Resin',        holidaySet, mode, mgrTotalHours, managerHomeDept);
+  const designMetrics = projectDept(designRoster, designHours, designDailyHours, weekOfs, location, 'Design',       holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride);
+  const presMetrics   = projectDept(presRoster,   presHours,   presDailyHours,   weekOfs, location, 'Preservation', holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride);
+  const ffMetrics     = projectDept(ffRoster,     ffHours,     ffDailyHours,     weekOfs, location, 'Fulfillment',  holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride);
+  const resinMetrics  = projectDept(resinRoster,  resinHours,  resinDailyHours,  weekOfs, location, 'Resin',        holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride);
 
   function toMetrics(m: { hours: number; production: number; laborCost: number; ratioHours: number; ratioProduction: number }): KpiMetrics {
     return {
@@ -963,6 +1108,54 @@ export async function GET(req: NextRequest) {
       results.push(buildWindowResult(`${now.getFullYear()} YTD`, `${now.getFullYear()}-01-01`, today, laborRows, actualRows, managerNames));
     }
 
+    // ── Schedule projection context — needed by the weekly/monthly/quarterly
+    // series' `planned` comparison (schedule_settings never prunes past
+    // weeks — see designHours' "past weeks kept as historical record") and
+    // by est-current/est-next's Estimate/Expected/Goal. Fetched once,
+    // shared by both. ────────────────────────────────────────────────────────
+    let plannedCtx: PlannedCtx | undefined;
+    const needsSchedule = requested.some(w =>
+      w.startsWith('weekly-') || w.startsWith('monthly-') || w.startsWith('quarterly-') ||
+      w === 'est-current' || w === 'est-next');
+
+    if (needsSchedule) {
+      const { data: settingsData, error: settingsError } = await supabase
+        .from('schedule_settings')
+        .select('location,key,value');
+      if (settingsError) throw settingsError;
+      const liveSettings: ScheduleSettingRow[] = settingsData ?? [];
+
+      const paidHolidays = (liveSettings.find(r => r.location === 'Global' && r.key === 'paidHolidays')?.value as string[]) ?? [];
+
+      // A manager can legitimately be scheduled to flex-help another
+      // department without that making it the department they manage —
+      // their pay should only ever land in the one department Rippling
+      // actually has them under. Without this, a manager placed on a
+      // second roster (helping out, or a stale sync fallback carrying
+      // their real title onto a roster row for a department they have no
+      // real record in) gets their full pay counted there too, double-
+      // counting a single salary/rate across two departments' CPO.
+      const { data: managerEmpRows } = await supabase
+        .from('rippling_employees')
+        .select('full_name,location,department,title')
+        .eq('active', true);
+      // name|location -> the department(s) Rippling actually has them under
+      // with a manager title. Absence of a person from this map means "no
+      // Rippling info either way" — cost still counts wherever the roster
+      // says (avoids under-counting a manager not yet uploaded); presence
+      // means we know their real department(s), so cost is skipped anywhere
+      // else they're flagged isManager on a roster.
+      const managerHomeDept = new Map<string, Set<string>>();
+      for (const e of (managerEmpRows ?? []) as { full_name: string; location: string; department: string; title: string }[]) {
+        if (!MANAGER_TITLE_RE.test(e.title ?? '')) continue;
+        const key = `${e.location}|${e.full_name.trim().toLowerCase()}`;
+        if (!managerHomeDept.has(key)) managerHomeDept.set(key, new Set());
+        managerHomeDept.get(key)!.add(e.department);
+      }
+
+      plannedCtx = { settings: liveSettings, paidHolidays, managerHomeDept };
+    }
+
     // ── Weekly series ─────────────────────────────────────────────────────────
     const weeklySeries = requested.find(w => w.startsWith('weekly-'));
     if (weeklySeries) {
@@ -973,7 +1166,7 @@ export async function GET(req: NextRequest) {
         d.setDate(d.getDate() - i * 7);
         const monday = isoDate(d);
         const sunday = getSundayOf(monday);
-        results.push(buildWindowResult(weekLabel(monday), monday, sunday, laborRows, actualRows, managerNames));
+        results.push(buildWindowResult(weekLabel(monday), monday, sunday, laborRows, actualRows, managerNames, undefined, plannedCtx));
       }
     }
 
@@ -1003,7 +1196,7 @@ export async function GET(req: NextRequest) {
           Utah:    bonusByLocDeptMonth['Utah']?.[key],
           Georgia: bonusByLocDeptMonth['Georgia']?.[key],
         };
-        results.push(buildWindowResult(monthLabel(key), isoDate(first), isoDate(last), laborRows, actualRows, managerNames, bonusForMonth));
+        results.push(buildWindowResult(monthLabel(key), isoDate(first), isoDate(last), laborRows, actualRows, managerNames, bonusForMonth, plannedCtx));
       }
     }
 
@@ -1015,19 +1208,15 @@ export async function GET(req: NextRequest) {
         const qDate  = new Date(now.getFullYear(), now.getMonth() - i * 3, 1);
         const qStart = getQuarterStart(qDate);
         const qEnd   = new Date(qStart.getFullYear(), qStart.getMonth() + 3, 0);
-        results.push(buildWindowResult(getQuarterLabel(qStart), isoDate(qStart), isoDate(qEnd), laborRows, actualRows, managerNames));
+        results.push(buildWindowResult(getQuarterLabel(qStart), isoDate(qStart), isoDate(qEnd), laborRows, actualRows, managerNames, undefined, plannedCtx));
       }
     }
 
     // ── Estimated projections ─────────────────────────────────────────────────
     let estimated: { current?: EstimatedMonthResult; next?: EstimatedMonthResult } | null = null;
 
-    if (requested.includes('est-current') || requested.includes('est-next')) {
-      const { data: settingsData, error: settingsError } = await supabase
-        .from('schedule_settings')
-        .select('location,key,value');
-      if (settingsError) throw settingsError;
-      const liveSettings: ScheduleSettingRow[] = settingsData ?? [];
+    if (plannedCtx && (requested.includes('est-current') || requested.includes('est-next'))) {
+      const { settings: liveSettings, paidHolidays, managerHomeDept } = plannedCtx;
 
       // G&A has no schedule/roster to project from — use a trailing 3-month
       // actual average instead. Same window applies to both current and next
@@ -1035,34 +1224,6 @@ export async function GET(req: NextRequest) {
       const utahGa    = averageGaCostForMonths(laborRows, 'Utah',    businessMonthDate);
       const georgiaGa = averageGaCostForMonths(laborRows, 'Georgia', businessMonthDate);
       const gaSourceMonths = utahGa.monthKeys.map(monthLabel);
-
-      const paidHolidays = (liveSettings.find(r => r.location === 'Global' && r.key === 'paidHolidays')?.value as string[]) ?? [];
-
-      // A manager can legitimately be scheduled to flex-help another
-      // department without that making it the department they manage —
-      // their pay should only ever land in the one department Rippling
-      // actually has them under. Without this, a manager placed on a
-      // second roster (helping out, or a stale sync fallback carrying
-      // their real title onto a roster row for a department they have no
-      // real record in) gets their full pay counted there too, double-
-      // counting a single salary/rate across two departments' CPO.
-      const { data: managerEmpRows } = await supabase
-        .from('rippling_employees')
-        .select('full_name,location,department,title')
-        .eq('active', true);
-      // name|location -> the department(s) Rippling actually has them under
-      // with a manager title. Absence of a person from this map means "no
-      // Rippling info either way" — cost still counts wherever the roster
-      // says (avoids under-counting a manager not yet uploaded); presence
-      // means we know their real department(s), so cost is skipped anywhere
-      // else they're flagged isManager on a roster.
-      const managerHomeDept = new Map<string, Set<string>>();
-      for (const e of (managerEmpRows ?? []) as { full_name: string; location: string; department: string; title: string }[]) {
-        if (!MANAGER_TITLE_RE.test(e.title ?? '')) continue;
-        const key = `${e.location}|${e.full_name.trim().toLowerCase()}`;
-        if (!managerHomeDept.has(key)) managerHomeDept.set(key, new Set());
-        managerHomeDept.get(key)!.add(e.department);
-      }
 
       estimated = {};
 

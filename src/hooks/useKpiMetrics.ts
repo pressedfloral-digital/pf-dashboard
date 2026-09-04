@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import type { WindowResult, EstimatedMonthResult, RatioVariantResult, PeriodKpis, KpiMetrics } from '@/app/api/kpis/route';
+import type { WindowResult, EstimatedMonthResult, RatioVariantResult, PlannedResult, PeriodKpis, KpiMetrics } from '@/app/api/kpis/route';
 
 // Re-export for consumers
-export type { WindowResult, EstimatedMonthResult, RatioVariantResult, PeriodKpis, KpiMetrics };
+export type { WindowResult, EstimatedMonthResult, RatioVariantResult, PlannedResult, PeriodKpis, KpiMetrics };
 
 export type RatioVariant = 'estimate' | 'expected' | 'goal';
 
@@ -65,6 +65,22 @@ export function selectLocation(window: WindowResult, location: KpiLocation): Per
   if (location === 'Utah')     return window.utah;
   if (location === 'Georgia')  return window.georgia;
   return window.combined;
+}
+
+// A window's `planned` comparison — what that period's own saved schedule
+// implied for CPO/ratio, in the given Goal/Expected/Estimated mode (see
+// WindowResult.planned) — or null when the window type doesn't carry one
+// (MTD/QTD/YTD).
+export function selectPlanned(
+  window:   WindowResult,
+  location: KpiLocation,
+  variant:  RatioVariant = 'estimate'
+): PeriodKpis | null {
+  if (!window.planned) return null;
+  const v = window.planned[variant];
+  if (location === 'Utah')    return v.utah;
+  if (location === 'Georgia') return v.georgia;
+  return v.combined;
 }
 
 export function selectEstimated(
