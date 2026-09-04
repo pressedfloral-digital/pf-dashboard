@@ -4706,6 +4706,23 @@ export function SchedulePage({
     return { totalDesigned, alreadyFulfilled, ffQueueCohorts };
   }, [designedCohorts, teamActuals, location]);
 
+  // ── Design capacity by week — actual where it's happened, scheduled where it
+  // hasn't ───────────────────────────────────────────────────────────────────
+  // Every turnaround estimate and the "Must design" pace check need one number
+  // per week for how many frames Design produced/will produce. A week with
+  // logged Historicals actuals has already happened (or is happening) — use
+  // the real count, not the roster's hours/ratio estimate, so a designer
+  // running behind (or ahead of) schedule shows up immediately instead of only
+  // once someone edits the schedule to match. A week with no actuals yet
+  // hasn't happened — fall back to the scheduled estimate.
+  const designCapacityByWeek = useMemo(() => {
+    const actualByWeek: Record<string, number> = {};
+    teamActuals.filter(r => r.department === 'design').forEach(r => {
+      actualByWeek[r.week_of] = (actualByWeek[r.week_of] ?? 0) + (r.actual_orders ?? 0);
+    });
+    return Array.from({ length: WEEKS }, (_, w) => actualByWeek[isoMonday(w)] ?? weeklyTotals[w]?.totalFrames ?? 0);
+  }, [teamActuals, weeklyTotals]);
+
   // ── Hiring / what-if plan ────────────────────────────────────────────────────
   // Powers the Design hours columns on the Queue & Turnaround tab. The only
   // manager-editable lever is a hypothetical new hire's hours/wk, which carries
@@ -4714,7 +4731,7 @@ export function SchedulePage({
   // Planned turnaround bar — so the two views can never disagree.
   const hiringPlan = useMemo(() => {
     const baseHours    = weeklyTotals.map(t => t.totalHours);
-    const baseCapacity = weeklyTotals.map(t => t.totalFrames);
+    const baseCapacity = designCapacityByWeek;
     let ratioSumFrames = 0, ratioSumHours = 0;
     weeklyTotals.forEach(t => { if (t.totalFrames > 0) { ratioSumFrames += t.totalFrames; ratioSumHours += t.totalHours; } });
     const blendedRatio = ratioSumFrames > 0 ? ratioSumHours / ratioSumFrames
@@ -4788,7 +4805,7 @@ export function SchedulePage({
       scheduledTurnaroundTrendUnclamped, planTurnaroundTrendUnclamped,
       baseCapacity, planCapacity,
     };
-  }, [weeklyTotals, designers, settings.newHireHours, settings.designHours, teamActuals, cohortIntake.remainingQueue, graduatingCohorts]);
+  }, [weeklyTotals, designCapacityByWeek, designers, settings.newHireHours, settings.designHours, teamActuals, cohortIntake.remainingQueue, graduatingCohorts]);
 
   function setNewHireHours(weekIso: string, hours: number) {
     const next = { ...settings.newHireHours };
@@ -4854,11 +4871,11 @@ export function SchedulePage({
       }
       return rows;
     }
-    const scheduledRows = runWalk(weeklyTotals.map(t => t.totalFrames));
+    const scheduledRows = runWalk(designCapacityByWeek);
     const plannedRows   = runWalk(hiringPlan.planCapacity);
     const merged = scheduledRows.map((r, i) => ({ ...r, weeksFromNowPlanned: plannedRows[i].weeksFromNow }));
     return merged.sort((a, b) => a.weekOf.localeCompare(b.weekOf));
-  }, [cohortIntake, weeklyTotals, hiringPlan.planCapacity]);
+  }, [cohortIntake, designCapacityByWeek, hiringPlan.planCapacity]);
 
   // ── Next-up cohort progress this week ────────────────────────────────────────
   // historicalRemaining's own FIFO walk already lets this week's capacity spill
@@ -4924,19 +4941,11 @@ export function SchedulePage({
     return totalOrders;
   }), [ffTeamForPipeline, settings.ffDailyHours, settings.ffHours, settings.ffRoster]);
 
-  const designOutputByWeekForPipeline = useMemo(() => {
-    const actualByWeek: Record<string, number> = {};
-    teamActuals.filter(r => r.department === 'design').forEach(r => {
-      actualByWeek[r.week_of] = (actualByWeek[r.week_of] ?? 0) + (r.actual_orders ?? 0);
-    });
-    return Array.from({ length: WEEKS }, (_, w) => actualByWeek[isoMonday(w)] ?? weeklyTotals[w]?.totalFrames ?? 0);
-  }, [teamActuals, weeklyTotals]);
-
   const ffDerivedBacklogForPipeline = ffCohortIntake.totalDesigned - ffCohortIntake.alreadyFulfilled;
 
   const ffScheduledTurnaroundForPipeline = useMemo(() =>
-    simulateDesignTurnaroundsUnclamped(ffDerivedBacklogForPipeline, designOutputByWeekForPipeline, ffCapacityByWeekForPipeline),
-    [ffDerivedBacklogForPipeline, designOutputByWeekForPipeline, ffCapacityByWeekForPipeline]);
+    simulateDesignTurnaroundsUnclamped(ffDerivedBacklogForPipeline, designCapacityByWeek, ffCapacityByWeekForPipeline),
+    [ffDerivedBacklogForPipeline, designCapacityByWeek, ffCapacityByWeekForPipeline]);
 
   // "Planned" Fulfillment capacity — same hire-hours-carry-forward pattern as
   // Design's hiringPlan.planCapacity, but for Fulfillment's own hypothetical
@@ -4952,8 +4961,8 @@ export function SchedulePage({
   }, [ffCapacityByWeekForPipeline, settings.ffNewHireHours]);
 
   const ffPlanTurnaroundForPipeline = useMemo(() =>
-    simulateDesignTurnaroundsUnclamped(ffDerivedBacklogForPipeline, designOutputByWeekForPipeline, ffPlanCapacityByWeekForPipeline),
-    [ffDerivedBacklogForPipeline, designOutputByWeekForPipeline, ffPlanCapacityByWeekForPipeline]);
+    simulateDesignTurnaroundsUnclamped(ffDerivedBacklogForPipeline, designCapacityByWeek, ffPlanCapacityByWeekForPipeline),
+    [ffDerivedBacklogForPipeline, designCapacityByWeek, ffPlanCapacityByWeekForPipeline]);
 
   const ffHistoricalRemainingForPipeline = useMemo(() => {
     const baseResults = ffCohortIntake.ffQueueCohorts.map(c => ({
@@ -5150,9 +5159,12 @@ export function SchedulePage({
   // (from designPromises) gets missed. Each active cohort's `remaining` count
   // becomes "due" in the earliest schedule week on/after its promised_by_date;
   // due amounts accumulate, and each week's minimum is whatever's needed on top
-  // of what's already scheduled in prior weeks to keep cumulative pace. Never
-  // below what's already scheduled that week, and a week that falls short
-  // simply raises next week's requirement, so it self-corrects.
+  // of what's already produced in prior weeks to keep cumulative pace. Weeks
+  // with logged Historicals actuals count their real output here (so falling
+  // behind pace shows up the moment it happens, not once the schedule is
+  // edited to match); weeks without actuals yet fall back to what's scheduled.
+  // Never below that week's own output, and a week that falls short simply
+  // raises next week's requirement, so it self-corrects.
   const mustDesignByWeek = useMemo(() => {
     const cumulativeRequired = Array.from({ length: WEEKS }, () => 0);
     historicalRemaining
@@ -5171,12 +5183,12 @@ export function SchedulePage({
     const mustDesign: number[] = [];
     let cumulativeScheduled = 0;
     for (let w = 0; w < WEEKS; w++) {
-      const scheduled = weeklyTotals[w].totalFrames;
-      mustDesign.push(Math.max(scheduled, cumulativeRequired[w] - cumulativeScheduled));
-      cumulativeScheduled += scheduled;
+      const produced = designCapacityByWeek[w];
+      mustDesign.push(Math.max(produced, cumulativeRequired[w] - cumulativeScheduled));
+      cumulativeScheduled += produced;
     }
     return mustDesign;
-  }, [historicalRemaining, designPromises, weeklyTotals]);
+  }, [historicalRemaining, designPromises, designCapacityByWeek]);
 
   const windowWeeks = Array.from({ length: WINDOW }, (_, i) => i + weekOffset).filter(i => i < WEEKS);
   const hasRates    = canViewCPO && designers.some(d =>
@@ -5693,13 +5705,15 @@ export function SchedulePage({
                     </tr>
                     {/* Must design row — the minimum this week needs to hit so no client
                         promise locked in via "Send biweekly bloom update" (Queue & Turnaround
-                        tab) gets missed. Never below what's already scheduled; a short week
-                        just raises next week's minimum, so it self-corrects. */}
+                        tab) gets missed. Compares against actual output for weeks that have
+                        Historicals actuals logged, scheduled capacity otherwise (see
+                        designCapacityByWeek) — never below that; a short week just raises
+                        next week's minimum, so it self-corrects. */}
                     <tr className="border-t border-slate-100 bg-red-50/40">
                       <td className="sticky left-0 bg-red-50/40 px-4 py-2 text-xs text-slate-500 whitespace-nowrap">Must design</td>
                       {windowWeeks.map(w => {
                         const must      = mustDesignByWeek[w];
-                        const scheduled = weeklyTotals[w].totalFrames;
+                        const scheduled = designCapacityByWeek[w];
                         const short     = must - scheduled;
                         const hpf       = hiringPlan.hoursPerFrame[w] || 1;
                         return (
