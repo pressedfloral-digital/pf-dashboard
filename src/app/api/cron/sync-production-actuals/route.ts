@@ -158,17 +158,17 @@ export async function GET(req: NextRequest) {
         if (!row.staff) continue;
 
         const normalizedStaff = normalizeAssignmentStaffName(row.staff);
-        const existingForPerson = existingRows?.find(r =>
+        const existingForPerson = existingRows?.filter(r =>
           r.department === actualsDept &&
           normalizeAssignmentStaffName(r.member_name) === normalizedStaff
-        );
+        ) ?? [];
 
         // Avoid creating a zero row for every staff member in every department,
         // but do allow an existing auto row to be corrected back to zero after
         // a reassignment.
-        if (count === 0 && !existingForPerson) continue;
+        if (count === 0 && existingForPerson.length === 0) continue;
 
-        const location = staffLocationMap[normalizedStaff] ?? existingForPerson?.location;
+        const location = staffLocationMap[normalizedStaff] ?? existingForPerson[0]?.location;
         if (!location) {
           planned.push({
             location: '(unresolved)', department: actualsDept, member: row.staff,
@@ -178,14 +178,21 @@ export async function GET(req: NextRequest) {
           continue;
         }
 
-        const existing = existingRows?.find(r =>
-          r.location === location && r.department === actualsDept &&
-          normalizeAssignmentStaffName(r.member_name) === normalizedStaff
-        );
+        // Once a normalized identity matches, reuse that row's exact conflict
+        // key. The database constraint compares raw location/member_name, so
+        // writing the new alias or location would insert a duplicate instead
+        // of updating the historical row. Any manual alias wins so a renamed
+        // employee cannot bypass the manual lock.
+        const existing = existingForPerson.find(r => r.orders_source === 'manual')
+          ?? existingForPerson.find(r => r.location === location && r.member_name === row.staff)
+          ?? existingForPerson.find(r => r.location === location)
+          ?? existingForPerson[0];
+        const writeLocation = existing?.location ?? location;
+        const writeMember = existing?.member_name ?? row.staff;
 
         if (existing?.orders_source === 'manual') {
           planned.push({
-            location, department: actualsDept, member: row.staff, weekOf: weekStart,
+            location: writeLocation, department: actualsDept, member: writeMember, weekOf: weekStart,
             computedOrders: count, previousOrders: existing.actual_orders,
             action: 'skip_locked',
           });
@@ -193,14 +200,14 @@ export async function GET(req: NextRequest) {
         }
 
         planned.push({
-          location, department: actualsDept, member: row.staff, weekOf: weekStart,
+          location: writeLocation, department: actualsDept, member: writeMember, weekOf: weekStart,
           computedOrders: count, previousOrders: existing?.actual_orders ?? null,
           action: 'write',
         });
 
         toUpsert.push({
-          location, department: actualsDept, week_of: weekStart,
-          member_name: row.staff,
+          location: writeLocation, department: actualsDept, week_of: weekStart,
+          member_name: writeMember,
           actual_hours: existing?.actual_hours ?? 0,
           actual_orders: count,
           orders_source: 'auto',
