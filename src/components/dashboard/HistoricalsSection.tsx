@@ -4,6 +4,7 @@ import { useState, useMemo, useRef } from 'react';
 import { useActualsWithPayroll } from './useActualsWithPayroll';
 import type { EnrichedActual } from './useActualsWithPayroll';
 import { getMondayDate } from '@/lib/weekDates';
+import { isActiveGm, activeGmNames } from '@/lib/managers';
 
 interface TeamMember {
   id:           string;
@@ -16,7 +17,6 @@ interface TeamMember {
 }
 
 interface HistoricalsSectionProps {
-  excludeFromCPONames?: string[];
   department:    'design' | 'preservation' | 'fulfillment' | 'resin';
   location:      'Utah' | 'Georgia';
   members:       TeamMember[];
@@ -60,7 +60,7 @@ function getAllWeeks(): string[] {
   return weeks;
 }
 
-export function HistoricalsSection({ department, location, members, ordersLabel, onRatioUpdate, excludeFromCPONames = [], presActuals = {}, onReceivedSaved, canSeeManagerCPO = () => false }: HistoricalsSectionProps) {
+export function HistoricalsSection({ department, location, members, ordersLabel, onRatioUpdate, presActuals = {}, onReceivedSaved, canSeeManagerCPO = () => false }: HistoricalsSectionProps) {
   const { enrichedActuals, loading, refresh, getWeekCosts, getRateForWeek } = useActualsWithPayroll(location);
   // team_member_week_actuals stores resin rows as 'Resin' (capitalized) — the
   // other three departments store lowercase. This is the one place that
@@ -206,11 +206,14 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
     return [...new Set(deptActuals.filter(r => r.actual_hours > 0 && !rosterNames.has(r.member_name)).map(r => r.member_name))];
   }, [deptActuals, members]);
 
-  // Monthly aggregation. totalOrders/totalCost/totalHours stay fully
-  // inclusive of the department manager (CPO should reflect their real cost
-  // and production) — ratioHours/ratioOrders exclude them, mirroring the
-  // Week-total row's nonMgrHours/nonMgrOrders below, since a salaried
+  // Monthly aggregation. totalOrders/totalHours and per-member cost stay
+  // fully inclusive of the department manager (CPO should reflect their real
+  // cost and production) — ratioHours/ratioOrders exclude them, mirroring
+  // the Week-total row's nonMgrHours/nonMgrOrders below, since a salaried
   // manager's own production shouldn't dilute the team's h/ord ratio.
+  // totalCost additionally excludes a GM's own pay for any week they were
+  // actively in that role — a GM's cost only ever belongs in the flat
+  // Incl.-GM combined metric, never a department's CPO (see isActiveGm).
   const monthlyData = useMemo(() => {
     const map: Record<string, {
       byMember: Record<string, { hours: number; orders: number; cost: number; isActual: boolean }>;
@@ -228,8 +231,8 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
         map[mk].byMember[m.name].cost   += e.cost;
         if (!e.isActual && e.hours > 0) map[mk].byMember[m.name].isActual = false;
         map[mk].totalOrders += e.orders;
-        map[mk].totalCost   += e.cost;
         map[mk].totalHours  += e.hours;
+        if (!isActiveGm(location, m.name, w)) map[mk].totalCost += e.cost;
         if (!('isManager' in m) || !m.isManager) {
           map[mk].ratioOrders += e.orders;
           map[mk].ratioHours  += e.hours;
@@ -238,7 +241,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
       });
     });
     return map;
-  }, [allWeeks, deptActuals, localEdits, members, managerHours, flexNames]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [allWeeks, deptActuals, localEdits, members, managerHours, flexNames, location]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) return <div className="text-xs text-slate-400 p-4">Loading historicals…</div>;
 
@@ -426,10 +429,10 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                   const memberCost = allDisplayMembers.reduce((s, name) => {
                     const m = members.find(m => m.name === name);
                     if (m?.excludeFromCPO) return s;
-                    if (excludeFromCPONames.includes(name)) return s;
+                    if (isActiveGm(location, name, w)) return s;
                     return s + getEntry(w, name).cost;
                   }, 0);
-                  const excludedCost = excludeFromCPONames.reduce((s, name) => s + getEntry(w, name).cost, 0);
+                  const excludedCost = activeGmNames(location, w).reduce((s, name) => s + getEntry(w, name).cost, 0);
                   const totalCost = deptCost > 0 ? Math.max(0, deptCost - excludedCost) : memberCost;
                   const allActual = weekCosts.length > 0 && (weekCosts.find(wc => wc.department === deptKey)?.isActual ?? false);
                   const teamCPO = totalOrders > 0 && totalCost > 0 ? totalCost / totalOrders : null;

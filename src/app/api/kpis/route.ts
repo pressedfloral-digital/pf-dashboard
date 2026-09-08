@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
-import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks, getGmCostForWeeks } from '@/lib/managers';
+import { DEPARTMENT_MANAGERS, isActiveGm, getSalaryMgrCostForWeeks, getGmCostForWeeks } from '@/lib/managers';
 import { RATIO_TARGETS, type RatioTier } from '@/lib/ratioTargets';
 import type { WageDept } from '@/lib/wageTargets';
 import { resolveWeekHours, resolveWeekPayHours } from '@/lib/scheduleResolution';
@@ -151,6 +151,15 @@ export interface EstimatedMonthResult {
 
 const SALARY_MANAGERS = DEPARTMENT_MANAGERS;
 
+// A GM's own logged pay (e.g. covering a shift) should never count toward any
+// department's CPO for the weeks they actually held the GM role — their cost
+// only ever shows up as the flat annual-salary GM cost folded into the
+// combined "Incl. GM" metric (getGmCostForWeeks). Time-aware via isActiveGm,
+// not a flat name exclusion, so an employee's pre/post-GM hourly pay (e.g.
+// Sloane James's production work before becoming Utah's GM) still counts.
+// Production/hours in team_member_week_actuals are untouched either way —
+// see the laborRows filter below, which only strips cost.
+
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
 function isoDate(d: Date): string {
@@ -288,9 +297,15 @@ function computePeriodKpis(
   const PROD_DEPTS = ['Design', 'Preservation', 'Fulfillment'] as const;
   const ALL_DEPTS  = [...PROD_DEPTS, 'G&A', 'Resin'] as const;
 
-  // Sum labor cost from weekly_labor_cost
+  // Sum labor cost from weekly_labor_cost. A GM's own row for a week they
+  // actively held the role is excluded here regardless of department — their
+  // cost belongs only in the flat GM-cost formula (see isActiveGm above),
+  // never in a department's CPO.
   const laborByDept: Record<string, number> = {};
-  for (const row of laborRows.filter(r => r.location === location && weekOfs.includes(r.week_of))) {
+  for (const row of laborRows.filter(r =>
+    r.location === location && weekOfs.includes(r.week_of) &&
+    !isActiveGm(location, r.employee, r.week_of)
+  )) {
     const dept = normDept(row.department);
     laborByDept[dept] = (laborByDept[dept] ?? 0) + row.gross_pay;
   }

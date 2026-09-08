@@ -2775,7 +2775,6 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
           location={location}
           members={team.map(m => ({ id: m.id, name: m.name, payType: m.payType ?? 'hourly', hourlyRate: m.rate, annualSalary: m.annualSalary ?? 0, isManager: m.isManager, excludeFromCPO: (m as {excludeFromCPO?:boolean}).excludeFromCPO }))}
           ordersLabel="bouquets"
-          excludeFromCPONames={['Zac Williams', 'Lauren Boyd']}
           presActuals={presActuals}
           onReceivedSaved={onReceivedSaved}
           canSeeManagerCPO={canSeeManagerCPO}
@@ -3538,7 +3537,6 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
           location={location}
           members={team.map(m => ({ id: m.id, name: m.name, payType: m.payType ?? 'hourly', hourlyRate: m.rate, annualSalary: m.annualSalary ?? 0, isManager: m.isManager, excludeFromCPO: (m as {excludeFromCPO?:boolean}).excludeFromCPO }))}
           ordersLabel="orders"
-          excludeFromCPONames={['Zac Williams', 'Lauren Boyd']}
           canSeeManagerCPO={canSeeManagerCPO}
         />
       )}
@@ -6084,7 +6082,6 @@ export function SchedulePage({
                 location={location}
                 members={designers.map(d => ({ id: d.id, name: d.name, payType: d.payType, hourlyRate: d.hourlyRate, annualSalary: d.annualSalary, isManager: (d as {isManager?:boolean}).isManager, excludeFromCPO: (d as {excludeFromCPO?:boolean}).excludeFromCPO }))}
                 ordersLabel="frames"
-                excludeFromCPONames={['Zac Williams', 'Lauren Boyd']}
                 canSeeManagerCPO={canSeeManagerCPO}
               />
               <DisapprovalRateSection
