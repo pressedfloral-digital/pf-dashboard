@@ -206,15 +206,20 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
     return [...new Set(deptActuals.filter(r => r.actual_hours > 0 && !rosterNames.has(r.member_name)).map(r => r.member_name))];
   }, [deptActuals, members]);
 
-  // Monthly aggregation
+  // Monthly aggregation. totalOrders/totalCost/totalHours stay fully
+  // inclusive of the department manager (CPO should reflect their real cost
+  // and production) — ratioHours/ratioOrders exclude them, mirroring the
+  // Week-total row's nonMgrHours/nonMgrOrders below, since a salaried
+  // manager's own production shouldn't dilute the team's h/ord ratio.
   const monthlyData = useMemo(() => {
     const map: Record<string, {
       byMember: Record<string, { hours: number; orders: number; cost: number; isActual: boolean }>;
       totalOrders: number; totalCost: number; totalHours: number; allActual: boolean;
+      ratioOrders: number; ratioHours: number;
     }> = {};
     allWeeks.forEach(w => {
       const mk = getMonthKey(w);
-      if (!map[mk]) map[mk] = { byMember: {}, totalOrders: 0, totalCost: 0, totalHours: 0, allActual: true };
+      if (!map[mk]) map[mk] = { byMember: {}, totalOrders: 0, totalCost: 0, totalHours: 0, allActual: true, ratioOrders: 0, ratioHours: 0 };
       [...members, ...flexNames.map(n => ({ id: n, name: n, payType: 'hourly' as const, hourlyRate: 0, annualSalary: 0 }))].forEach(m => {
         const e = getEntry(w, m.name);
         if (!map[mk].byMember[m.name]) map[mk].byMember[m.name] = { hours: 0, orders: 0, cost: 0, isActual: true };
@@ -225,6 +230,10 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
         map[mk].totalOrders += e.orders;
         map[mk].totalCost   += e.cost;
         map[mk].totalHours  += e.hours;
+        if (!('isManager' in m) || !m.isManager) {
+          map[mk].ratioOrders += e.orders;
+          map[mk].ratioHours  += e.hours;
+        }
         if (!e.isActual && e.hours > 0) map[mk].allActual = false;
       });
     });
@@ -515,7 +524,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                 <td className="sticky left-0 bg-indigo-50/30 px-4 py-2 text-slate-700 border-r border-slate-200">Month total</td>
                 {Object.entries(monthlyData).map(([mk, md]) => {
                   const cpo   = md.totalOrders > 0 && md.totalCost > 0 ? md.totalCost / md.totalOrders : null;
-                  const ratio = md.totalOrders > 0 && md.totalHours > 0 ? md.totalHours / md.totalOrders : null;
+                  const ratio = md.ratioOrders > 0 && md.ratioHours > 0 ? md.ratioHours / md.ratioOrders : null;
                   return (
                     <td key={mk} className="px-3 py-2 text-center border-l border-slate-100">
                       <div className="text-indigo-700">{md.totalOrders || '—'}</div>

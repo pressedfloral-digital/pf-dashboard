@@ -255,6 +255,26 @@ function buildManagerNameSet(rosterRows: ScheduleSettingRow[]): Set<string> {
   return set;
 }
 
+// Every recognized roster name (manager or not), same key format as
+// buildManagerNameSet. Used to gate out unconfirmed flex/auto-sync rows —
+// see the confirmedActualRows filter below.
+function buildRosterNameSet(rosterRows: ScheduleSettingRow[]): Set<string> {
+  const deptByKey: Record<string, string> = {
+    designRoster: 'Design', presRoster: 'Preservation', ffRoster: 'Fulfillment',
+  };
+  const set = new Set<string>();
+  for (const row of rosterRows) {
+    const dept = deptByKey[row.key];
+    if (!dept) continue;
+    const roster = row.value as Record<string, { name?: string }> | null;
+    if (!roster) continue;
+    for (const member of Object.values(roster)) {
+      if (member?.name) set.add(`${row.location}|${dept}|${member.name.trim().toLowerCase()}`);
+    }
+  }
+  return set;
+}
+
 // ── Core computation ──────────────────────────────────────────────────────────
 
 function computePeriodKpis(
@@ -1088,24 +1108,38 @@ export async function GET(req: NextRequest) {
     if (rosterRes.error)  throw rosterRes.error;
 
     const managerNames = buildManagerNameSet(rosterRes.data ?? []);
+    const rosterNames  = buildRosterNameSet(rosterRes.data ?? []);
+
+    // All KPIs should never show a number Historicals doesn't back up: a row
+    // for someone not on the roster only counts once it has actual hours
+    // logged — that's the same gate Historicals' own flex-worker list uses
+    // (see HistoricalsSection.tsx's flexNames) before it'll even show that
+    // person as a row. The auto-sync isn't always right, so an order-only
+    // row sits invisible until Historicals surfaces it and a manager can
+    // confirm/correct it there; only then should it flow into All KPIs.
+    const confirmedActualRows = actualRows.filter(row => {
+      const dept = normDept(row.department);
+      const key  = `${row.location}|${dept}|${row.member_name.trim().toLowerCase()}`;
+      return rosterNames.has(key) || row.actual_hours > 0;
+    });
 
     const results: WindowResult[] = [];
 
     // ── MTD ───────────────────────────────────────────────────────────────────
     if (requested.includes('mtd')) {
       const mtdStart = `${businessMonthKey}-01`;
-      results.push(buildWindowResult(`${monthLabel(mtdStart.slice(0, 7))} MTD`, mtdStart, today, laborRows, actualRows, managerNames));
+      results.push(buildWindowResult(`${monthLabel(mtdStart.slice(0, 7))} MTD`, mtdStart, today, laborRows, confirmedActualRows, managerNames));
     }
 
     // ── QTD ───────────────────────────────────────────────────────────────────
     if (requested.includes('qtd')) {
       const qtdStart = isoDate(getQuarterStart(now));
-      results.push(buildWindowResult(`${getQuarterLabel(now)} QTD`, qtdStart, today, laborRows, actualRows, managerNames));
+      results.push(buildWindowResult(`${getQuarterLabel(now)} QTD`, qtdStart, today, laborRows, confirmedActualRows, managerNames));
     }
 
     // ── YTD ───────────────────────────────────────────────────────────────────
     if (requested.includes('ytd')) {
-      results.push(buildWindowResult(`${now.getFullYear()} YTD`, `${now.getFullYear()}-01-01`, today, laborRows, actualRows, managerNames));
+      results.push(buildWindowResult(`${now.getFullYear()} YTD`, `${now.getFullYear()}-01-01`, today, laborRows, confirmedActualRows, managerNames));
     }
 
     // ── Schedule projection context — needed by the weekly/monthly/quarterly
@@ -1166,7 +1200,7 @@ export async function GET(req: NextRequest) {
         d.setDate(d.getDate() - i * 7);
         const monday = isoDate(d);
         const sunday = getSundayOf(monday);
-        results.push(buildWindowResult(weekLabel(monday), monday, sunday, laborRows, actualRows, managerNames, undefined, plannedCtx));
+        results.push(buildWindowResult(weekLabel(monday), monday, sunday, laborRows, confirmedActualRows, managerNames, undefined, plannedCtx));
       }
     }
 
@@ -1196,7 +1230,7 @@ export async function GET(req: NextRequest) {
           Utah:    bonusByLocDeptMonth['Utah']?.[key],
           Georgia: bonusByLocDeptMonth['Georgia']?.[key],
         };
-        results.push(buildWindowResult(monthLabel(key), isoDate(first), isoDate(last), laborRows, actualRows, managerNames, bonusForMonth, plannedCtx));
+        results.push(buildWindowResult(monthLabel(key), isoDate(first), isoDate(last), laborRows, confirmedActualRows, managerNames, bonusForMonth, plannedCtx));
       }
     }
 
@@ -1208,7 +1242,7 @@ export async function GET(req: NextRequest) {
         const qDate  = new Date(now.getFullYear(), now.getMonth() - i * 3, 1);
         const qStart = getQuarterStart(qDate);
         const qEnd   = new Date(qStart.getFullYear(), qStart.getMonth() + 3, 0);
-        results.push(buildWindowResult(getQuarterLabel(qStart), isoDate(qStart), isoDate(qEnd), laborRows, actualRows, managerNames, undefined, plannedCtx));
+        results.push(buildWindowResult(getQuarterLabel(qStart), isoDate(qStart), isoDate(qEnd), laborRows, confirmedActualRows, managerNames, undefined, plannedCtx));
       }
     }
 
