@@ -70,9 +70,13 @@ const STAFF_NAME_ALIASES: Record<string, string> = {
   'Chloe Leonard':     'Chloe Jensen',
   'Izabella De Prima': 'Bella DePrima',
   'Mia Legas':         'Mia Legas Boots',
+  // PF's own history/assignment fields spell this one inconsistently
+  // (lowercase k) on some orders -- Rippling and staff_locations use the
+  // capital-K spelling, so that's canonical.
+  'Mckell Johnson':    'McKell Johnson',
 };
 
-function canonicalStaffName(staff: string): string {
+export function canonicalStaffName(staff: string): string {
   return STAFF_NAME_ALIASES[staff] ?? staff;
 }
 
