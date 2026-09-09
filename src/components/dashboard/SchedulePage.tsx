@@ -4531,16 +4531,29 @@ export function SchedulePage({
     }));
   }, [weeklyTotals, designers, schedule, settings.designRoster]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // First week team_member_week_actuals has live preservation data, for both
+  // locations. The UTAH_HISTORICAL_INTAKE/GEORGIA_HISTORICAL_INTAKE seed
+  // arrays above run a bit past this date (through 2026-06-29) — a leftover
+  // overlap from before live tracking existed. Kept as-is rather than
+  // trimmed, so the old data isn't lost, but actualIntakeByWeek below must
+  // ignore the seed value for any week on/after this date so it can't get
+  // added on top of the live total for that same week.
+  const LIVE_INTAKE_TRACKING_START = '2025-12-29';
+
   // ── Actual intake by week (merged: hardcoded historical < team actuals < Supabase actuals) ──
   // Single source of truth for "what actually came in a given week" — used both to graduate
   // the preservation queue and to look up same-week-last-year for projecting future intake.
   const actualIntakeByWeek = useMemo(() => {
     const map: Record<string, number> = {};
     const hardcoded = location === 'Utah' ? UTAH_HISTORICAL_INTAKE : GEORGIA_HISTORICAL_INTAKE;
-    hardcoded.forEach(h => { map[h.weekOf] = h.actual; });
-    teamActuals.filter(r => r.department === 'preservation').forEach(r => {
-      map[r.week_of] = (map[r.week_of] ?? 0) + r.actual_orders;
+    hardcoded.forEach(h => {
+      if (h.weekOf < LIVE_INTAKE_TRACKING_START) map[h.weekOf] = h.actual;
     });
+    const liveByWeek: Record<string, number> = {};
+    teamActuals.filter(r => r.department === 'preservation').forEach(r => {
+      liveByWeek[r.week_of] = (liveByWeek[r.week_of] ?? 0) + r.actual_orders;
+    });
+    Object.entries(liveByWeek).forEach(([weekOf, val]) => { map[weekOf] = val; });
     Object.entries(presActuals).forEach(([weekOf, val]) => { map[weekOf] = val; });
     return map;
   }, [location, teamActuals, presActuals]);
