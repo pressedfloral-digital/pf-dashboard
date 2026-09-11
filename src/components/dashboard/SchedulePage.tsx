@@ -435,6 +435,7 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
   onEmploymentChange: (id: string, field: 'startDate' | 'endDate', value: string) => void;
 }) {
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [scheduleInputMode, setScheduleInputMode] = useState<InputMode>('hours');
 
   async function refreshRatio(d: Designer) {
     setRefreshingId(d.id);
@@ -455,11 +456,15 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
   }
   return (
     <div>
-      <div className="grid grid-cols-[1fr_80px_90px_20px] gap-2 mb-2 px-1 text-xs font-medium text-slate-400">
-        <span>Name</span>
-        <span className="text-center">Role</span>
-        <span className="text-center">Ratio</span>
-        <span />
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="grid grid-cols-[1fr_80px_90px_20px] gap-2 px-1 text-xs font-medium text-slate-400 flex-1">
+          <span>Name</span>
+          <span className="text-center">Role</span>
+          <span className="text-center">Ratio</span>
+          <span />
+        </div>
+        <span className="text-[10px] text-slate-400 shrink-0">Standard/total schedule in:</span>
+        <InputModeToggle mode={scheduleInputMode} onChange={setScheduleInputMode} unitLabel="Frames" />
       </div>
       <div className="space-y-3">
         {designers.map(d => {
@@ -503,16 +508,23 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
               <span className="text-[10px] text-slate-400 w-32 shrink-0">
                 Standard schedule{!template && <span className="text-amber-500"> — not set</span>}
               </span>
-              {WEEKDAY_LABELS.map((label, di) => (
+              {WEEKDAY_LABELS.map((label, di) => {
+                const h = template?.[di] || 0;
+                const frames = d.ratio > 0 && h > 0 ? round2(h / d.ratio) : 0;
+                return (
                 <label key={di} className="flex flex-col items-center gap-0.5">
                   <span className="text-[9px] text-slate-300">{label[0]}</span>
-                  <input type="number" min="0" step="0.5" placeholder="0"
-                    value={template?.[di] || ''}
-                    onChange={e => onTemplateChange(d.id, di, parseFloat(e.target.value) || 0)}
-                    title={`${label} standard hours`}
+                  <input type="number" min="0" step={scheduleInputMode === 'output' ? '0.1' : '0.5'} placeholder="0"
+                    value={scheduleInputMode === 'output' ? (frames || '') : (h || '')}
+                    onChange={e => {
+                      const raw = parseFloat(e.target.value) || 0;
+                      onTemplateChange(d.id, di, scheduleInputMode === 'output' ? hoursFromOutput(raw, d.ratio) : raw);
+                    }}
+                    title={`${label} standard ${scheduleInputMode === 'output' ? 'frames' : 'hours'}`}
                     className="w-10 border border-slate-200 rounded px-1 py-0.5 text-center text-[11px] text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300" />
                 </label>
-              ))}
+                );
+              })}
               {onResetToTemplate && (
                 <button onClick={() => onResetToTemplate(d.id)}
                   title="Clear scheduled hours from this week forward and go back to following this template"
@@ -528,16 +540,23 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
                   <span className="text-[10px] text-violet-500 w-32 shrink-0">
                     Total schedule{!totalTemplate && <span className="text-amber-500"> — not set</span>}
                   </span>
-                  {WEEKDAY_LABELS.map((label, di) => (
+                  {WEEKDAY_LABELS.map((label, di) => {
+                    const h = totalTemplate?.[di] || 0;
+                    const frames = d.ratio > 0 && h > 0 ? round2(h / d.ratio) : 0;
+                    return (
                     <label key={di} className="flex flex-col items-center gap-0.5">
                       <span className="text-[9px] text-slate-300">{label[0]}</span>
-                      <input type="number" min="0" step="0.5" placeholder="0"
-                        value={totalTemplate?.[di] || ''}
-                        onChange={e => onTotalTemplateChange(d.id, di, parseFloat(e.target.value) || 0)}
-                        title={`${label} standard total hours (production + managerial)`}
+                      <input type="number" min="0" step={scheduleInputMode === 'output' ? '0.1' : '0.5'} placeholder="0"
+                        value={scheduleInputMode === 'output' ? (frames || '') : (h || '')}
+                        onChange={e => {
+                          const raw = parseFloat(e.target.value) || 0;
+                          onTotalTemplateChange(d.id, di, scheduleInputMode === 'output' ? hoursFromOutput(raw, d.ratio) : raw);
+                        }}
+                        title={`${label} standard total ${scheduleInputMode === 'output' ? 'frames' : 'hours'} (production + managerial)`}
                         className="w-10 border border-violet-200 rounded px-1 py-0.5 text-center text-[11px] text-violet-600 bg-violet-50 focus:outline-none focus:ring-1 focus:ring-violet-300" />
                     </label>
-                  ))}
+                    );
+                  })}
                   <span className="text-[10px] text-slate-400 ml-1">falls back here when no weekly total is entered</span>
                 </div>
               );
