@@ -20,6 +20,8 @@ import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './Bloo
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { useVisibleManagerCPO } from '@/hooks/useVisibleManagerCPO';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
+import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -457,7 +459,7 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
   return (
     <div>
       <div className="flex items-center justify-between gap-2 mb-2">
-        <div className="grid grid-cols-[1fr_80px_90px_20px] gap-2 px-1 text-xs font-medium text-slate-400 flex-1">
+        <div className="grid grid-cols-[1fr_80px_90px_28px] gap-2 px-1 text-xs font-medium text-slate-400 flex-1">
           <span>Name</span>
           <span className="text-center">Role</span>
           <span className="text-center">Ratio</span>
@@ -471,7 +473,7 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
           const template = standardWeeklyHoursById[d.id];
           return (
           <div key={d.id} className="space-y-1.5">
-            <div className="grid grid-cols-[1fr_80px_90px_20px] gap-2 items-center">
+            <div className="grid grid-cols-[1fr_80px_90px_28px] gap-2 items-center">
               <div className="flex items-center gap-1.5 min-w-0">
                 <div className="flex-1 min-w-0">
                   <EmployeeAutocomplete
@@ -483,7 +485,7 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
                   />
                 </div>
                 {(d as {isManager?:boolean}).isManager && (
-                  <span className="shrink-0 text-[9px] font-medium text-violet-600 bg-violet-50 border border-violet-200 rounded px-1.5 py-0.5">Manager</span>
+                  <Badge variant="outline" className="shrink-0 text-violet-600 bg-violet-50 border-violet-200">Manager</Badge>
                 )}
               </div>
               <select value={(d as {role?:string}).role ?? 'specialist'} onChange={e => onChange(d.id, 'role', e.target.value)}
@@ -496,13 +498,14 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
                 <input type="number" value={d.ratio} step="0.1" min="0.1"
                   onChange={e => onChange(d.id, 'ratio', e.target.value)}
                   className="w-full border border-slate-200 rounded px-2 py-1.5 text-sm text-center text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300" />
-                <button onClick={() => refreshRatio(d)} title="Update ratio from last 4 weeks of historicals"
-                  className="text-slate-300 hover:text-indigo-500 transition-colors text-sm shrink-0"
+                <button onClick={() => refreshRatio(d)} title="Update ratio from last 4 weeks of historicals" aria-label="Update ratio from historicals"
+                  className="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors text-sm shrink-0"
                   disabled={refreshingId === d.id}>
                   {refreshingId === d.id ? '…' : '↻'}
                 </button>
               </div>
-              <button onClick={() => onRemove(d.id)} className="text-slate-300 hover:text-red-400 transition-colors text-xl leading-none text-center">×</button>
+              <button onClick={() => onRemove(d.id)} aria-label="Remove designer" title="Remove designer"
+                className="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors text-lg leading-none">×</button>
             </div>
             <div className="flex items-center gap-1.5 pl-1">
               <span className="text-[10px] text-slate-400 w-32 shrink-0">
@@ -5653,7 +5656,7 @@ export function SchedulePage({
           })()}
 
           {activeTab === 'schedule' && (
-            <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
+            <Card className="gap-0 overflow-hidden py-0">
               <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 flex-wrap gap-2">
                 <div className="flex items-center gap-4">
                   <h2 className="text-sm font-semibold text-slate-700">Hours per designer per week</h2>
@@ -5675,7 +5678,14 @@ export function SchedulePage({
                     className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">Next →</button>
                 </div>
               </div>
-              <div className="overflow-x-auto">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-2 border-b border-slate-100 bg-slate-50/60 text-[11px] text-slate-500">
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-indigo-100 border border-indigo-200" /> Current week</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-50 border border-red-200" /> Behind pace — short of what&apos;s needed</span>
+                <span className="flex items-center gap-1.5"><span className="text-green-600 font-medium">on pace</span> — scheduled capacity covers promises made</span>
+                {hasRates && <span className="flex items-center gap-1.5"><span className="text-amber-600 font-medium">$</span> Cost per output (CPO)</span>}
+              </div>
+              <CardContent className="p-0">
+              <div className="hidden md:block overflow-x-auto">
                 <table className="min-w-full text-xs">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-100">
@@ -5683,7 +5693,7 @@ export function SchedulePage({
                       {windowWeeks.map(w => (
                         <th key={w} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[90px]">
                           {getWeekLabel(w)}
-                          {w === 0 && <span className="ml-1 text-[10px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
+                          {w === 0 && <Badge variant="outline" className="ml-1 text-indigo-600 bg-indigo-100 border-indigo-200">now</Badge>}
                         </th>
                       ))}
                     </tr>
@@ -5763,7 +5773,84 @@ export function SchedulePage({
                   </tbody>
                 </table>
               </div>
-            </div>
+              <div className="md:hidden divide-y divide-slate-100">
+                {designers.map(d => {
+                  const isDesignMgr = !!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager);
+                  return (
+                    <div key={d.id} className="px-4 py-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="font-medium text-sm text-slate-700">{d.name}</span>
+                        <span className="text-xs text-slate-400">{d.ratio} h/f</span>
+                        {d.payType === 'salary' && <Badge variant="outline" className="text-amber-600 bg-amber-50 border-amber-200">salary</Badge>}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {windowWeeks.map(w => {
+                          const { hrs, frames, cpo, totalHrs } = weekStats(w, d);
+                          return (
+                            <div key={w} className={`rounded-lg px-2.5 py-1.5 ${w === 0 ? 'bg-indigo-50/60' : 'bg-slate-50'}`}>
+                              <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                                {getWeekLabel(w)}
+                                {w === 0 && <Badge variant="outline" className="text-indigo-600 bg-indigo-100 border-indigo-200">now</Badge>}
+                              </div>
+                              <div className="text-sm font-medium text-slate-700">
+                                {designInputMode === 'output' ? round2(frames) : round2(hrs)}
+                                <span className="text-xs font-normal text-slate-400 ml-1">{designInputMode === 'output' ? 'f' : 'h'}</span>
+                              </div>
+                              {isDesignMgr && totalHrs !== hrs && (
+                                <div className="text-[10px] text-violet-600">{round2(totalHrs)}h total</div>
+                              )}
+                              {showCPO && (!isDesignMgr || canSeeManagerCPO(d.name)) && cpo !== null && (
+                                <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="px-4 py-3 bg-slate-50 space-y-2">
+                  <div className="text-xs font-semibold text-slate-600">Week total</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {windowWeeks.map(w => {
+                      const t = weeklyTotals[w];
+                      return (
+                        <div key={w} className={`rounded-lg px-2.5 py-1.5 ${w === 0 ? 'bg-indigo-50/60' : 'bg-white'}`}>
+                          <div className="text-[10px] text-slate-400">{getWeekLabel(w)}</div>
+                          <div className="text-sm font-semibold text-indigo-700">{Math.round(t.totalFrames)}f</div>
+                          {hasRates && t.totalCPO !== null && <div className="text-amber-600 text-[10px]">{fmt$(t.totalCPO)}</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="px-4 py-3 bg-red-50/40 space-y-2">
+                  <div className="text-xs font-semibold text-slate-600">Must design</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {windowWeeks.map(w => {
+                      const must      = mustDesignByWeek[w];
+                      const scheduled = designCapacityByWeek[w];
+                      const short     = must - scheduled;
+                      const hpf       = hiringPlan.hoursPerFrame[w] || 1;
+                      return (
+                        <div key={w} className={`rounded-lg px-2.5 py-1.5 ${w === 0 ? 'bg-indigo-50/60' : 'bg-white/70'}`}>
+                          <div className="text-[10px] text-slate-400">{getWeekLabel(w)}</div>
+                          {short > 0.5 ? (
+                            <>
+                              <div className="text-sm font-semibold text-red-700">{Math.round(must)}f</div>
+                              <div className="text-[10px] text-red-400">short {Math.round(short)}f / {Math.round(short * hpf)}h</div>
+                            </>
+                          ) : (
+                            <div className="text-sm text-green-600">on pace</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+              </CardContent>
+            </Card>
           )}
 
           {/* ── QUEUE & TURNAROUND TAB ──────────────────────────────────────── */}
