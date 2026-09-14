@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { DailyHoursMap } from '@/lib/scheduleResolution';
-export type { DailyHoursMap };
+import type { DailyHoursMap, DayOffMap } from '@/lib/scheduleResolution';
+export type { DailyHoursMap, DayOffMap };
 
 export interface DesignerRoster {
   [designerId: string]: {
@@ -97,7 +97,19 @@ export interface ScheduleSettings {
   designDailyHours:   DailyHoursMap;
   presDailyHours:     DailyHoursMap;
   presCheckHours:     DailyHoursMap;
+  // Preservation-schedule "Check 1/2/3" duty toggles — memberId → [c1, c2, c3]
+  // booleans marking which of the three daily checks that person is
+  // assigned to. Sticky per member, not per day/week.
+  presCheckAssignments: Record<string, boolean[]>;
   ffDailyHours:       DailyHoursMap;
+  // Roster "day off" requests — memberId → requested ISO dates. See
+  // src/lib/scheduleResolution.ts's DayOffMap/setDayOverride for how a
+  // request also zeroes that day's hours in the matching *DailyHours map
+  // above, so it shows up on "This Week" and the Weekly Schedule / 52-week
+  // planner without either needing its own day-off-aware logic.
+  designDayOffs:      DayOffMap;
+  presDayOffs:        DayOffMap;
+  ffDayOffs:          DayOffMap;
   // Resin scheduling
   resinRoster:        unknown;
   resinHours:         Record<string, Record<string, number>>;
@@ -130,7 +142,11 @@ const DEFAULTS: ScheduleSettings = {
   designDailyHours: {},
   presDailyHours: {},
   presCheckHours: {},
+  presCheckAssignments: {},
   ffDailyHours: {},
+  designDayOffs: {},
+  presDayOffs: {},
+  ffDayOffs: {},
   resinRoster: null,
   resinHours: {},
   resinDailyHours: {},
@@ -140,7 +156,8 @@ const DEFAULTS: ScheduleSettings = {
 const KEYS: (keyof ScheduleSettings)[] = [
   'designHours','designRoster','presHours','presRoster','presSettings',
   'ffHours','ffRoster','masterAvailability','avgIntake','newHireHours','ffNewHireHours','presNewHireHours','weeklyEstimates','weeklyMultipliers',
-  'mgrTotalHours','mgrTotalDailyHours','designDailyHours','ffDailyHours','presDailyHours','presCheckHours',
+  'mgrTotalHours','mgrTotalDailyHours','designDailyHours','ffDailyHours','presDailyHours','presCheckHours','presCheckAssignments',
+  'designDayOffs','presDayOffs','ffDayOffs',
   'resinRoster','resinHours','resinDailyHours','resinQueueFrontWeek',
 ];
 

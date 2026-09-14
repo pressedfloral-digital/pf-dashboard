@@ -8,6 +8,13 @@
 
 export type DailyHoursMap = Record<string, (number | null)[]>;
 
+// memberId → sorted ISO 'YYYY-MM-DD' dates that member has requested off.
+// Purely a display/tracking list — the actual zeroing of that day's hours
+// (so it flows through to "This Week" and the read-only Weekly Schedule /
+// 52-week planner, both of which resolve through DailyHoursMap) is done
+// separately via setDayOverride below.
+export type DayOffMap = Record<string, string[]>;
+
 export const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 // A roster member's employment window — startDate/endDate are ISO 'YYYY-MM-DD'
@@ -164,6 +171,42 @@ export function resolveWeekHours(params: ResolveWeekHoursParams): number {
 // semantics (guaranteed standard hours, plus any worked override on top).
 export function resolveWeekPayHours(params: ResolveWeekHoursParams): number {
   return resolveWeekHoursBoth(params).payHours;
+}
+
+// Returns `dailyMap` with a single day's override set to `value`, seeding the
+// rest of that week from baseDailyArray so any other day already recorded
+// (override or legacy weekly value) survives untouched. Shared by every
+// per-day hours editor — "This Week"'s daily inputs, and the roster's day-off
+// request UI, which (unlike "This Week") targets an arbitrary future date
+// rather than whichever week offset happens to be in view.
+export function setDayOverride(
+  dailyMap: DailyHoursMap,
+  weekKey: string,
+  dayIdx: number,
+  value: number,
+  legacyWeeklyValue: number | undefined,
+  currentWeekKey: string,
+): DailyHoursMap {
+  const padded = [...baseDailyArray(dailyMap, weekKey, legacyWeeklyValue, currentWeekKey)];
+  padded[dayIdx] = value;
+  return { ...dailyMap, [weekKey]: padded };
+}
+
+// Clears a single day's override back to null (falling back to the standard
+// template) but only if it currently holds `expectedValue` — used to undo a
+// day-off request without clobbering hours a manager has since hand-edited
+// for some other reason (e.g. the person ended up coming in after all).
+export function clearDayOverrideIfValue(
+  dailyMap: DailyHoursMap,
+  weekKey: string,
+  dayIdx: number,
+  expectedValue: number,
+): DailyHoursMap {
+  const existing = dailyMap[weekKey];
+  if (!existing || existing[dayIdx] !== expectedValue) return dailyMap;
+  const padded = [...existing];
+  padded[dayIdx] = null;
+  return { ...dailyMap, [weekKey]: padded };
 }
 
 // Returns the 7-element array a daily-hours setter should start mutating from

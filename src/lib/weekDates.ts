@@ -45,3 +45,13 @@ export function isoMondayFromDate(d: Date): string {
   monday.setHours(0, 0, 0, 0);
   return monday.toISOString().split('T')[0];
 }
+
+// Splits an arbitrary ISO 'YYYY-MM-DD' date into the Monday-anchored week key
+// and the Mon=0..Sun=6 day index that scheduleResolution's DailyHoursMap is
+// keyed by. Used by the roster's "day off" request UI, which (unlike "This
+// Week") targets a specific calendar date rather than whichever week offset
+// is currently being viewed.
+export function weekAndDayIndexForDate(dateIso: string): { weekIso: string; dayIdx: number } {
+  const d = new Date(dateIso + 'T12:00:00');
+  return { weekIso: isoMondayFromDate(d), dayIdx: (d.getDay() + 6) % 7 };
+}
