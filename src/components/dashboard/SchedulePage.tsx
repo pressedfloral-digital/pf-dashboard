@@ -13,11 +13,12 @@ import {
   type KpiDept, type KpiLocation, type KpiState,
 } from '@/hooks/useKpiMetrics';
 import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
-import { getMondayDate, isoMonday, getWeekLabel, getMonthKey } from '@/lib/weekDates';
+import { getMondayDate, isoMonday, getWeekLabel, getMonthKey, weekAndDayIndexForDate } from '@/lib/weekDates';
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
-import { distributeHours, resolveDayHours, resolveWeekHours, isWithinEmployment, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
+import { distributeHours, resolveDayHours, resolveWeekHours, isWithinEmployment, baseDailyArray, setDayOverride, clearDayOverrideIfValue, WEEKDAY_LABELS, type DailyHoursMap, type DayOffMap } from '@/lib/scheduleResolution';
 import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './BloomUpdateModal';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
+import { DayOffEditor } from './DayOffEditor';
 import { useVisibleManagerCPO } from '@/hooks/useVisibleManagerCPO';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
 import { Card, CardContent } from '@/components/ui/card';
@@ -421,7 +422,7 @@ function simulateDesignTurnaroundsUnclamped(startQueue: number, graduatingByWeek
 
 // ─── RosterEditor ──────────────────────────────────────────────────────────────
 
-function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, location, standardWeeklyHoursById, onTemplateChange, onResetToTemplate, standardTotalWeeklyHoursById, onTotalTemplateChange, employmentById, onEmploymentChange }: {
+function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, location, standardWeeklyHoursById, onTemplateChange, onResetToTemplate, standardTotalWeeklyHoursById, onTotalTemplateChange, employmentById, onEmploymentChange, dayOffsById, onAddDayOff, onRemoveDayOff }: {
   designers: Designer[];
   onChange:  (id: string, field: keyof Designer, value: string) => void;
   onAdd:     () => void;
@@ -435,6 +436,9 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
   onTotalTemplateChange?: (id: string, dayIdx: number, value: number) => void;
   employmentById: Record<string, { startDate?: string; endDate?: string } | undefined>;
   onEmploymentChange: (id: string, field: 'startDate' | 'endDate', value: string) => void;
+  dayOffsById: Record<string, string[] | undefined>;
+  onAddDayOff:    (id: string, dateIso: string) => void;
+  onRemoveDayOff: (id: string, dateIso: string) => void;
 }) {
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [scheduleInputMode, setScheduleInputMode] = useState<InputMode>('hours');
@@ -571,6 +575,14 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
                 endDate={employmentById[d.id]?.endDate}
                 onStartDateChange={val => onEmploymentChange(d.id, 'startDate', val)}
                 onEndDateChange={val => onEmploymentChange(d.id, 'endDate', val)}
+              />
+            </div>
+            <div className="flex items-center gap-1.5 pl-1">
+              <span className="text-[10px] text-slate-400 w-32 shrink-0">Days off</span>
+              <DayOffEditor
+                dates={dayOffsById[d.id] ?? []}
+                onAdd={dateIso => onAddDayOff(d.id, dateIso)}
+                onRemove={dateIso => onRemoveDayOff(d.id, dateIso)}
               />
             </div>
           </div>
@@ -1505,7 +1517,7 @@ function useDraggableOrder<T extends { id: string }>(
 }
 
 // ─── PresRosterEditor ─────────────────────────────────────────────────────────
-function PresRosterEditor({ team, presRoster, onUpdateRoster, onRemove, onReorder, onRefreshRatio, deptLocation, employeeRates = {}, onTemplateChange, onResetToTemplate, onTotalTemplateChange }: {
+function PresRosterEditor({ team, presRoster, onUpdateRoster, onRemove, onReorder, onRefreshRatio, deptLocation, employeeRates = {}, onTemplateChange, onResetToTemplate, onTotalTemplateChange, dayOffsById, onAddDayOff, onRemoveDayOff }: {
   team: (Omit<PresTeamMember, 'hours'> & { hours: unknown })[];
   presRoster: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; role?: string; _removed?: boolean; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string }>;
   onUpdateRoster: (id: string, field: 'ratio' | 'rate' | 'name' | 'payType' | 'annualSalary' | 'role' | 'excludeFromCost' | 'startDate' | 'endDate', val: string | number | boolean) => void;
@@ -1517,6 +1529,9 @@ function PresRosterEditor({ team, presRoster, onUpdateRoster, onRemove, onReorde
   onTemplateChange: (id: string, dayIdx: number, value: number) => void;
   onResetToTemplate?: (id: string) => void;
   onTotalTemplateChange?: (id: string, dayIdx: number, value: number) => void;
+  dayOffsById: Record<string, string[] | undefined>;
+  onAddDayOff:    (id: string, dateIso: string) => void;
+  onRemoveDayOff: (id: string, dateIso: string) => void;
 }) {
   const { dragOverId, handleDragStart, handleDragOver, handleDrop, handleDragEnd } =
     useDraggableOrder(team, onReorder);
@@ -1634,6 +1649,14 @@ function PresRosterEditor({ team, presRoster, onUpdateRoster, onRemove, onReorde
                 onEndDateChange={val => onUpdateRoster(m.id, 'endDate', val)}
               />
             </div>
+            <div className="ml-6 flex items-center gap-1.5">
+              <span className="text-[10px] text-slate-400 w-32 shrink-0">Days off</span>
+              <DayOffEditor
+                dates={dayOffsById[m.id] ?? []}
+                onAdd={dateIso => onAddDayOff(m.id, dateIso)}
+                onRemove={dateIso => onRemoveDayOff(m.id, dateIso)}
+              />
+            </div>
           </div>
           );
         })}
@@ -1644,7 +1667,7 @@ function PresRosterEditor({ team, presRoster, onUpdateRoster, onRemove, onReorde
 }
 
 // ─── FfRosterEditor ────────────────────────────────────────────────────────────
-function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove, onReorder, onRefreshRatio, deptLocation, onTemplateChange, onResetToTemplate, onTotalTemplateChange }: {
+function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove, onReorder, onRefreshRatio, deptLocation, onTemplateChange, onResetToTemplate, onTotalTemplateChange, dayOffsById, onAddDayOff, onRemoveDayOff }: {
   team: (Omit<FfTeamMember, 'hours'> & { hours: unknown })[];
   ffRoster: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string }>;
   employeeRates?:       Record<string, { hourlyRate: number; annualSalary: number; payType: 'hourly'|'salary' }>;
@@ -1657,6 +1680,9 @@ function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove
   onTemplateChange: (id: string, dayIdx: number, value: number) => void;
   onResetToTemplate?: (id: string) => void;
   onTotalTemplateChange?: (id: string, dayIdx: number, value: number) => void;
+  dayOffsById: Record<string, string[] | undefined>;
+  onAddDayOff:    (id: string, dateIso: string) => void;
+  onRemoveDayOff: (id: string, dateIso: string) => void;
 }) {
   const { dragOverId, handleDragStart, handleDragOver, handleDrop, handleDragEnd } =
     useDraggableOrder(team, onReorder);
@@ -1758,6 +1784,14 @@ function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove
                 onEndDateChange={val => onUpdateRoster(mi, 'endDate', val)}
               />
             </div>
+            <div className="flex items-center gap-1.5 pl-6 mt-1.5">
+              <span className="text-[10px] text-slate-400 w-32 shrink-0">Days off</span>
+              <DayOffEditor
+                dates={dayOffsById[m.id] ?? []}
+                onAdd={dateIso => onAddDayOff(m.id, dateIso)}
+                onRemove={dateIso => onRemoveDayOff(m.id, dateIso)}
+              />
+            </div>
           </div>
           );
         })}
@@ -1769,7 +1803,8 @@ function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove
 
 function PreservationSection({ location, preservationQueue, countsLoading, teamActuals, onActualsSaved,
   presHours, presDailyHours, presCheckHours, onPresDailyHoursChange, onPresCheckHoursChange, presRoster, presSettings, mgrTotalHours, mgrTotalDailyHours, onPresHoursChange, onPresRosterChange, onPresSettingsChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {}, weeklyEstimates = {}, presActuals = {}, onReceivedSaved, canViewCPO = true, userRole = 'admin', canSeeManagerCPO = () => false,
-  bouquetsReceivedByWeek, presNewHireHours, onPresNewHireHoursChange }: {
+  bouquetsReceivedByWeek, presNewHireHours, onPresNewHireHoursChange, presDayOffs = {}, onPresDayOffsChange,
+  presCheckAssignments = {}, onPresCheckAssignmentsChange }: {
   location:              'Utah' | 'Georgia';
   preservationQueue:     number;
   countsLoading:         boolean;
@@ -1802,6 +1837,11 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   bouquetsReceivedByWeek: number[];
   presNewHireHours:        Record<string, number>;
   onPresNewHireHoursChange:(h: Record<string, number>) => void;
+  presDayOffs?:            DayOffMap;
+  onPresDayOffsChange:     (m: DayOffMap) => void;
+  // Check 1/2/3 duty toggles — memberId → [c1, c2, c3] booleans.
+  presCheckAssignments?:   Record<string, boolean[]>;
+  onPresCheckAssignmentsChange: (m: Record<string, boolean[]>) => void;
 }) {
   const [presTab,       setPresTab]      = useState<'thisweek' | 'schedule' | 'queue' | 'historicals'>('thisweek');
   const [showRoster,    setShowRoster]   = useState(false);
@@ -2066,6 +2106,29 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
     onPresDailyHoursChange({ ...presDailyHours, [key]: padded });
   }
 
+  // Roster "day off" requests target an arbitrary future calendar date, not
+  // whichever week presThisWeekOffset is currently viewing — so these resolve
+  // their own week/day from the date instead of reusing updateDailyHours.
+  function addPresDayOff(memberId: string, dateIso: string) {
+    const { weekIso, dayIdx } = weekAndDayIndexForDate(dateIso);
+    onPresDailyHoursChange(setDayOverride(presDailyHours, `${weekIso}-${memberId}`, dayIdx, 0, presHours[memberId]?.[weekIso], isoMonday(0)));
+    const existing = presDayOffs[memberId] ?? [];
+    if (!existing.includes(dateIso)) onPresDayOffsChange({ ...presDayOffs, [memberId]: [...existing, dateIso].sort() });
+  }
+  function removePresDayOff(memberId: string, dateIso: string) {
+    const { weekIso, dayIdx } = weekAndDayIndexForDate(dateIso);
+    const next = clearDayOverrideIfValue(presDailyHours, `${weekIso}-${memberId}`, dayIdx, 0);
+    if (next !== presDailyHours) onPresDailyHoursChange(next);
+    onPresDayOffsChange({ ...presDayOffs, [memberId]: (presDayOffs[memberId] ?? []).filter(d => d !== dateIso) });
+  }
+
+  function toggleCheckAssignment(memberId: string, checkIdx: number) {
+    const existing = presCheckAssignments[memberId] ?? [false, false, false];
+    const next = [...existing];
+    next[checkIdx] = !next[checkIdx];
+    onPresCheckAssignmentsChange({ ...presCheckAssignments, [memberId]: next });
+  }
+
   function updateCheckHours(memberId: string, dayIdx: number, val: number) {
     const key = `${isoMonday(presThisWeekOffset)}-${memberId}`;
     const newHours = { ...presCheckHours, [key]: [...(presCheckHours[key] ?? Array(7).fill(0))] };
@@ -2234,6 +2297,9 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
               onTotalTemplateChange={updateTotalTemplate}
               onRemove={handleRemoveMember}
               employeeRates={employeeRates}
+              dayOffsById={presDayOffs}
+              onAddDayOff={addPresDayOff}
+              onRemoveDayOff={removePresDayOff}
               onRefreshRatio={async (id, name) => {
                 try {
                   const res = await fetch(`/api/actuals?location=${location}&type=team&weeks=100`);
@@ -2358,6 +2424,20 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                             <span className={`ml-1.5 text-[10px] rounded px-1 py-px ${tagStyle[m.pay] ?? 'bg-slate-100 text-slate-600'}`}>{m.pay}</span>
                           </div>
                           {preservationActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
+                          <div className="flex items-center gap-2 mt-1">
+                            {[0, 1, 2].map(i => (
+                              <label key={i} className="flex flex-col items-center gap-0.5 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={!!presCheckAssignments[m.id]?.[i]}
+                                  onChange={() => toggleCheckAssignment(m.id, i)}
+                                  title={`Check ${i + 1}`}
+                                  className="w-3 h-3 accent-teal-600"
+                                />
+                                <span className="text-[8px] leading-none text-slate-400">{i + 1}</span>
+                              </label>
+                            ))}
+                          </div>
                         </td>
                         {days.map((_, di) => {
                           const weekIso = isoMonday(presThisWeekOffset);
@@ -2414,6 +2494,9 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                                 : (orders > 0 && <div className="text-slate-400 mt-0.5">{round2(orders)} ord</div>)}
                               <ProductionActual value={preservationActuals.getCount(m.name, days[di].iso, 'preservation')} loading={preservationActuals.loading} unit=" bouq" />
                               {cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
+                              {(presDayOffs[m.id] ?? []).includes(days[di].iso) && (
+                                <div className="text-amber-600 text-[9px] font-medium mt-0.5" title="Requested day off">Day off</div>
+                              )}
                             </td>
                           );
                         })}
@@ -2621,6 +2704,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                             const orders = m.ratio > 0 ? prodH / m.ratio : 0;
                             const cost = m.payType === 'salary' ? (m.annualSalary / 52) : totalH * m.rate;
                             const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && orders > 0 && cost > 0 ? cost / orders : null;
+                            const weekDayOffs = (presDayOffs[m.id] ?? []).filter(d => weekAndDayIndexForDate(d).weekIso === weekIso);
                             return (
                               <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
                                 <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This Week tab (one-off exceptions) — the 52-week planner is a read-only view">
@@ -2633,6 +2717,11 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                                   ? (prodH > 0 && <div className="text-slate-400 mt-0.5">{round2(prodH)}h</div>)
                                   : (orders > 0 && <div className="text-slate-400 mt-0.5">{round2(orders)} ord</div>)}
                                 {cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
+                                {weekDayOffs.length > 0 && (
+                                  <div className="text-amber-600 text-[9px] font-medium mt-0.5" title={weekDayOffs.join(', ')}>
+                                    {weekDayOffs.length === 1 ? 'Day off' : `${weekDayOffs.length} days off`}
+                                  </div>
+                                )}
                               </td>
                             );
                           })}
@@ -2862,7 +2951,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   ffHours, ffRoster, mgrTotalHours, mgrTotalDailyHours, onFfHoursChange, onFfRosterChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {},
   ffDailyHoursProp, onFfDailyHoursChange, canViewCPO = true, userRole = 'admin', canSeeManagerCPO = () => false,
   ffNewHireHours, onFfNewHireHoursChange, ffCohortIntake,
-  fullPipelineRemaining }: {
+  fullPipelineRemaining, ffDayOffsProp, onFfDayOffsChange }: {
   location:        'Utah' | 'Georgia';
   fulfillmentQueue: number;
   countsLoading:   boolean;
@@ -2904,6 +2993,8 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
     designedCount: number | null;
     queuedCount: number | null;
   }[];
+  ffDayOffsProp?:        DayOffMap;
+  onFfDayOffsChange?:    (m: DayOffMap) => void;
 }) {
   const [ffTab,      setFfTab]      = useState<'thisweek' | 'schedule' | 'queue' | 'historicals'>('thisweek');
   const [ffInputMode, setFfInputMode] = useState<InputMode>('hours');
@@ -2911,6 +3002,8 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   const maxFfThisWeekOffset = WEEKS - 1;
   const [ffDailyHours, setFfDailyHours] = useState<DailyHoursMap>(ffDailyHoursProp ?? {});
   useEffect(() => { if (ffDailyHoursProp && Object.keys(ffDailyHoursProp).length > 0) setFfDailyHours(ffDailyHoursProp); }, [JSON.stringify(ffDailyHoursProp)]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [ffDayOffs, setFfDayOffs] = useState<DayOffMap>(ffDayOffsProp ?? {});
+  useEffect(() => { if (ffDayOffsProp && Object.keys(ffDayOffsProp).length > 0) setFfDayOffs(ffDayOffsProp); }, [JSON.stringify(ffDayOffsProp)]); // eslint-disable-line react-hooks/exhaustive-deps
   const [showRoster, setShowRoster] = useState(false);
   const [weekOffset, setWeekOffset] = useState(0);
 
@@ -3089,6 +3182,27 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
     if (changedWeekly) onFfHoursChange(newWeekly);
   }
 
+  // Roster "day off" requests target an arbitrary future calendar date, not
+  // whichever week ffThisWeekOffset is currently viewing — so these resolve
+  // their own week/day from the date rather than reusing setFFH.
+  function addFfDayOff(memberId: string, dateIso: string) {
+    const { weekIso, dayIdx } = weekAndDayIndexForDate(dateIso);
+    const next = setDayOverride(ffDailyHours, `${weekIso}-${memberId}`, dayIdx, 0, ffHours[memberId]?.[weekIso], isoMonday(0));
+    setFfDailyHours(next); onFfDailyHoursChange?.(next);
+    const existing = ffDayOffs[memberId] ?? [];
+    if (!existing.includes(dateIso)) {
+      const nextOffs = { ...ffDayOffs, [memberId]: [...existing, dateIso].sort() };
+      setFfDayOffs(nextOffs); onFfDayOffsChange?.(nextOffs);
+    }
+  }
+  function removeFfDayOff(memberId: string, dateIso: string) {
+    const { weekIso, dayIdx } = weekAndDayIndexForDate(dateIso);
+    const next = clearDayOverrideIfValue(ffDailyHours, `${weekIso}-${memberId}`, dayIdx, 0);
+    if (next !== ffDailyHours) { setFfDailyHours(next); onFfDailyHoursChange?.(next); }
+    const nextOffs = { ...ffDayOffs, [memberId]: (ffDayOffs[memberId] ?? []).filter(d => d !== dateIso) };
+    setFfDayOffs(nextOffs); onFfDayOffsChange?.(nextOffs);
+  }
+
   return (
     <div className="space-y-4">
       {/* Roster editor — always visible regardless of tab, matching Design */}
@@ -3109,6 +3223,9 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
               onTotalTemplateChange={updateFfTotalTemplate}
               onRemove={handleRemoveFfMember}
               employeeRates={employeeRates}
+              dayOffsById={ffDayOffs}
+              onAddDayOff={addFfDayOff}
+              onRemoveDayOff={removeFfDayOff}
               onRefreshRatio={async (id, name) => {
                 try {
                   const res = await fetch(`/api/actuals?location=${location}&type=team&weeks=100`);
@@ -3266,6 +3383,9 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                                 : (orders > 0 && <div className="text-slate-400 mt-0.5">{round2(orders)} ord</div>)}
                               <ProductionActual value={fulfillmentActuals.getCount(m.name, days[dayIdx].iso, 'fulfillment')} loading={fulfillmentActuals.loading} unit=" ord" />
                               {ffHasRates && cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
+                              {(ffDayOffs[m.id] ?? []).includes(days[dayIdx].iso) && (
+                                <div className="text-amber-600 text-[9px] font-medium mt-0.5" title="Requested day off">Day off</div>
+                              )}
                             </td>
                           );
                         })}
@@ -3384,6 +3504,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         const o = m.ratio > 0 ? prodH / m.ratio : 0;
                         const cost = m.payType === 'salary' ? m.annualSalary / 52 : totalH * m.rate;
                         const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && o > 0 && cost > 0 ? cost / o : null;
+                        const weekDayOffs = (ffDayOffs[m.id] ?? []).filter(d => weekAndDayIndexForDate(d).weekIso === weekIso);
                         return (
                           <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
                             <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This Week tab (one-off exceptions) — Weekly Schedule is a read-only view">
@@ -3396,6 +3517,11 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                               ? (prodH > 0 && <div className="text-slate-400 mt-0.5">{round2(prodH)}h</div>)
                               : (o > 0 && <div className="text-slate-400 mt-0.5">{round2(o)} ord</div>)}
                             {cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
+                            {weekDayOffs.length > 0 && (
+                              <div className="text-amber-600 text-[9px] font-medium mt-0.5" title={weekDayOffs.join(', ')}>
+                                {weekDayOffs.length === 1 ? 'Day off' : `${weekDayOffs.length} days off`}
+                              </div>
+                            )}
                           </td>
                         );
                       })}
@@ -4408,6 +4534,23 @@ export function SchedulePage({
     currentRoster[id] = { ...existing, [field]: value || undefined } as typeof currentRoster[string];
     update('designRoster', currentRoster);
   }
+  // Roster "day off" requests target an arbitrary future calendar date, not
+  // whichever week designThisWeekOffset is currently viewing — so these
+  // resolve their own week/day from the date rather than reusing setDH
+  // (defined further down, scoped to the "This Week" tab render).
+  function handleDesignerDayOffAdd(id: string, dateIso: string) {
+    const { weekIso, dayIdx } = weekAndDayIndexForDate(dateIso);
+    const next = setDayOverride(designDailyHours, `${weekIso}-${id}`, dayIdx, 0, settings.designHours[id]?.[weekIso], isoMonday(0));
+    setDesignDailyHours(next); update('designDailyHours', next);
+    const existing = settings.designDayOffs[id] ?? [];
+    if (!existing.includes(dateIso)) update('designDayOffs', { ...settings.designDayOffs, [id]: [...existing, dateIso].sort() });
+  }
+  function handleDesignerDayOffRemove(id: string, dateIso: string) {
+    const { weekIso, dayIdx } = weekAndDayIndexForDate(dateIso);
+    const next = clearDayOverrideIfValue(designDailyHours, `${weekIso}-${id}`, dayIdx, 0);
+    if (next !== designDailyHours) { setDesignDailyHours(next); update('designDailyHours', next); }
+    update('designDayOffs', { ...settings.designDayOffs, [id]: (settings.designDayOffs[id] ?? []).filter(d => d !== dateIso) });
+  }
   // Clears every frozen day/week override for this designer from the current
   // week forward (never touches already-elapsed weeks) so they fall back to
   // following whatever the standard schedule template says. Without this,
@@ -5326,6 +5469,10 @@ export function SchedulePage({
           bouquetsReceivedByWeek={bouquetsReceivedByWeek}
           presNewHireHours={settings.presNewHireHours}
           onPresNewHireHoursChange={(h) => update('presNewHireHours', h)}
+          presDayOffs={settings.presDayOffs}
+          onPresDayOffsChange={(m) => update('presDayOffs', m)}
+          presCheckAssignments={settings.presCheckAssignments}
+          onPresCheckAssignmentsChange={(m) => update('presCheckAssignments', m)}
           onReceivedSaved={() => {
             fetch(`/api/actuals?location=${location}&type=preservation&weeks=52`)
               .then(r => r.json())
@@ -5376,6 +5523,8 @@ export function SchedulePage({
           onFfNewHireHoursChange={(h) => update('ffNewHireHours', h)}
           ffCohortIntake={ffCohortIntake}
           fullPipelineRemaining={fullPipelineRemaining}
+          ffDayOffsProp={settings.ffDayOffs}
+          onFfDayOffsChange={(m) => update('ffDayOffs', m)}
           onActualsSaved={() => {
             fetch(`/api/actuals?location=${location}&type=team&weeks=52`)
               .then(r => r.json())
@@ -5425,6 +5574,9 @@ export function SchedulePage({
                   onTotalTemplateChange={handleDesignerTotalTemplateChange}
                   employmentById={Object.fromEntries(designers.map(d => [d.id, { startDate: settings.designRoster[d.id]?.startDate, endDate: settings.designRoster[d.id]?.endDate }]))}
                   onEmploymentChange={handleDesignerEmploymentChange}
+                  dayOffsById={settings.designDayOffs}
+                  onAddDayOff={handleDesignerDayOffAdd}
+                  onRemoveDayOff={handleDesignerDayOffRemove}
                 />
                 {deletedStack.length > 0 && (
                   <button onClick={handleUndo}
@@ -5583,6 +5735,9 @@ export function SchedulePage({
                                     : (frames > 0 && <div className="text-slate-400 mt-0.5">{round2(frames)}f</div>)}
                                   <ProductionActual value={designActuals.getCount(d.name, days[dayIdx].iso, 'design')} loading={designActuals.loading} unit="f" />
                                   {hasRates && cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
+                                  {(settings.designDayOffs[d.id] ?? []).includes(days[dayIdx].iso) && (
+                                    <div className="text-amber-600 text-[9px] font-medium mt-0.5" title="Requested day off">Day off</div>
+                                  )}
                                 </td>
                               );
                             })}
@@ -5709,6 +5864,8 @@ export function SchedulePage({
                         {windowWeeks.map(w => {
                           const { hrs, frames, cpo, totalHrs } = weekStats(w, d);
                           const isDesignMgr = !!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager);
+                          const weekIso = isoMonday(w);
+                          const weekDayOffs = (settings.designDayOffs[d.id] ?? []).filter(dt => weekAndDayIndexForDate(dt).weekIso === weekIso);
                           return (
                             <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
                               <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This Week tab (one-off exceptions) — Weekly Schedule is a read-only view">
@@ -5722,6 +5879,11 @@ export function SchedulePage({
                                 : (frames > 0 && <div className="text-slate-400 mt-0.5">{Math.round(frames)}f</div>)}
                               {showCPO && (!isDesignMgr || canSeeManagerCPO(d.name)) && cpo !== null && (
                                 <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>
+                              )}
+                              {weekDayOffs.length > 0 && (
+                                <div className="text-amber-600 text-[9px] font-medium mt-0.5" title={weekDayOffs.join(', ')}>
+                                  {weekDayOffs.length === 1 ? 'Day off' : `${weekDayOffs.length} days off`}
+                                </div>
                               )}
                             </td>
                           );
