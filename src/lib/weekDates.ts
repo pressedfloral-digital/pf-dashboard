@@ -45,3 +45,17 @@ export function isoMondayFromDate(d: Date): string {
   monday.setHours(0, 0, 0, 0);
   return monday.toISOString().split('T')[0];
 }
+
+// ISO 8601 week number (1-52 or 53) for a Monday ISO date — the week
+// containing that Monday's Thursday determines which calendar year it
+// belongs to, so a Monday can be "week 1" even if it falls in late December
+// (and vice versa in early January). Purely a display label: any "same week
+// last year" math elsewhere (e.g. addDays(weekOf, -364)) is a fixed 52-week
+// offset and doesn't depend on this numbering, so it's unaffected by a year
+// having 52 vs. 53 ISO weeks.
+export function getISOWeekNumber(iso: string): number {
+  const d = new Date(iso + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+}

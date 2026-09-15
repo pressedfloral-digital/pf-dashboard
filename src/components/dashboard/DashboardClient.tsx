@@ -6,6 +6,7 @@ import { EventDateSection } from './EventDateSection';
 import { SortedLocationSection } from './SortedLocationSection';
 import ScorecardTab from "./ScorecardTab";
 import AllKpisPage from "./AllKpisPage";
+import { GrowthDistributionPage } from './GrowthDistributionPage';
 import { SchedulePage } from './SchedulePage';
 import UserManagementPage from './UserManagementPage';
 import MyDashboardClient from './MyDashboardClient';
@@ -24,7 +25,7 @@ interface LocationCounts {
 }
 
 export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
-  const [mainTab, setMainTab] = useState<'dashboard' | 'scheduling' | 'scorecards' | 'kpis' | 'team'>('dashboard');
+  const [mainTab, setMainTab] = useState<'dashboard' | 'scheduling' | 'scorecards' | 'kpis' | 'growth' | 'team'>('dashboard');
   // Redirect user role to personal dashboard handled server-side
   const { user, loading: userLoading, error: userError } = useCurrentUser();
 
@@ -97,6 +98,7 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
           ...((user?.permissions.canViewScheduling ?? true) ? [['scheduling', 'Scheduling'] as const] : []),
           ...((user?.permissions.canViewScorecards ?? true) ? [['scorecards',  'Scorecards'] as const] : []),
           ...((user?.permissions.canViewScorecards ?? true) ? [['kpis', 'All KPIs'] as const] : []),
+          ...((user?.permissions.canViewScheduling ?? true) ? [['growth', 'Growth & Distribution'] as const] : []),
           ...(user?.permissions.canManageUsers    ? [['team', 'Team Access'] as const] : []),
         ] as const).map(([id, label]) => (
           <button
@@ -145,6 +147,8 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
       {mainTab === 'scorecards' && <ScorecardTab />}
       {/* ── ALL KPIs TAB ────────────────────────────────────────────────────────── */}
       {mainTab === 'kpis' && <AllKpisPage />}
+      {/* ── GROWTH & DISTRIBUTION TAB ────────────────────────────────────────── */}
+      {mainTab === 'growth' && <GrowthDistributionPage />}
       {/* ── TEAM ACCESS TAB ─────────────────────────────────────────────────── */}
       {mainTab === 'team' && <UserManagementPage />}
       {/* ── SCHEDULING TAB ───────────────────────────────────────────────────── */}
