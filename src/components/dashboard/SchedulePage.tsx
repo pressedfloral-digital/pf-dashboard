@@ -2841,7 +2841,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
 
   function setFfNewHireHours(weekIso: string, hours: number) {
     const next = { ...ffNewHireHours };
-    if (hours > 0) next[weekIso] = hours; else delete next[weekIso];
+    if (hours !== 0) next[weekIso] = hours; else delete next[weekIso];
     onFfNewHireHoursChange(next);
   }
 
@@ -3317,14 +3317,16 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                     <div key={w} className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded ${w === 0 ? 'bg-indigo-50/60' : ''}`}>
                       <span className="text-[9px] text-slate-400 whitespace-nowrap">{getWeekLabel(w)}</span>
                       <input
-                        type="number" min="0" step="1" placeholder="0"
+                        type="number" step="1" placeholder="0"
                         value={ffNewHireHours[weekIso] ?? ''}
                         onChange={e => setFfNewHireHours(weekIso, parseFloat(e.target.value) || 0)}
                         className="w-12 border border-slate-200 rounded px-1 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-emerald-300"
-                        title={`Hours/wk a hypothetical new hire starting ${fmtDate(weekIso)} would average`}
+                        title={`Hours/wk a hypothetical new hire starting ${fmtDate(weekIso)} would average (negative to remove hours)`}
                       />
-                      {hireCum > 0 && (
-                        <span className="text-[9px] text-emerald-600 whitespace-nowrap">+{Math.round(hireCum)}h</span>
+                      {hireCum !== 0 && (
+                        <span className={`text-[9px] whitespace-nowrap ${hireCum > 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                          {hireCum > 0 ? '+' : ''}{Math.round(hireCum)}h
+                        </span>
                       )}
                     </div>
                   );
@@ -4736,7 +4738,7 @@ export function SchedulePage({
 
   function setNewHireHours(weekIso: string, hours: number) {
     const next = { ...settings.newHireHours };
-    if (hours > 0) next[weekIso] = hours; else delete next[weekIso];
+    if (hours !== 0) next[weekIso] = hours; else delete next[weekIso];
     update('newHireHours', next);
   }
 
@@ -5684,14 +5686,16 @@ export function SchedulePage({
                         <div key={w} className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded ${w === 0 ? 'bg-indigo-50/60' : ''}`}>
                           <span className="text-[9px] text-slate-400 whitespace-nowrap">{getWeekLabel(w)}</span>
                           <input
-                            type="number" min="0" step="1" placeholder="0"
+                            type="number" step="1" placeholder="0"
                             value={settings.newHireHours[weekIso] ?? ''}
                             onChange={e => setNewHireHours(weekIso, parseFloat(e.target.value) || 0)}
                             className="w-12 border border-slate-200 rounded px-1 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-emerald-300"
-                            title={`Hours/wk a hypothetical new hire starting ${fmtDate(weekIso)} would average`}
+                            title={`Hours/wk a hypothetical new hire starting ${fmtDate(weekIso)} would average (negative to remove hours)`}
                           />
-                          {hireCum > 0 && (
-                            <span className="text-[9px] text-emerald-600 whitespace-nowrap">+{Math.round(hireCum)}h</span>
+                          {hireCum !== 0 && (
+                            <span className={`text-[9px] whitespace-nowrap ${hireCum > 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                              {hireCum > 0 ? '+' : ''}{Math.round(hireCum)}h
+                            </span>
                           )}
                         </div>
                       );
