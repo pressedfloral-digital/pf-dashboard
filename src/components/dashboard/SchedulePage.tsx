@@ -13,12 +13,19 @@ import {
   type KpiDept, type KpiLocation, type KpiState,
 } from '@/hooks/useKpiMetrics';
 import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
-import { getMondayDate, isoMonday, getWeekLabel, getMonthKey } from '@/lib/weekDates';
+import { getMondayDate, isoMonday, getWeekLabel, getMonthKey, getISOWeekNumber } from '@/lib/weekDates';
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
 import { distributeHours, resolveDayHours, resolveWeekHours, isWithinEmployment, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
 import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './BloomUpdateModal';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { useVisibleManagerCPO } from '@/hooks/useVisibleManagerCPO';
+import {
+  addDays, UTAH_HISTORICAL_INTAKE, GEORGIA_HISTORICAL_INTAKE,
+  computeActualIntakeByWeek, computeCombinedIntakeByWeek, computeRollingMultiplier,
+  type TeamActualRow,
+} from '@/lib/intakeHistory';
+import { useGrowthSettings } from '@/hooks/useGrowthSettings';
+import { useDistributionEstimate } from '@/hooks/useDistributionEstimate';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -49,9 +56,6 @@ const PRESERVATION_WEEKS = 8;
 // presumed to start at whatever mix of senior/junior ratios happens to be
 // scheduled that week.
 const NEW_HIRE_RATIO = 2.0;
-// Default projection ratio for auto-filled "bouquets received" estimates:
-// same week last year × this multiplier. Editable per week.
-const DEFAULT_INTAKE_MULTIPLIER = 1.2;
 // Orders shouldn't sit in Fulfillment longer than this once they leave Design.
 const FF_TARGET_WEEKS = 2;
 // Pace assumed for a hypothetical new fulfillment hire on the Queue &
@@ -100,139 +104,6 @@ const DESIGNED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: 2286.5, Ge
 // same reason — designedCohorts (this stage's own input) grows by the identical
 // newly-added front volume, one stage downstream.
 const FULFILLED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: 1820.5, Georgia: 1893 };
-
-const UTAH_HISTORICAL_INTAKE: { weekOf: string; actual: number }[] = [
-  { weekOf: '2025-04-21', actual: 133   },
-  { weekOf: '2025-04-28', actual: 117   },
-  { weekOf: '2025-05-05', actual: 88    },
-  { weekOf: '2025-05-12', actual: 112   },
-  { weekOf: '2025-05-19', actual: 182   },
-  { weekOf: '2025-05-26', actual: 160   },
-  { weekOf: '2025-06-02', actual: 180   },
-  { weekOf: '2025-06-09', actual: 153   },
-  { weekOf: '2025-06-16', actual: 192   },
-  { weekOf: '2025-06-23', actual: 173   },
-  { weekOf: '2025-06-30', actual: 61    },
-  { weekOf: '2025-07-07', actual: 27    },
-  { weekOf: '2025-07-14', actual: 120   },
-  { weekOf: '2025-07-21', actual: 93    },
-  { weekOf: '2025-07-28', actual: 84    },
-  { weekOf: '2025-08-04', actual: 110   },
-  { weekOf: '2025-08-11', actual: 119   },
-  { weekOf: '2025-08-18', actual: 108   },
-  { weekOf: '2025-08-25', actual: 124   },
-  { weekOf: '2025-09-01', actual: 120   },
-  { weekOf: '2025-09-08', actual: 146   },
-  { weekOf: '2025-09-15', actual: 154   },
-  { weekOf: '2025-09-22', actual: 146.5 },
-  { weekOf: '2025-09-29', actual: 186.5 },
-  { weekOf: '2025-10-06', actual: 167   },
-  { weekOf: '2025-10-13', actual: 192   },
-  { weekOf: '2025-10-20', actual: 159   },
-  { weekOf: '2025-10-27', actual: 139   },
-  { weekOf: '2025-11-03', actual: 97    },
-  { weekOf: '2025-11-10', actual: 110   },
-  { weekOf: '2025-11-17', actual: 68    },
-  { weekOf: '2025-11-24', actual: 39    },
-  { weekOf: '2025-12-01', actual: 15    },
-  { weekOf: '2025-12-08', actual: 29    },
-  { weekOf: '2025-12-15', actual: 41    },
-  { weekOf: '2025-12-22', actual: 16    },
-  { weekOf: '2025-12-29', actual: 24    },
-  { weekOf: '2026-01-05', actual: 22    },
-  { weekOf: '2026-01-12', actual: 18    },
-  { weekOf: '2026-01-19', actual: 22    },
-  { weekOf: '2026-01-26', actual: 12    },
-  { weekOf: '2026-02-02', actual: 10    },
-  { weekOf: '2026-02-09', actual: 25    },
-  { weekOf: '2026-02-16', actual: 27    },
-  { weekOf: '2026-02-23', actual: 24    },
-  { weekOf: '2026-03-02', actual: 13    },
-  { weekOf: '2026-03-09', actual: 28    },
-  { weekOf: '2026-03-16', actual: 47    },
-  { weekOf: '2026-03-23', actual: 43    },
-  { weekOf: '2026-03-30', actual: 43    },
-  { weekOf: '2026-04-06', actual: 49    },
-  { weekOf: '2026-04-13', actual: 71    },
-  { weekOf: '2026-04-20', actual: 66    },
-  { weekOf: '2026-04-27', actual: 120   },
-  { weekOf: '2026-05-04', actual: 85    },
-  { weekOf: '2026-05-11', actual: 68    },
-  { weekOf: '2026-05-18', actual: 148   },
-  { weekOf: '2026-05-25', actual: 115   },
-  { weekOf: '2026-06-01', actual: 104   },
-  { weekOf: '2026-06-08', actual: 117   },
-  { weekOf: '2026-06-15', actual: 129   },
-  { weekOf: '2026-06-22', actual: 150   },
-  { weekOf: '2026-06-29', actual: 155   },
-];
-
-// ─── Historical Georgia intake (actual received by week) ──────────────────────
-const GEORGIA_HISTORICAL_INTAKE: { weekOf: string; actual: number }[] = [
-  { weekOf: '2025-04-21', actual: 104 },
-  { weekOf: '2025-04-28', actual: 114 },
-  { weekOf: '2025-05-05', actual: 71  },
-  { weekOf: '2025-05-12', actual: 134 },
-  { weekOf: '2025-05-19', actual: 125 },
-  { weekOf: '2025-05-26', actual: 176 },
-  { weekOf: '2025-06-02', actual: 166 },
-  { weekOf: '2025-06-09', actual: 123 },
-  { weekOf: '2025-06-16', actual: 169 },
-  { weekOf: '2025-06-23', actual: 107 },
-  { weekOf: '2025-06-30', actual: 64  },
-  { weekOf: '2025-07-07', actual: 104 },
-  { weekOf: '2025-07-14', actual: 76  },
-  { weekOf: '2025-07-21', actual: 91  },
-  { weekOf: '2025-07-28', actual: 91  },
-  { weekOf: '2025-08-04', actual: 91  },
-  { weekOf: '2025-08-11', actual: 91  },
-  { weekOf: '2025-08-18', actual: 86  },
-  { weekOf: '2025-08-25', actual: 115 },
-  { weekOf: '2025-09-01', actual: 108 },
-  { weekOf: '2025-09-08', actual: 156 },
-  { weekOf: '2025-09-15', actual: 133 },
-  { weekOf: '2025-09-22', actual: 167 }, // wk 39
-  { weekOf: '2025-09-29', actual: 176 }, // wk 40
-  { weekOf: '2025-10-06', actual: 200 }, // wk 41
-  { weekOf: '2025-10-13', actual: 170 }, // wk 42
-  { weekOf: '2025-10-20', actual: 165 }, // wk 43
-  { weekOf: '2025-10-27', actual: 127 }, // wk 44
-  { weekOf: '2025-11-03', actual: 105 }, // wk 45
-  { weekOf: '2025-11-10', actual: 137 }, // wk 46
-  { weekOf: '2025-11-17', actual: 95  }, // wk 47
-  { weekOf: '2025-11-24', actual: 57  }, // wk 48
-  { weekOf: '2025-12-01', actual: 40  }, // wk 49
-  { weekOf: '2025-12-08', actual: 47  }, // wk 50
-  { weekOf: '2025-12-15', actual: 66  }, // wk 51
-  { weekOf: '2025-12-22', actual: 33  }, // wk 52
-  { weekOf: '2025-12-29', actual: 41  }, // wk 1 2026
-  { weekOf: '2026-01-05', actual: 35  }, // wk 2
-  { weekOf: '2026-01-12', actual: 16  }, // wk 3
-  { weekOf: '2026-01-19', actual: 31  }, // wk 4
-  { weekOf: '2026-01-26', actual: 12  }, // wk 5
-  { weekOf: '2026-02-02', actual: 31  }, // wk 6
-  { weekOf: '2026-02-09', actual: 23  }, // wk 7
-  { weekOf: '2026-02-16', actual: 27  }, // wk 8
-  { weekOf: '2026-02-23', actual: 30  }, // wk 9
-  { weekOf: '2026-03-02', actual: 32  }, // wk 10
-  { weekOf: '2026-03-09', actual: 48  }, // wk 11
-  { weekOf: '2026-03-16', actual: 63  }, // wk 12
-  { weekOf: '2026-03-23', actual: 49  }, // wk 13
-  { weekOf: '2026-03-30', actual: 56  }, // wk 14
-  { weekOf: '2026-04-06', actual: 8   },
-  { weekOf: '2026-04-13', actual: 36  },
-  { weekOf: '2026-04-20', actual: 57  },
-  { weekOf: '2026-04-27', actual: 89  },
-  { weekOf: '2026-05-04', actual: 73  },
-  { weekOf: '2026-05-11', actual: 75  },
-  { weekOf: '2026-05-18', actual: 112 },
-  { weekOf: '2026-05-25', actual: 106 },
-  { weekOf: '2026-06-01', actual: 138 },
-  { weekOf: '2026-06-08', actual: 124 },
-  { weekOf: '2026-06-15', actual: 139 },
-  { weekOf: '2026-06-22', actual: 151 },
-  { weekOf: '2026-06-29', actual: 135 },
-];
 
 // ─── Default designers ────────────────────────────────────────────────────────
 
@@ -286,12 +157,6 @@ function fmtDate(iso: string): string {
 // Returns the past N week Monday ISO dates (most recent first)
 function pastWeeks(n: number): string[] {
   return Array.from({ length: n }, (_, i) => isoMonday(-(i + 1)));
-}
-
-function addDays(iso: string, days: number): string {
-  const d = new Date(iso + 'T12:00:00');
-  d.setDate(d.getDate() + days);
-  return d.toISOString().split('T')[0];
 }
 
 // Preservation staffing check: how does a week's scheduled capacity compare
@@ -2708,7 +2573,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                     return (
                       <tr key={w} className={`border-b border-slate-50 align-top ${w % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
                         <td className="px-2 py-2 sticky left-0 bg-inherit whitespace-nowrap text-slate-500">
-                          {getWeekLabel(w)}
+                          {getWeekLabel(w)} <span className="text-slate-300">wk{getISOWeekNumber(weekIso)}</span>
                           {w === 0 && <span className="ml-1 text-[9px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
                         </td>
                         <td className="px-2 py-2 whitespace-nowrap text-slate-600">
@@ -3408,7 +3273,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         done ? 'bg-slate-50 opacity-50' : row.stage === 'partially_designed' ? 'bg-amber-50/30' : weeksLeft === 0 ? 'bg-indigo-50/40' : row.stage === 'not_yet_received' ? 'bg-slate-50/40' : 'hover:bg-slate-50'
                       }`}>
                         <td className="px-4 py-2 font-medium text-slate-700 whitespace-nowrap">
-                          {fmtDate(row.weekOf)}
+                          {fmtDate(row.weekOf)} <span className="font-normal text-slate-300">wk{getISOWeekNumber(row.weekOf)}</span>
                           {done && <span className="ml-2 text-[10px] bg-slate-200 text-slate-500 rounded px-1 py-px">✓ fulfilled</span>}
                           {row.stage === 'partially_designed' && <span className="ml-2 text-[10px] bg-amber-100 text-amber-700 rounded px-1 py-px">partially designed</span>}
                           {row.stage === 'not_yet_received' && <span className="ml-2 text-[10px] bg-slate-100 text-slate-400 rounded px-1 py-px">est.</span>}
@@ -4138,6 +4003,32 @@ export function SchedulePage({
       .catch(() => {});
   }, [location]);
 
+  // The other location's actuals — needed to derive this location's share of
+  // the company-wide "bouquets received" projection (see actualIntakeByWeek/
+  // companyActualIntakeByWeek below): the Growth & Distribution tab's company
+  // multiplier + UT/GA % split now drives this instead of a local per-location
+  // multiplier, so this location's estimate can't be computed without knowing
+  // what the other location actually received too.
+  const otherLocation = location === 'Utah' ? 'Georgia' : 'Utah';
+  const [otherPresActuals, setOtherPresActuals] = useState<Record<string, number>>({});
+  const [otherTeamActuals, setOtherTeamActuals] = useState<TeamActualRow[]>([]);
+  useEffect(() => {
+    fetch(`/api/actuals?location=${otherLocation}&type=preservation&weeks=52`)
+      .then(r => r.json())
+      .then((d: { preservationActuals?: { week_of: string; received: number }[] }) => {
+        const map: Record<string, number> = {};
+        (d.preservationActuals ?? []).forEach(row => { map[row.week_of] = row.received; });
+        setOtherPresActuals(map);
+      })
+      .catch(() => {});
+    fetch(`/api/actuals?location=${otherLocation}&type=team&weeks=52`)
+      .then(r => r.json())
+      .then((d: { teamActuals?: TeamActualRow[] }) => setOtherTeamActuals(d.teamActuals ?? []))
+      .catch(() => {});
+  }, [otherLocation]);
+  const { companyMultipliers, distributionPct } = useGrowthSettings();
+  const { estimates: distributionEstimates, getSuggestedUtPct } = useDistributionEstimate();
+
   // Design delivery promises — "weeks until designed" locked in for clients,
   // see the "Send biweekly bloom update" button on the Queue & Turnaround tab.
   // Keyed by intake week.
@@ -4181,7 +4072,6 @@ export function SchedulePage({
   }
 
   const weeklyEstimates = settings.weeklyEstimates;
-  const weeklyMultipliers = settings.weeklyMultipliers ?? {};
 
   // Same hook/endpoint the All KPIs tab uses — the per-department Monthly KPI
   // bars read from this so the two views can never disagree on formulas
@@ -4199,13 +4089,15 @@ export function SchedulePage({
       : { ...existing, ga: val };
     update('weeklyEstimates', { ...weeklyEstimates, [weekOf]: updated });
   }
-
-  function setWeeklyMultiplier(weekOf: string, val: number) {
-    const existing = weeklyMultipliers[weekOf] ?? { ut: rollingIntakeMultiplier, ga: rollingIntakeMultiplier };
-    const updated = location === 'Utah'
-      ? { ...existing, ut: val }
-      : { ...existing, ga: val };
-    update('weeklyMultipliers', { ...weeklyMultipliers, [weekOf]: updated });
+  // Removes a manual bq override entirely so the week falls back to the
+  // company-multiplier × distribution-% formula — otherwise there's no way
+  // back to the computed estimate short of retyping it, and a stale
+  // override (e.g. typed before this projection existed) silently keeps
+  // blocking the formula forever with no visible explanation.
+  function clearWeeklyEstimate(weekOf: string) {
+    const next = { ...weeklyEstimates };
+    delete next[weekOf];
+    update('weeklyEstimates', next);
   }
 
   const avgIntake = settings.avgIntake;
@@ -4441,61 +4333,66 @@ export function SchedulePage({
 
   // First week team_member_week_actuals has live preservation data, for both
   // locations. The UTAH_HISTORICAL_INTAKE/GEORGIA_HISTORICAL_INTAKE seed
-  // arrays above run a bit past this date (through 2026-06-29) — a leftover
-  // overlap from before live tracking existed. Kept as-is rather than
-  // trimmed, so the old data isn't lost, but actualIntakeByWeek below must
-  // ignore the seed value for any week on/after this date so it can't get
-  // added on top of the live total for that same week.
-  const LIVE_INTAKE_TRACKING_START = '2025-12-29';
+  // arrays (src/lib/intakeHistory.ts) run a bit past LIVE_INTAKE_TRACKING_START
+  // (through 2026-06-29) — a leftover overlap from before live tracking
+  // existed. Kept as-is rather than trimmed, so the old data isn't lost, but
+  // computeActualIntakeByWeek ignores the seed value for any week on/after
+  // that date so it can't get added on top of the live total for that same
+  // week.
 
   // ── Actual intake by week (merged: hardcoded historical < team actuals < Supabase actuals) ──
   // Single source of truth for "what actually came in a given week" — used both to graduate
   // the preservation queue and to look up same-week-last-year for projecting future intake.
-  const actualIntakeByWeek = useMemo(() => {
-    const map: Record<string, number> = {};
-    const hardcoded = location === 'Utah' ? UTAH_HISTORICAL_INTAKE : GEORGIA_HISTORICAL_INTAKE;
-    hardcoded.forEach(h => {
-      if (h.weekOf < LIVE_INTAKE_TRACKING_START) map[h.weekOf] = h.actual;
-    });
-    const liveByWeek: Record<string, number> = {};
-    teamActuals.filter(r => r.department === 'preservation').forEach(r => {
-      liveByWeek[r.week_of] = (liveByWeek[r.week_of] ?? 0) + r.actual_orders;
-    });
-    Object.entries(liveByWeek).forEach(([weekOf, val]) => { map[weekOf] = val; });
-    Object.entries(presActuals).forEach(([weekOf, val]) => { map[weekOf] = val; });
-    return map;
-  }, [location, teamActuals, presActuals]);
+  // Shared with the company-wide Growth & Distribution tab — see src/lib/intakeHistory.ts.
+  const actualIntakeByWeek = useMemo(
+    () => computeActualIntakeByWeek(location, teamActuals, presActuals),
+    [location, teamActuals, presActuals],
+  );
+
+  // The other location's actual-intake-by-week, merged with this location's
+  // own (above) into a company-wide total — needed because the projection
+  // below is now company-wide-first, location-share-second (see below).
+  const otherActualIntakeByWeek = useMemo(
+    () => computeActualIntakeByWeek(otherLocation, otherTeamActuals, otherPresActuals),
+    [otherLocation, otherTeamActuals, otherPresActuals],
+  );
+  const companyActualIntakeByWeek = useMemo(
+    () => computeCombinedIntakeByWeek(actualIntakeByWeek, otherActualIntakeByWeek),
+    [actualIntakeByWeek, otherActualIntakeByWeek],
+  );
 
   // Default growth multiplier for a not-yet-manually-set future week: the
-  // average realized multiplier (actual intake ÷ same week last year) across
-  // the 4 most recent ACTUAL weeks that have both sides of that comparison —
-  // i.e. exactly the ×N figures already shown next to received weeks in the
-  // table below, just averaged instead of read one at a time. Recomputes
-  // automatically as new actual weeks land, so it's a rolling window with no
-  // manual upkeep; DEFAULT_INTAKE_MULTIPLIER is only the fallback for when
-  // there isn't yet enough realized history to average (e.g. a new market).
-  const rollingIntakeMultiplier = useMemo(() => {
-    const ratios: number[] = [];
-    for (let w = -1; w >= -104 && ratios.length < 4; w--) {
-      const weekOf = isoMonday(w);
-      const actual = actualIntakeByWeek[weekOf];
-      if (actual === undefined) continue;
-      const lastYear = actualIntakeByWeek[addDays(weekOf, -364)];
-      if (lastYear === undefined || lastYear <= 0) continue;
-      ratios.push(actual / lastYear);
-    }
-    return ratios.length > 0 ? ratios.reduce((s, r) => s + r, 0) / ratios.length : DEFAULT_INTAKE_MULTIPLIER;
-  }, [actualIntakeByWeek]);
+  // average realized company-wide multiplier (actual intake ÷ same week last
+  // year, summed across both locations) across the 4 most recent ACTUAL
+  // weeks that have both sides of that comparison. Recomputes automatically
+  // as new actual weeks land; DEFAULT_INTAKE_MULTIPLIER is only the fallback
+  // for when there isn't yet enough realized history to average.
+  const rollingCompanyMultiplier = useMemo(
+    () => computeRollingMultiplier(companyActualIntakeByWeek, isoMonday),
+    [companyActualIntakeByWeek],
+  );
 
-  const intakeMultiplierKey = location === 'Utah' ? 'ut' : 'ga';
-  function getIntakeMultiplier(weekOf: string): number {
-    return weeklyMultipliers[weekOf]?.[intakeMultiplierKey] ?? rollingIntakeMultiplier;
+  // "Bouquets received" projection is now driven by the Growth & Distribution
+  // tab's company-wide growth multiplier + UT/GA % split (schedule_settings,
+  // location='Global', keys companyMultipliers/distributionPct), not a local
+  // per-location multiplier — editing the multiplier or the % split there
+  // moves this location's projection here too, so the two tabs can't
+  // disagree about how much volume is expected. Projected intake for THIS
+  // location = (company last year × company multiplier) × this location's %.
+  function getCompanyMultiplier(weekOf: string): number {
+    return companyMultipliers[weekOf] ?? rollingCompanyMultiplier;
   }
-  // Projected intake = same week last year's actual × that week's multiplier (default 1.2).
+  function getLocationPct(weekOf: string): number {
+    // Manual override (Growth & Distribution tab) wins; otherwise the
+    // seasonal + planned-reassignment-aware suggestion; otherwise flat 50/50.
+    const utPct = distributionPct[weekOf]?.ut ?? getSuggestedUtPct(weekOf);
+    return location === 'Utah' ? utPct : 100 - utPct;
+  }
   function getProjectedIntake(weekOf: string): number | undefined {
-    const lastYearActual = actualIntakeByWeek[addDays(weekOf, -364)];
-    if (lastYearActual === undefined) return undefined;
-    return Math.round(lastYearActual * getIntakeMultiplier(weekOf));
+    const companyLastYear = companyActualIntakeByWeek[addDays(weekOf, -364)];
+    if (companyLastYear === undefined) return undefined;
+    const companyEstimate = companyLastYear * getCompanyMultiplier(weekOf);
+    return Math.round(companyEstimate * getLocationPct(weekOf) / 100);
   }
 
   // The exact "Bouquets received" estimate shown per week on Design's Queue &
@@ -4510,7 +4407,7 @@ export function SchedulePage({
     const projected = getProjectedIntake(weekIso);
     if (projected !== undefined) return projected;
     return avgIntake;
-  }), [weeklyEstimates, location, actualIntakeByWeek, weeklyMultipliers, avgIntake]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [weeklyEstimates, location, companyActualIntakeByWeek, companyMultipliers, distributionPct, distributionEstimates, avgIntake]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Graduating cohorts (preservation → designable, per week) ────────────────
   const graduatingCohorts = useMemo(() => {
@@ -4533,7 +4430,7 @@ export function SchedulePage({
       if (projected !== undefined) return projected;
       return avgIntake;
     });
-  }, [avgIntake, presActuals, weeklyEstimates, location, teamActuals, actualIntakeByWeek, weeklyMultipliers]);
+  }, [avgIntake, presActuals, weeklyEstimates, location, teamActuals, companyActualIntakeByWeek, companyMultipliers, distributionPct, distributionEstimates]);
 
   // ── Cohort intake (actual bouquets received from Preservation) ─────────────
   // Single source of truth for "how many orders are actually backed up
@@ -5778,7 +5675,11 @@ export function SchedulePage({
                           const overrideVal = hasOverride ? (location === 'Utah' ? _weVal.ut : _weVal.ga) : undefined;
                           const lastYearIso = addDays(row.weekOf, -364);
                           const lastYearActual = actualIntakeByWeek[lastYearIso];
-                          const multiplier = getIntakeMultiplier(row.weekOf);
+                          // Company-wide multiplier + this location's % share, both set on
+                          // the Growth & Distribution tab — see getProjectedIntake above.
+                          const companyLastYearActual = companyActualIntakeByWeek[lastYearIso];
+                          const multiplier = getCompanyMultiplier(row.weekOf);
+                          const locationPct = getLocationPct(row.weekOf);
                           const projected = getProjectedIntake(row.weekOf);
                           const estVal = hasOverride ? overrideVal : (projected !== undefined ? projected : '');
                           // Realized growth multiplier for already-received weeks — same
@@ -5799,7 +5700,7 @@ export function SchedulePage({
                               done ? 'bg-slate-50 opacity-50' : partial ? 'bg-amber-50/30' : inPres ? 'bg-green-50/30' : weeksLeft === 0 ? 'bg-indigo-50/40' : notYetIn ? 'bg-slate-50/40' : 'hover:bg-slate-50'
                             }`}>
                               <td className="px-4 py-2 font-medium text-slate-700 whitespace-nowrap">
-                                {fmtDate(row.weekOf)}
+                                {fmtDate(row.weekOf)} <span className="font-normal text-slate-300">wk{getISOWeekNumber(row.weekOf)}</span>
                                 {done && <span className="ml-2 text-[10px] bg-slate-200 text-slate-500 rounded px-1 py-px">✓ designed</span>}
                                 {partial && <span className="ml-2 text-[10px] bg-amber-100 text-amber-700 rounded px-1 py-px">partially designed</span>}
                                 {notYetIn && <span className="ml-2 text-[10px] bg-slate-100 text-slate-400 rounded px-1 py-px">est.</span>}
@@ -5825,20 +5726,23 @@ export function SchedulePage({
                                       />
                                       <span className="text-[10px] text-slate-300">bq</span>
                                     </div>
-                                    {lastYearActual !== undefined && (
-                                      <div className="flex items-center gap-1" title={`${lastYearActual} bq received ${fmtDate(lastYearIso)} (same week last year)`}>
-                                        <span className="text-[10px] text-slate-400">×</span>
-                                        <input
-                                          type="number"
-                                          step="0.1"
-                                          min="0"
-                                          value={multiplier}
-                                          disabled={hasOverride}
-                                          onChange={e => setWeeklyMultiplier(row.weekOf, parseFloat(e.target.value) || rollingIntakeMultiplier)}
-                                          className="w-12 border border-slate-200 rounded px-1 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300 disabled:bg-slate-50 disabled:text-slate-300"
-                                          title={hasOverride ? 'Clear the bq override to use the LY projection' : 'Multiplier applied to last year’s same week'}
-                                        />
-                                        <span className="text-[10px] text-slate-300">LY {lastYearActual}</span>
+                                    {hasOverride ? (
+                                      <div className="flex items-center gap-1" title="This week's bq value is a manual override — the Growth & Distribution formula is NOT being applied here.">
+                                        <span className="text-[10px] text-amber-600 whitespace-nowrap">manual override</span>
+                                        <button
+                                          onClick={() => clearWeeklyEstimate(row.weekOf)}
+                                          className="text-[10px] text-slate-400 hover:text-red-500"
+                                          title="Clear override — use the Growth & Distribution formula instead"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    ) : companyLastYearActual !== undefined && (
+                                      <div className="flex items-center gap-1"
+                                        title={`Company LY ${companyLastYearActual} × ×${multiplier.toFixed(2)} growth multiplier × ${locationPct.toFixed(0)}% to ${location} — set on the Growth & Distribution tab`}>
+                                        <span className="text-[10px] text-slate-400 whitespace-nowrap">
+                                          ×{multiplier.toFixed(2)} co. · {locationPct.toFixed(0)}% {location === 'Utah' ? 'UT' : 'GA'}
+                                        </span>
                                       </div>
                                     )}
                                   </div>
@@ -5997,6 +5901,7 @@ export function SchedulePage({
               loading={bloomHistoryLoading}
               location={location}
               onClose={() => setBloomHistoryOpen(false)}
+              onDeleted={(id) => setBloomHistory(prev => prev.filter(u => u.id !== id))}
             />
           )}
 
