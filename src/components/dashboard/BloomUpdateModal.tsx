@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export interface BloomUpdateRow {
   weekOf: string;
@@ -153,6 +153,148 @@ export function downloadBloomUpdatePNG(sentAt: string, rows: BloomUpdateRow[], l
   a.click();
 }
 
+// ─── Copy-paste HTML for the biweekly email (Klaviyo table block) ───────────────
+// Buffers only affect this generated markup — they never touch the
+// locked-in promise (`rows` itself is read-only here).
+export function generateBloomEmailHtml(rows: BloomUpdateRow[], buffers: Record<string, number>): string {
+  const rowsHtml = rows.map(row => {
+    const buffered = row.weeksUntilDesigned + (buffers[row.weekOf] ?? 0);
+    return `<tr>
+<td class="kl-table-subblock" style="width:auto;overflow:hidden;border-right:solid 1px #756A64;border-top:solid 1px #756A64;vertical-align:top;padding-top:5px;padding-right:10px;padding-bottom:5px;padding-left:10px;">
+<div style="font-family:Times New Roman;font-size:14px;font-style:normal;font-weight:400;letter-spacing:0px;line-height:1.3;text-align:left;color:#222222;"><div style="text-align: center;"><span style="font-weight: 300; font-family: Brandongrotesquelight, 'New York', TimesNewRoman, 'Times New Roman', Times, Baskerville, Georgia, serif; color: #756a64; font-size: 20px;">${fmtWeekRange(row.weekOf)}</span></div></div>
+</td>
+<td class="kl-table-subblock" style="width:auto;overflow:hidden;border-top:solid 1px #756A64;vertical-align:top;padding-top:5px;padding-right:10px;padding-bottom:5px;padding-left:10px;">
+<div style="font-family:Times New Roman;font-size:14px;font-style:normal;font-weight:400;letter-spacing:0px;line-height:1.3;text-align:left;color:#222222;"><div style="text-align: center;"><span style="font-weight: 300; font-family: Brandongrotesquelight, 'New York', TimesNewRoman, 'Times New Roman', Times, Baskerville, Georgia, serif; color: #756a64; font-size: 20px;">${fmtWeeksUntil(buffered)}</span></div></div>
+</td>
+</tr>`;
+  }).join('\n');
+
+  return `<tr>
+<td style="font-size:0px;word-break:break-word;">
+<div class="mj-column-per-100 mj-outlook-group-fix component-wrapper" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%;">
+<table border="0" cellpadding="0" cellspacing="0" role="presentation" style="table-layout:fixed;" width="100%">
+<tbody>
+<tr>
+<td class="" style="background-color:#FFFFFF;vertical-align:top;padding-top:10px;padding-right:10px;padding-bottom:10px;padding-left:10px;">
+<table border="0" cellpadding="0" cellspacing="0" role="presentation" style="" width="100%">
+<tbody>
+<tr>
+<td align="left" class="kl-table" style="font-size:0px;padding:0px;word-break:break-word;">
+<table border="0" cellpadding="0" cellspacing="0" style="color:#000000;font-family:Ubuntu, Helvetica, Arial, sans-serif;font-size:13px;line-height:22px;table-layout:fixed;width:100%;border:solid 2px #756A64;" width="100%">
+<thead>
+<tr>
+<th class="kl-table-subblock" style="width:auto;overflow:hidden;padding-top:8px;padding-right:0px;padding-bottom:8px;padding-left:0px;">
+<div style="font-family: SpectralBold, TimesNewRoman, 'Times New Roman', Times, Baskerville, Georgia, serif; font-weight: bold; color: #f9f6f2; font-size: 15px serif;font-size:15px;font-style:italic;font-weight:300;letter-spacing:0px;line-height:1.3;text-align:center;color:#756A64;">Blooms Delivered the Week of:</div>
+</th>
+<th class="kl-table-subblock" style="width:auto;overflow:hidden;padding-top:8px;padding-right:0px;padding-bottom:8px;padding-left:0px;">
+<div style="font-family:'SpectralLight', TimesNewRoman, 'Times New Roman', Times, Baskerville, Georgia, serif;font-size:15px;font-style:italic;font-weight:300;letter-spacing:0px;line-height:1.3;text-align:center;color:#756A64;">Estimated remaining time until a design photo is uploaded:</div>
+</th>
+</tr>
+</thead>
+<tbody>
+${rowsHtml}
+</tbody></table></td></tr></tbody></table></td>
+</tr>
+`;
+}
+
+// ─── Panel that builds the copy-paste email HTML (buffer + live preview) ────────
+function BloomEmailExportPanel({ rows }: { rows: BloomUpdateRow[] }) {
+  const [buffers, setBuffers] = useState<Record<string, number>>({});
+  const [copied, setCopied] = useState(false);
+  const [previewHeight, setPreviewHeight] = useState(200);
+  // Regenerated whenever the buffer controls change, but freely hand-editable
+  // in between — the live preview below always reflects exactly what's in
+  // this box, generated or hand-edited.
+  const [html, setHtml] = useState(() => generateBloomEmailHtml(rows, buffers));
+
+  useEffect(() => {
+    setHtml(generateBloomEmailHtml(rows, buffers));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, buffers]);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(html);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  const previewDoc = `<!DOCTYPE html><html><body style="margin:0;padding:16px;background:#f4f4f4;box-sizing:border-box;">` +
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;background:#ffffff;">` +
+    `<tbody>${html}</tbody></table></body></html>`;
+
+  return (
+    <div className="border border-slate-200 rounded-lg p-3 space-y-3 bg-slate-50">
+      <div>
+        <label className="text-[11px] font-medium text-slate-500">
+          Buffer per week <span className="text-slate-400 font-normal">— only changes what the client email shows; the ops dashboard&apos;s production goals stay set to the real promise</span>
+        </label>
+        <div className="mt-1 max-h-40 overflow-y-auto border border-slate-200 rounded divide-y divide-slate-100 bg-white">
+          {rows.map(row => (
+            <div key={row.weekOf} className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs">
+              <span className="text-slate-600">
+                {fmtWeekRange(row.weekOf)} <span className="text-slate-400">({fmtWeeksUntil(row.weeksUntilDesigned)})</span>
+              </span>
+              <select
+                value={buffers[row.weekOf] ?? 0}
+                onChange={e => setBuffers(b => ({ ...b, [row.weekOf]: Number(e.target.value) }))}
+                className="text-xs border border-slate-200 rounded px-1 py-0.5"
+              >
+                <option value={0}>+0</option>
+                <option value={1}>+1 wk</option>
+                <option value={2}>+2 wk</option>
+                <option value={3}>+3 wk</option>
+              </select>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div>
+        <label className="text-[11px] font-medium text-slate-500">Preview</label>
+        <iframe
+          title="Email HTML preview"
+          srcDoc={previewDoc}
+          sandbox="allow-same-origin"
+          onLoad={e => {
+            const doc = (e.target as HTMLIFrameElement).contentDocument;
+            if (!doc) return;
+            // getBoundingClientRect reflects the body's actual laid-out
+            // height from its content alone — unlike scrollHeight, it isn't
+            // floored at the iframe's own current height, so this measures
+            // correctly whether the content just grew or shrank.
+            setPreviewHeight(Math.ceil(doc.body.getBoundingClientRect().height) + 20);
+          }}
+          style={{ height: previewHeight }}
+          className="mt-1 w-full border border-slate-200 rounded bg-white block"
+        />
+      </div>
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <label className="text-[11px] font-medium text-slate-500">
+            Email HTML <span className="text-slate-400 font-normal">— edit directly, the preview above updates as you type</span>
+          </label>
+          <button onClick={handleCopy} className="text-[11px] px-2 py-1 bg-indigo-600 rounded text-white hover:bg-indigo-700">
+            {copied ? 'Copied!' : 'Copy to clipboard'}
+          </button>
+        </div>
+        <textarea
+          value={html}
+          onChange={e => setHtml(e.target.value)}
+          rows={6}
+          className="w-full text-[10px] font-mono border border-slate-200 rounded px-2 py-1.5 bg-white"
+        />
+        <p className="mt-1 text-[10px] text-amber-700">
+          ⚠ Before pasting, clear out whatever&apos;s already in that email block — pasting into a block that still has an old table will leave both.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ─── On-screen preview table — visually mirrors the PNG ─────────────────────────
 function BloomTablePreview({ sentAt, rows }: { sentAt: string; rows: BloomUpdateRow[] }) {
   return (
@@ -190,6 +332,7 @@ export function BloomUpdateModal({ rows, location, onClose, onConfirmed }: {
   const [stage, setStage] = useState<'preview' | 'locking' | 'locked' | 'error'>('preview');
   const [sentAt, setSentAt] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [showEmailExport, setShowEmailExport] = useState(false);
 
   async function handleConfirm() {
     setStage('locking');
@@ -221,8 +364,8 @@ export function BloomUpdateModal({ rows, location, onClose, onConfirmed }: {
   const displaySentAt = sentAt ?? new Date().toISOString();
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden">
+    <div className="fixed inset-0 bg-black/40 flex items-start justify-center z-50 p-4 overflow-y-auto">
+      <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden my-8">
         <div className="px-5 pt-4">
           <h3 className="text-sm font-semibold text-slate-700">
             {stage === 'locked' ? 'Biweekly bloom update sent' : 'Send biweekly bloom update'}
@@ -234,11 +377,36 @@ export function BloomUpdateModal({ rows, location, onClose, onConfirmed }: {
             {stage === 'error' && errorMsg}
           </p>
         </div>
-        <div className="max-h-[50vh] overflow-y-auto border-y border-slate-100 my-3">
-          <BloomTablePreview sentAt={displaySentAt} rows={rows} />
-        </div>
-        <div className="px-5 pb-4 flex justify-end gap-2">
-          {stage === 'preview' && (
+        {!showEmailExport && (
+          <div className="border-y border-slate-100 my-3">
+            <BloomTablePreview sentAt={displaySentAt} rows={rows} />
+          </div>
+        )}
+        {(stage === 'preview' || stage === 'locked') && (
+          <div className="px-5 pb-3">
+            <button
+              onClick={() => setShowEmailExport(v => !v)}
+              className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              {showEmailExport ? 'Hide email HTML' : 'Get email HTML →'}
+            </button>
+            {showEmailExport && (
+              <div className="mt-2">
+                <BloomEmailExportPanel rows={rows} />
+              </div>
+            )}
+          </div>
+        )}
+        <div className="px-5 pb-4 flex items-center justify-end gap-2">
+          {stage === 'preview' && showEmailExport && (
+            <>
+              <span className="text-[11px] text-slate-400 mr-auto">Locking in sets the ops dashboard&apos;s production goals to these promises — without the buffers added for the client email.</span>
+              <button onClick={() => setShowEmailExport(false)} className="text-xs px-3 py-1.5 border border-slate-200 rounded text-slate-600 hover:bg-slate-50">
+                ← Back to review &amp; confirm
+              </button>
+            </>
+          )}
+          {stage === 'preview' && !showEmailExport && (
             <>
               <button onClick={onClose} className="text-xs px-3 py-1.5 border border-slate-200 rounded text-slate-600 hover:bg-slate-50">Cancel</button>
               <button onClick={handleConfirm} className="text-xs px-3 py-1.5 bg-indigo-600 rounded text-white hover:bg-indigo-700">Confirm &amp; lock in</button>
@@ -272,6 +440,8 @@ export function BloomHistoryModal({ updates, loading, location, onClose }: {
   location: string;
   onClose: () => void;
 }) {
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden max-h-[80vh] flex flex-col">
@@ -286,16 +456,30 @@ export function BloomHistoryModal({ updates, loading, location, onClose }: {
           {loading && <p className="text-xs text-slate-400 py-6 text-center">Loading…</p>}
           {!loading && updates.length === 0 && <p className="text-xs text-slate-400 py-6 text-center">No bloom updates sent yet.</p>}
           {!loading && updates.map(u => (
-            <div key={u.id} className="flex items-center justify-between gap-3 border border-slate-100 rounded-lg px-3 py-2.5">
-              <div>
-                <div className="text-sm text-slate-700 font-medium">{fmtLongDate(u.sent_at)}</div>
-                <div className="text-[11px] text-slate-400">{u.rows.length} cohort{u.rows.length === 1 ? '' : 's'}</div>
+            <div key={u.id} className="border border-slate-100 rounded-lg px-3 py-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm text-slate-700 font-medium">{fmtLongDate(u.sent_at)}</div>
+                  <div className="text-[11px] text-slate-400">{u.rows.length} cohort{u.rows.length === 1 ? '' : 's'}</div>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => setExpandedId(id => id === u.id ? null : u.id)}
+                    className="text-xs px-2.5 py-1 border border-slate-200 rounded text-slate-600 hover:bg-slate-50">
+                    {expandedId === u.id ? 'Hide email HTML' : 'Get email HTML'}
+                  </button>
+                  <button
+                    onClick={() => downloadBloomUpdatePNG(u.sent_at, u.rows, location)}
+                    className="text-xs px-2.5 py-1 border border-indigo-200 bg-indigo-50 rounded text-indigo-700 hover:bg-indigo-100">
+                    Download PNG
+                  </button>
+                </div>
               </div>
-              <button
-                onClick={() => downloadBloomUpdatePNG(u.sent_at, u.rows, location)}
-                className="text-xs px-2.5 py-1 border border-indigo-200 bg-indigo-50 rounded text-indigo-700 hover:bg-indigo-100 shrink-0">
-                Download PNG
-              </button>
+              {expandedId === u.id && (
+                <div className="mt-2">
+                  <BloomEmailExportPanel rows={u.rows} />
+                </div>
+              )}
             </div>
           ))}
         </div>
