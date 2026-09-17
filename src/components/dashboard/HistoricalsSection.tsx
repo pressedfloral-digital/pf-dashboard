@@ -61,7 +61,7 @@ function getAllWeeks(): string[] {
 }
 
 export function HistoricalsSection({ department, location, members, ordersLabel, onRatioUpdate, presActuals = {}, onReceivedSaved, canSeeManagerCPO = () => false }: HistoricalsSectionProps) {
-  const { enrichedActuals, loading, refresh, getWeekCosts, getRateForWeek } = useActualsWithPayroll(location);
+  const { enrichedActuals, loading, refresh, getWeekCosts, getRateForWeek, getManagerDeptCost } = useActualsWithPayroll(location);
   // team_member_week_actuals stores resin rows as 'Resin' (capitalized) — the
   // other three departments store lowercase. This is the one place that
   // casing difference needs to be bridged.
@@ -170,6 +170,16 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
         if (m.isManager) {
           const extraHrs = managerHours[`${weekOf}:${name}`] ?? 0;
           if (payType === 'hourly') cost = (hours + extraHrs) * hourlyRate;
+          else {
+            // A salaried manager's flat weekly-salary/52 estimate above is
+            // meaningless once they're split across departments — it makes
+            // this cell's cost (and CPO) swing with order count alone rather
+            // than reflecting the hours actually worked here. Replace it
+            // with the home/away split (see getManagerDeptCost) whenever
+            // this person is a known salary manager for this week.
+            const split = getManagerDeptCost(name, ripplingDept, weekOf);
+            if (split) cost = split.cost;
+          }
         }
       }
     }

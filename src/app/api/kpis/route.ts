@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
-import { DEPARTMENT_MANAGERS, isActiveGm, getSalaryMgrCostForWeeks, getGmCostForWeeks } from '@/lib/managers';
+import { DEPARTMENT_MANAGERS, isActiveGm, getSalaryMgrCostForWeeks, getSalaryMgrCostSplitForWeeks, getGmCostForWeeks } from '@/lib/managers';
 import { RATIO_TARGETS, type RatioTier } from '@/lib/ratioTargets';
 import type { WageDept } from '@/lib/wageTargets';
 import { resolveWeekHours, resolveWeekPayHours } from '@/lib/scheduleResolution';
@@ -310,9 +310,16 @@ function computePeriodKpis(
     laborByDept[dept] = (laborByDept[dept] ?? 0) + row.gross_pay;
   }
 
-  // Inject salary manager costs (never in weekly_labor_cost)
-  for (const dept of ALL_DEPTS) {
-    const mgrCost = getSalaryMgrCostForWeeks(SALARY_MANAGERS, location, dept, weekOfs);
+  // Inject salary manager costs (never in weekly_labor_cost). Hours-aware:
+  // a manager's pay follows them to any department they actually clocked
+  // hours in that week that isn't their home department — see
+  // getSalaryMgrCostSplitForWeeks.
+  const mgrCostByDept = getSalaryMgrCostSplitForWeeks(
+    SALARY_MANAGERS, location, weekOfs,
+    actualRows.filter(r => r.location === location),
+    normDept
+  );
+  for (const [dept, mgrCost] of Object.entries(mgrCostByDept)) {
     if (mgrCost > 0) laborByDept[dept] = (laborByDept[dept] ?? 0) + mgrCost;
   }
 
