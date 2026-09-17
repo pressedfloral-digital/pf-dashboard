@@ -77,9 +77,16 @@ export function activeGmNames(location: string, weekOf: string): string[] {
     .filter(name => isActiveGm(location, name, weekOf));
 }
 
-function deptMatches(mgrDepts: string[], dept: string): boolean {
+export function deptMatches(mgrDepts: string[], dept: string): boolean {
   return mgrDepts.some(d => d.toLowerCase() === dept.toLowerCase());
 }
+
+// Assumed full-time week used to turn a salaried manager's weekly pay into an
+// hourly rate — only needed when they clock actual hours outside their home
+// department(s) and that slice of pay needs to follow them there (see
+// useActualsWithPayroll's getWeekCosts/getManagerDeptCost). Not tied to any
+// individual's real contracted hours; a flat, documented assumption.
+export const STANDARD_WEEKLY_HOURS = 40;
 
 // Department-manager cost for one location+department across a set of weeks.
 export function getSalaryMgrCostForWeeks(
@@ -101,6 +108,65 @@ export function getSalaryMgrCostForWeeks(
     }
   }
   return total;
+}
+
+export interface ManagerActualHoursRow {
+  week_of:      string;
+  member_name:  string;
+  department:   string;  // raw actuals casing — pass through `normDept` first
+  location:     string;
+  actual_hours: number;
+}
+
+// Same idea as getSalaryMgrCostForWeeks, but hours-aware: instead of always
+// splitting a manager's full weekly pay evenly across their home
+// department(s), it moves the slice of pay matching any hours they actually
+// clocked in a department outside those home department(s) to wherever they
+// worked — e.g. Bella DePrima (home: Fulfillment) picking up hours in
+// Preservation for part of a week. Returns cost per department (Title Case,
+// matching `departments` entries) summed across all of `weekOfs`.
+// `normDept` should be the caller's own raw-department -> Title Case
+// normalizer, so this lines up with however it already buckets hoursByDept.
+export function getSalaryMgrCostSplitForWeeks(
+  managers:   SalaryMgr[],
+  location:   string,
+  weekOfs:    string[],
+  actualRows: ManagerActualHoursRow[],
+  normDept:   (raw: string) => string
+): Record<string, number> {
+  const costByDept: Record<string, number> = {};
+  for (const weekOf of weekOfs) {
+    for (const mgr of managers) {
+      if (mgr.location !== location) continue;
+      const after  = !mgr.from || weekOf >= mgr.from;
+      const before = !mgr.to   || weekOf <= mgr.to;
+      if (!after || !before) continue;
+
+      const weeklySalary          = mgr.annualSalary / 52;
+      const effectiveHourlyRate   = weeklySalary / STANDARD_WEEKLY_HOURS;
+      const awayHoursByDept: Record<string, number> = {};
+      for (const row of actualRows) {
+        if (row.location !== location || row.week_of !== weekOf) continue;
+        if (row.member_name.trim().toLowerCase() !== mgr.name.trim().toLowerCase()) continue;
+        const dept = normDept(row.department);
+        if (deptMatches(mgr.departments, dept)) continue; // home-dept hours, not "away"
+        awayHoursByDept[dept] = (awayHoursByDept[dept] ?? 0) + row.actual_hours;
+      }
+
+      let totalAway = 0;
+      for (const [dept, hrs] of Object.entries(awayHoursByDept)) {
+        const cost = hrs * effectiveHourlyRate;
+        costByDept[dept] = (costByDept[dept] ?? 0) + cost;
+        totalAway += cost;
+      }
+
+      const homePerDept = Math.max(0, weeklySalary - totalAway) / mgr.departments.length;
+      for (const dept of mgr.departments) {
+        costByDept[dept] = (costByDept[dept] ?? 0) + homePerDept;
+      }
+    }
+  }
+  return costByDept;
 }
 
 // Total GM cost for a location across a set of weeks. GMs are location-wide

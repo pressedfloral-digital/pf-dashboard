@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { DEPARTMENT_MANAGERS } from '@/lib/managers';
+import { DEPARTMENT_MANAGERS, deptMatches, STANDARD_WEEKLY_HOURS } from '@/lib/managers';
 
 export interface ActualRow {
   week_of:       string;
@@ -60,6 +60,15 @@ export interface WeekCost {
 const GEORGIA_MANAGER_HISTORY = DEPARTMENT_MANAGERS.filter(m => m.location === 'Georgia');
 
 const SALARY_MANAGERS: SalaryManager[] = DEPARTMENT_MANAGERS.filter(m => m.location === 'Utah');
+
+// team_member_week_actuals casing ('preservation', 'fulfillment', ... but
+// 'Resin' capitalized, and Checks & Unboxing hours filed as 'checks_unboxing')
+// -> the Title Case a SalaryManager.departments entry uses.
+function normalizeActualsDept(d: string): string {
+  const lower = d.toLowerCase();
+  if (lower.includes('checks') || lower.includes('unboxing')) return 'Preservation';
+  return d.charAt(0).toUpperCase() + d.slice(1);
+}
 
 export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
   const [actuals,     setActuals]     = useState<ActualRow[]>([]);
@@ -125,6 +134,40 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  // A salaried manager's weekly pay, split between their home department(s)
+  // and any department they actually clocked hours in that isn't one of
+  // those — e.g. Bella DePrima (home: Fulfillment) picking up hours in
+  // Preservation. The away slice is hours-there × an hourly rate derived
+  // from their salary over STANDARD_WEEKLY_HOURS; whatever's left of their
+  // weekly pay (never below $0) stays on their home department(s), split
+  // evenly if there's more than one. Returns null for anyone not a salary
+  // manager (or not one yet, per `from`/`to`) as of `weekOf`.
+  function computeManagerCostSplit(mgr: SalaryManager, weekOf: string): {
+    weeklySalary: number;
+    effectiveHourlyRate: number;
+    awayCostByDept: Record<string, number>;
+    homeRemainingPerDept: number;
+  } {
+    const annualSalary = resolveRate(mgr.name, mgr.departments[0] ?? '', weekOf)?.annualSalary ?? mgr.annualSalary;
+    const weeklySalary = annualSalary / 52;
+    const effectiveHourlyRate = weeklySalary / STANDARD_WEEKLY_HOURS;
+
+    const awayCostByDept: Record<string, number> = {};
+    let totalAwayCost = 0;
+    for (const row of actuals) {
+      if (row.week_of !== weekOf) continue;
+      if (row.member_name.trim().toLowerCase() !== mgr.name.trim().toLowerCase()) continue;
+      const rowDept = normalizeActualsDept(row.department);
+      if (deptMatches(mgr.departments, rowDept)) continue; // home-dept hours, not "away"
+      const cost = row.actual_hours * effectiveHourlyRate;
+      awayCostByDept[rowDept] = (awayCostByDept[rowDept] ?? 0) + cost;
+      totalAwayCost += cost;
+    }
+
+    const homeRemainingPerDept = Math.max(0, weeklySalary - totalAwayCost) / mgr.departments.length;
+    return { weeklySalary, effectiveHourlyRate, awayCostByDept, homeRemainingPerDept };
+  }
+
   // Get weekly cost per dept including G&A and salary managers
   function getWeekCosts(weekOf: string): WeekCost[] {
     const costs: WeekCost[] = [];
@@ -157,19 +200,54 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
     ].filter(mgr => mgr.location === location);
 
     for (const mgr of applicableManagers) {
+      const { awayCostByDept, homeRemainingPerDept } = computeManagerCostSplit(mgr, weekOf);
+
+      for (const [awayDept, cost] of Object.entries(awayCostByDept)) {
+        const existing = costs.find(c => c.week_of === weekOf && c.department === awayDept);
+        // Away pay is derived from actual clocked hours, but at an assumed
+        // (not payroll-sourced) rate — always an estimate, never green/actual.
+        if (existing) existing.totalCost += cost;
+        else costs.push({ week_of: weekOf, department: awayDept, totalCost: cost, isActual: false });
+      }
+
       for (const dept of mgr.departments) {
-        const annualSalary = resolveRate(mgr.name, dept, weekOf)?.annualSalary ?? mgr.annualSalary;
-        const perDept = (annualSalary / 52) / mgr.departments.length;
         const existing = costs.find(c => c.week_of === weekOf && c.department === dept);
         if (existing) {
-          existing.totalCost += perDept;
+          existing.totalCost += homeRemainingPerDept;
         } else {
-          costs.push({ week_of: weekOf, department: dept, totalCost: perDept, isActual: weekRows.length > 0 });
+          costs.push({ week_of: weekOf, department: dept, totalCost: homeRemainingPerDept, isActual: weekRows.length > 0 });
         }
       }
     }
 
     return costs;
+  }
+
+  // Per-member display cost for a salaried manager in a given department for
+  // a given week — the same home/away split as getWeekCosts, but scoped to
+  // one person so HistoricalsSection's individual row can show it (instead
+  // of always their full weekly salary, which is what produced nonsensical
+  // per-order costs whenever they were only partially pulled into a
+  // department). Returns null for anyone who isn't a salary manager that
+  // week, so the caller falls back to its normal hourly/salary estimate.
+  function getManagerDeptCost(name: string, dept: string, weekOf: string): { cost: number; isHome: boolean } | null {
+    const applicableManagers: SalaryManager[] = [
+      ...salaryMgrs,
+      ...GEORGIA_MANAGER_HISTORY.filter(mgr => {
+        const after  = !mgr.from || weekOf >= mgr.from;
+        const before = !mgr.to   || weekOf <= mgr.to;
+        return after && before;
+      }),
+    ].filter(mgr => mgr.location === location);
+
+    const mgr = applicableManagers.find(m => m.name.trim().toLowerCase() === name.trim().toLowerCase());
+    if (!mgr) return null;
+
+    const isHome = deptMatches(mgr.departments, dept);
+    const { awayCostByDept, homeRemainingPerDept } = computeManagerCostSplit(mgr, weekOf);
+    return isHome
+      ? { cost: homeRemainingPerDept, isHome: true }
+      : { cost: awayCostByDept[dept] ?? 0, isHome: false };
   }
 
   // Compute CPO for a week across all depts
@@ -239,6 +317,7 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
     enrichedActuals,
     getWeekCosts,
     getWeekCPO,
+    getManagerDeptCost,
     loading,
     refresh: fetchAll,
   };
