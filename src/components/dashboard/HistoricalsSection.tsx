@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useActualsWithPayroll } from './useActualsWithPayroll';
 import type { EnrichedActual } from './useActualsWithPayroll';
 import { getMondayDate } from '@/lib/weekDates';
@@ -60,6 +60,15 @@ function getAllWeeks(): string[] {
   return weeks;
 }
 
+// Week-range choices for the weekly grid. A shorter range trims older columns
+// off the left-hand side.
+const RANGE_OPTIONS: { value: number | 'all'; label: string }[] = [
+  { value: 8,     label: '8 wks' },
+  { value: 12,    label: '12 wks' },
+  { value: 26,    label: '6 mo' },
+  { value: 'all', label: 'All' },
+];
+
 export function HistoricalsSection({ department, location, members, ordersLabel, onRatioUpdate, presActuals = {}, onReceivedSaved, canSeeManagerCPO = () => false }: HistoricalsSectionProps) {
   const { enrichedActuals, loading, refresh, getWeekCosts, getRateForWeek, getManagerDeptCost } = useActualsWithPayroll(location);
   // team_member_week_actuals stores resin rows as 'Resin' (capitalized) — the
@@ -103,6 +112,34 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
 
   const allWeeks = useMemo(() => getAllWeeks(), []);
   const today = getMondayDate(0);
+
+  const [range, setRange] = useState<number | 'all'>(12);
+  const [showInactive, setShowInactive] = useState(false);
+  // Oldest → newest, trimmed to the most recent `range` weeks.
+  const visibleWeeks = useMemo(
+    () => (range === 'all' ? allWeeks : allWeeks.slice(-range)),
+    [allWeeks, range],
+  );
+  // Newest data lives on the right, spreadsheet-style — so open both tables
+  // scrolled all the way right, and snap back there when the range changes.
+  const weeklyScrollRef = useRef<HTMLDivElement>(null);
+  const monthlyScrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (loading) return;
+    for (const el of [weeklyScrollRef.current, monthlyScrollRef.current]) {
+      if (el) el.scrollLeft = el.scrollWidth;
+    }
+  }, [loading, range]);
+  // A column starts a new month group when its month differs from the column
+  // to its left — the first column of each group gets the thicker border and
+  // month label.
+  const monthStartWeeks = useMemo(() => {
+    const set = new Set<string>();
+    visibleWeeks.forEach((w, i) => {
+      if (i === 0 || getMonthKey(visibleWeeks[i - 1]) !== getMonthKey(w)) set.add(w);
+    });
+    return set;
+  }, [visibleWeeks]);
 
   // Filter to this dept — for preservation also include checks_unboxing rows
   const deptActuals = useMemo(() =>
@@ -255,8 +292,22 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
 
   if (loading) return <div className="text-xs text-slate-400 p-4">Loading historicals…</div>;
 
+  // Everyone, for the totals rows. Hidden members only ever have zero data in
+  // the visible range, but totals use the full list so they can never drift.
   const allDisplayMembers = [...members.map(m => m.name), ...flexNames];
 
+  // A member is active if they have any orders, hours, C&U hours, or manager
+  // hours in the visible weeks. Everyone else is hidden unless showInactive.
+  const isActiveInRange = (name: string) => visibleWeeks.some(w => {
+    const e = getEntry(w, name);
+    if (e.hours > 0 || e.orders > 0) return true;
+    if ((managerHours[`${w}:${name}`] ?? 0) > 0) return true;
+    return checksUnboxingActuals.some(r => r.week_of === w && r.member_name === name && r.actual_hours > 0);
+  });
+  const activeMembers = allDisplayMembers.filter(isActiveInRange);
+  const inactiveCount = allDisplayMembers.length - activeMembers.length;
+  const rowMembers = showInactive ? allDisplayMembers : activeMembers;
+  const visibleMonths = [...new Set(visibleWeeks.map(getMonthKey))];
 
 
   return (
@@ -264,9 +315,9 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
 
       {/* ── WEEKLY TABLE ── */}
       <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
-        <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+        <div className="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-slate-700">All weeks — {department} · {location}</h3>
+            <h3 className="text-sm font-semibold text-slate-700">Weekly — {department} · {location}</h3>
             <p className="text-xs text-slate-400 mt-0.5">
               Oldest → newest. <span className="text-amber-600 font-medium">Amber</span> = missing actuals.{' '}
               <span className="text-sky-600 font-medium">Blue orders</span> = auto-synced from the production app, still editable.{' '}
@@ -274,7 +325,30 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
               <span className="text-amber-600 font-medium">Amber CPO</span> = estimated from rate.
             </p>
           </div>
-          {savingKey && <span className="text-xs text-slate-400 italic">Saving…</span>}
+          <div className="flex items-center gap-3">
+            {savingKey && <span className="text-xs text-slate-400 italic">Saving…</span>}
+            {inactiveCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowInactive(v => !v)}
+                className="text-xs text-slate-500 hover:text-slate-700 underline-offset-2 hover:underline whitespace-nowrap"
+              >
+                {showInactive ? `Hide ${inactiveCount} inactive` : `Show ${inactiveCount} inactive`}
+              </button>
+            )}
+            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+              {RANGE_OPTIONS.map(o => (
+                <button
+                  key={String(o.value)}
+                  type="button"
+                  onClick={() => setRange(o.value)}
+                  className={`px-2.5 py-1 text-xs rounded-md whitespace-nowrap ${range === o.value ? 'bg-white text-slate-800 font-medium shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
         <style>{`
@@ -284,14 +358,14 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
           .hist-cell:focus-within { background: #eef2ff; }
         `}</style>
 
-        <div className="overflow-x-auto">
+        <div ref={weeklyScrollRef} className="overflow-x-auto">
           <table className="min-w-full text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50">
                 <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 whitespace-nowrap min-w-[150px] border-b border-r border-slate-200">Member</th>
-                {allWeeks.map(w => {
+                {visibleWeeks.map(w => {
                   const mk = getMonthKey(w);
-                  const isFirst = allWeeks.filter(x => getMonthKey(x) === mk)[0] === w;
+                  const isFirst = monthStartWeeks.has(w);
                   return (
                     <th key={w} className={`px-2 py-1.5 text-center whitespace-nowrap min-w-[68px] border-b border-slate-200 ${isFirst ? 'border-l-2 border-l-slate-300' : 'border-l border-l-slate-100'}`}>
                       <div className="font-medium text-slate-600">{fmtWeek(w)}</div>
@@ -302,7 +376,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
               </tr>
             </thead>
             <tbody>
-              {allDisplayMembers.map((name, mi) => {
+              {rowMembers.map((name, mi) => {
                 const isFlex = !members.find(m => m.name === name);
                 const member = members.find(m => m.name === name);
                 return (
@@ -315,7 +389,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                       </div>
                       {member?.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
                     </td>
-                    {allWeeks.map(w => {
+                    {visibleWeeks.map(w => {
                       const isPast = new Date(w + 'T12:00:00') <= today;
                       const e = getEntry(w, name);
                       // Check if this member has checks_unboxing hours this week
@@ -325,7 +399,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                       const hasData = e.hours > 0 || e.orders > 0;
                       const isMissing = isPast && !hasData;
                       const isSaving = savingKey === `${w}:${name}`;
-                      const isFirst = allWeeks.filter(x => getMonthKey(x) === getMonthKey(w))[0] === w;
+                      const isFirst = monthStartWeeks.has(w);
                       const cpo = e.orders > 0 && e.cost > 0 ? e.cost / e.orders : null;
                       return (
                         <td key={w}
@@ -385,13 +459,13 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                   <td className="sticky left-0 bg-emerald-50 px-4 py-2 text-xs font-semibold text-emerald-700 border-r border-slate-200 whitespace-nowrap">
                     Bouquets received
                   </td>
-                  {allWeeks.map(w => {
+                  {visibleWeeks.map(w => {
                     const isPast = new Date(w + 'T12:00:00') <= today;
                     const weekTotal = allDisplayMembers.reduce((s, name) => s + getEntry(w, name).orders, 0);
                     const isOverridden = receivedEdits[w] !== undefined || presActuals[w] !== undefined;
                     const val = receivedEdits[w] ?? presActuals[w] ?? weekTotal;
                     const isSavingThis = savingReceived === w;
-                    const isFirst = allWeeks.filter(x => getMonthKey(x) === getMonthKey(w))[0] === w;
+                    const isFirst = monthStartWeeks.has(w);
                     return (
                       <td key={w} className={`p-0 ${isFirst ? 'border-l-2 border-l-slate-300' : 'border-l border-l-slate-100'} ${isSavingThis ? 'opacity-50' : ''}`}>
                         {isPast ? (
@@ -414,7 +488,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
               {/* Week totals */}
               <tr className="bg-slate-50 font-semibold border-t-2 border-slate-200">
                 <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600 border-r border-slate-200">Week total</td>
-                {allWeeks.map(w => {
+                {visibleWeeks.map(w => {
                   const totalOrders = allDisplayMembers.reduce((s, name) => s + getEntry(w, name).orders, 0);
                   const nonMgrOrders = allDisplayMembers.reduce((s, name) => {
                     const m = members.find(m => m.name === name);
@@ -446,7 +520,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                   const totalCost = deptCost > 0 ? Math.max(0, deptCost - excludedCost) : memberCost;
                   const allActual = weekCosts.length > 0 && (weekCosts.find(wc => wc.department === deptKey)?.isActual ?? false);
                   const teamCPO = totalOrders > 0 && totalCost > 0 ? totalCost / totalOrders : null;
-                  const isFirst = allWeeks.filter(x => getMonthKey(x) === getMonthKey(w))[0] === w;
+                  const isFirst = monthStartWeeks.has(w);
                   return (
                     <td key={w} className={`px-2 py-2 text-center ${isFirst ? 'border-l-2 border-l-slate-300' : 'border-l border-l-slate-100'}`}>
                       {totalOrders > 0 ? (
@@ -481,12 +555,12 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
             Total {ordersLabel}, hours, ratio. <span className="text-green-600 font-medium">Green CPO</span> = from Rippling payroll. <span className="text-amber-600 font-medium">Amber</span> = estimated.
           </p>
         </div>
-        <div className="overflow-x-auto">
+        <div ref={monthlyScrollRef} className="overflow-x-auto">
           <table className="min-w-full text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 whitespace-nowrap min-w-[150px] border-r border-slate-200">Member</th>
-                {Object.keys(monthlyData).map(mk => (
+                {visibleMonths.map(mk => (
                   <th key={mk} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[90px] border-l border-slate-100">
                     {mk.split(' ')[0]}
                   </th>
@@ -494,7 +568,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
               </tr>
             </thead>
             <tbody>
-              {allDisplayMembers.map((name, mi) => {
+              {rowMembers.map((name, mi) => {
                 const isFlex = !members.find(m => m.name === name);
                 const member = members.find(m => m.name === name);
                 return (
@@ -506,7 +580,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                         {isFlex && <span className="text-[9px] bg-indigo-50 text-indigo-500 rounded px-1 py-px">flex</span>}
                       </div>
                     </td>
-                    {Object.entries(monthlyData).map(([mk, md]) => {
+                    {visibleMonths.map(mk => [mk, monthlyData[mk]] as const).map(([mk, md]) => {
                       const d = md.byMember[name];
                       if (!d || (d.orders === 0 && d.hours === 0)) return <td key={mk} className="px-3 py-2 text-center text-slate-200 border-l border-slate-100">—</td>;
                       const ratio = d.hours > 0 && d.orders > 0 ? d.hours / d.orders : null;
@@ -535,7 +609,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
               {/* Monthly team totals */}
               <tr className="border-t-2 border-slate-200 bg-indigo-50/30 font-semibold">
                 <td className="sticky left-0 bg-indigo-50/30 px-4 py-2 text-slate-700 border-r border-slate-200">Month total</td>
-                {Object.entries(monthlyData).map(([mk, md]) => {
+                {visibleMonths.map(mk => [mk, monthlyData[mk]] as const).map(([mk, md]) => {
                   const cpo   = md.totalOrders > 0 && md.totalCost > 0 ? md.totalCost / md.totalOrders : null;
                   const ratio = md.ratioOrders > 0 && md.ratioHours > 0 ? md.ratioHours / md.ratioOrders : null;
                   return (
