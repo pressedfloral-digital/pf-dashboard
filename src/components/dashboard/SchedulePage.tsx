@@ -18,6 +18,7 @@ import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './Inpu
 import { distributeHours, resolveDayHours, resolveWeekHours, isWithinEmployment, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
 import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './BloomUpdateModal';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
+import { MemberTierBadges } from './MemberTierBadge';
 import { useVisibleManagerCPO } from '@/hooks/useVisibleManagerCPO';
 import {
   addDays, UTAH_HISTORICAL_INTAKE, GEORGIA_HISTORICAL_INTAKE,
@@ -347,9 +348,7 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
                     onSelect={(emp: RipplingEmployee) => { onChange(d.id, 'name', emp.full_name); onChange(d.id, 'role', emp.role); onChange(d.id, 'hourlyRate', String(emp.hourly_rate ?? 0)); onChange(d.id, 'payType', emp.pay_type); onChange(d.id, 'annualSalary', String(emp.annual_salary ?? 0)); }}
                   />
                 </div>
-                {(d as {isManager?:boolean}).isManager && (
-                  <span className="shrink-0 text-[9px] font-medium text-violet-600 bg-violet-50 border border-violet-200 rounded px-1.5 py-0.5">Manager</span>
-                )}
+                <MemberTierBadges name={d.name} location={location ?? 'Utah'} dept="Design" fallbackRole={(d as {role?:string}).role} fallbackIsManager={(d as {isManager?:boolean}).isManager} className="inline-flex shrink-0" />
               </div>
               <select value={(d as {role?:string}).role ?? 'specialist'} onChange={e => onChange(d.id, 'role', e.target.value)}
                 className="border border-slate-200 rounded px-1.5 py-1.5 text-xs text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300">
@@ -1411,9 +1410,7 @@ function PresRosterEditor({ team, presRoster, onUpdateRoster, onRemove, onReorde
                     onSelect={(emp: RipplingEmployee) => { onUpdateRoster(m.id, 'name', emp.full_name); onUpdateRoster(m.id, 'role', emp.role); onUpdateRoster(m.id, 'rate', emp.hourly_rate ?? 0); onUpdateRoster(m.id, 'payType', emp.pay_type); onUpdateRoster(m.id, 'annualSalary', emp.annual_salary ?? 0); }}
                   />
                 </div>
-                {m.isManager && (
-                  <span className="shrink-0 text-[9px] font-medium text-violet-600 bg-violet-50 border border-violet-200 rounded px-1.5 py-0.5">Manager</span>
-                )}
+                <MemberTierBadges name={m.name} location={deptLocation ?? 'Utah'} dept="Preservation" fallbackRole={m.role} fallbackIsManager={m.isManager} className="inline-flex shrink-0" />
               </div>
               <select value={m.role ?? 'specialist'} onChange={e => onUpdateRoster(m.id, 'role', e.target.value)}
                 className="border border-slate-200 rounded px-1.5 py-1.5 text-xs text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300">
@@ -1551,9 +1548,7 @@ function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove
                     onSelect={(emp: RipplingEmployee) => { onUpdateName(m.id, emp.full_name); onUpdateRoster(mi, 'role', emp.role); onUpdateRoster(mi, 'rate', emp.hourly_rate ?? 0); onUpdateRoster(mi, 'payType', emp.pay_type); onUpdateRoster(mi, 'annualSalary', emp.annual_salary ?? 0); }}
                   />
                 </div>
-                {m.isManager && (
-                  <span className="shrink-0 text-[9px] font-medium text-violet-600 bg-violet-50 border border-violet-200 rounded px-1.5 py-0.5">Manager</span>
-                )}
+                <MemberTierBadges name={m.name} location={deptLocation ?? 'Utah'} dept="Fulfillment" fallbackRole={m.role} fallbackIsManager={m.isManager} className="inline-flex shrink-0" />
               </div>
               <select value={m.role ?? 'specialist'} onChange={e => onUpdateRoster(mi, 'role', e.target.value)}
                 className="border border-slate-200 rounded px-1.5 py-1.5 text-xs text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300">
@@ -2214,8 +2209,9 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                   <tbody>
                     {team.map((m, mi) => (
                       <tr key={m.id} className={mi % 2 === 0 ? '' : 'bg-slate-50/40'}>
-                        <td className="sticky left-0 bg-inherit px-4 py-2 whitespace-nowrap">
+                        <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                           <div className="font-medium text-slate-700">{m.name}</div>
+                          <MemberTierBadges name={m.name} location={location} dept="Preservation" fallbackRole={m.role} fallbackIsManager={m.isManager} />
                           <div className="text-slate-400">{m.ratio} h/ord
                             <span className={`ml-1.5 text-[10px] rounded px-1 py-px ${tagStyle[m.pay] ?? 'bg-slate-100 text-slate-600'}`}>{m.pay}</span>
                           </div>
@@ -2466,8 +2462,9 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                     <tbody>
                       {team.map((m, mi) => (
                         <tr key={m.id} className={`border-b border-slate-50 ${mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
-                          <td className="sticky left-0 bg-inherit px-4 py-2 whitespace-nowrap">
+                          <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                             <div className="font-medium text-slate-700">{m.name}</div>
+                            <MemberTierBadges name={m.name} location={location} dept="Preservation" fallbackRole={m.role} fallbackIsManager={m.isManager} />
                             <div className="text-slate-400">{m.ratio} h/ord</div>
                           </td>
                           {windowWeeks.map(w => {
@@ -3092,8 +3089,9 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                     const weekCPO = weekOrders > 0 && weekCost > 0 ? weekCost / weekOrders : null;
                     return (
                       <tr key={m.id} className={`border-b border-slate-50 ${mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
-                        <td className="sticky left-0 bg-inherit px-4 py-2 whitespace-nowrap">
+                        <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                           <div className="font-medium text-slate-700">{m.name}</div>
+                          <MemberTierBadges name={m.name} location={location} dept="Fulfillment" fallbackRole={m.role} fallbackIsManager={m.isManager} />
                           <div className="text-slate-400">{m.ratio} h/ord</div>
                           {fulfillmentActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
                         </td>
@@ -3228,8 +3226,9 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                 <tbody>
                   {team.map((m, mi) => (
                     <tr key={m.id} className={`border-b border-slate-50 ${mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
-                      <td className="sticky left-0 bg-inherit px-4 py-2 whitespace-nowrap">
+                      <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                         <div className="font-medium text-slate-700">{m.name}</div>
+                        <MemberTierBadges name={m.name} location={location} dept="Fulfillment" fallbackRole={m.role} fallbackIsManager={m.isManager} />
                         <div className="text-slate-400">{m.ratio} h/ord</div>
                         {m.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
                       </td>
@@ -5442,8 +5441,9 @@ export function SchedulePage({
                         const weekCPO = weekFrames > 0 && weekCost > 0 ? weekCost / weekFrames : null;
                         return (
                           <tr key={d.id} className={`border-b border-slate-50 ${di % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
-                            <td className="sticky left-0 bg-inherit px-4 py-2 whitespace-nowrap">
+                            <td className={`sticky left-0 z-10 ${di % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                               <div className="font-medium text-slate-700">{d.name}</div>
+                              <MemberTierBadges name={d.name} location={location} dept="Design" fallbackRole={(d as {role?:string}).role} fallbackIsManager={isMgr} />
                               <div className="text-slate-400">{d.ratio} h/f</div>
                               {d.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
                               {designActuals.unmatched.has(d.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
@@ -5590,8 +5590,9 @@ export function SchedulePage({
                   <tbody>
                     {designers.map((d, di) => (
                       <tr key={d.id} className={`border-b border-slate-50 ${di % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
-                        <td className="sticky left-0 bg-inherit px-4 py-2 whitespace-nowrap">
+                        <td className={`sticky left-0 z-10 ${di % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                           <div className="font-medium text-slate-700">{d.name}</div>
+                          <MemberTierBadges name={d.name} location={location} dept="Design" fallbackRole={(d as {role?:string}).role} fallbackIsManager={!!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager)} />
                           <div className="text-slate-400">{d.ratio} h/f</div>
                           {d.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
                         </td>
@@ -6111,9 +6112,12 @@ export function SchedulePage({
                     <tbody>
                       {designers.map((d, di) => (
                         <tr key={d.id} className={di % 2 === 0 ? '' : 'bg-slate-50/40'}>
-                          <td className="sticky left-0 bg-inherit px-4 py-2 font-medium text-slate-700 whitespace-nowrap">
-                            {d.name}
-                            {d.payType === 'salary' && <span className="ml-1.5 text-[10px] bg-amber-100 text-amber-700 rounded px-1 py-px">salary</span>}
+                          <td className={`sticky left-0 z-10 ${di % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
+                            <div className="font-medium text-slate-700">
+                              {d.name}
+                              {d.payType === 'salary' && <span className="ml-1.5 text-[10px] bg-amber-100 text-amber-700 rounded px-1 py-px">salary</span>}
+                            </div>
+                            <MemberTierBadges name={d.name} location={location} dept="Design" fallbackRole={(d as {role?:string}).role} fallbackIsManager={(d as {isManager?:boolean}).isManager} />
                           </td>
                           {monthlyData.slice(0, 6).map(m => {
                             const s = m.byDesigner[d.id];
