@@ -3,6 +3,7 @@ import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
 import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks } from '@/lib/managers';
 import { fetchAllRows } from '@/lib/fetchAllRows';
+import { filterToHistoricalsRows, HISTORICALS_ROSTER_KEYS } from '@/lib/historicalsRows';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -149,7 +150,7 @@ export async function GET(req: NextRequest) {
     });
 
     // ── Fetch team actuals (hours + production) ───────────────────────────────
-    const actualRows = await fetchAllRows<ActualRow>((from, to) => {
+    const rawActualRows = await fetchAllRows<ActualRow>((from, to) => {
       let q = supabase
         .from('team_member_week_actuals')
         .select('week_of,member_name,department,location,actual_hours,actual_orders')
@@ -165,13 +166,18 @@ export async function GET(req: NextRequest) {
       .gte('month_key', fromDate.slice(0, 7));
     if (goalsError) throw goalsError;
 
-    // ── Fetch roster (for manager-hours/production exclusion on Combined ratio) ─
+    // ── Fetch roster (manager exclusion on Combined ratio + Historicals gate) ─
     const { data: rosterData, error: rosterError } = await supabase
       .from('schedule_settings')
       .select('location,key,value')
-      .in('key', ['designRoster', 'presRoster', 'ffRoster']);
+      .in('key', HISTORICALS_ROSTER_KEYS);
     if (rosterError) throw rosterError;
     const managerNames = buildManagerNameSet(rosterData ?? []);
+
+    // Historicals is the source of truth — count exactly the rows it shows,
+    // same as All KPIs (see src/lib/historicalsRows.ts). Every production,
+    // hours, ratio, and Individual Ratios figure below reads from this.
+    const actualRows = filterToHistoricalsRows(rawActualRows, rosterData ?? []);
 
     // ── Compute monthly actuals per location ──────────────────────────────────
     const allWeekOfs = [...new Set([
