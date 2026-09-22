@@ -154,11 +154,12 @@ export const DEPT_PRODUCTION_UNIT: Record<KpiDept, string> = {
 // Departments shown in ratio section (G&A has no ratio)
 export const RATIO_DEPTS: KpiDept[] = ['combined', 'design', 'preservation', 'fulfillment', 'resin'];
 
-// Departments shown in CPO section
-export const CPO_DEPTS: KpiDept[] = ['combined', 'design', 'preservation', 'fulfillment', 'ga'];
+// Departments shown in CPO section — Resin last, since it's excluded from
+// Combined and shouldn't visually cluster with the depts that roll into it
+export const CPO_DEPTS: KpiDept[] = ['combined', 'design', 'preservation', 'fulfillment', 'ga', 'resin'];
 
-// Resin is Utah-only — hide from Georgia and Combined views
+// Resin is Utah-only — hide from Georgia (Combined pools in Utah's Resin numbers, so it's shown there too)
 export function showResin(location: KpiLocation, dept: KpiDept): boolean {
   if (dept !== 'resin') return true;
-  return location === 'Utah';
+  return location === 'Utah' || location === 'Combined';
 }
