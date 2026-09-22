@@ -235,8 +235,10 @@ function normDept(raw: string): string {
   if (l.includes('design'))                                         return 'Design';
   if (l.includes('preservation'))                                   return 'Preservation';
   if (l.includes('fulfillment'))                                    return 'Fulfillment';
-  if (l.includes('general') || l.includes('admin') || l === 'g&a') return 'G&A';
+  // Checked before the G&A/admin branch below — "Resin - Admin" contains
+  // "admin" too, and its labor cost belongs in Resin's CPO, not G&A's.
   if (l.includes('resin'))                                          return 'Resin';
+  if (l.includes('general') || l.includes('admin') || l === 'g&a') return 'G&A';
   return raw;
 }
 
@@ -936,7 +938,8 @@ function projectPeriodForLocation(
   // memberId-keyed Record the other three departments use — key it the same
   // way before handing it to projectDept, which otherwise reuses the exact
   // same roster-entry shape (ratio/payType/hourlyRate/annualSalary/isManager/
-  // standardWeeklyHours/employment dates) with no other changes needed.
+  // standardWeeklyHours/standardTotalWeeklyHours/employment dates) with no
+  // other changes needed.
   // Resin is a single shared (Utah-only) roster in practice, so this reads
   // as empty/zero for Georgia rather than needing a special case.
   const resinRosterRaw = get('resinRoster');

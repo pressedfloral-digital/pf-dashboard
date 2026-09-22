@@ -457,8 +457,8 @@ function tierColorClass(dept: KpiDept, ratio: number | null): string | undefined
 }
 
 const EXPECTATION_DEPTS: Record<KpiSection, KpiDept[]> = {
-  ratio: ['design', 'preservation', 'fulfillment', 'combined'],
-  cpo:   ['design', 'preservation', 'fulfillment', 'ga', 'combined'],
+  ratio: ['design', 'preservation', 'fulfillment', 'resin', 'combined'],
+  cpo:   ['design', 'preservation', 'fulfillment', 'ga', 'resin', 'combined'],
 };
 
 const EXPECTATION_ROWS: { key: RatioVariant; label: string; dotClass: string }[] = [
@@ -524,6 +524,7 @@ function ExpectationTable({
               {depts.map(dept => (
                 <th key={dept} className="px-4 py-2 text-left text-xs font-medium text-slate-500 min-w-[130px] whitespace-nowrap">
                   {DEPT_LABELS[dept]}
+                  {dept === 'resin' && location !== 'Utah' ? ' (Utah only)' : ''}
                 </th>
               ))}
             </tr>
@@ -538,6 +539,9 @@ function ExpectationTable({
                     {row.label}
                   </td>
                   {depts.map(dept => {
+                    if (!showResin(location, dept)) {
+                      return <td key={dept} className="px-4 py-3 text-xs text-slate-300">Utah only</td>;
+                    }
                     const metrics = period ? selectDept(period, dept) : null;
                     if (!metrics) return <td key={dept} className="px-4 py-3 text-sm text-slate-300">—</td>;
                     const colorClassOverride = section === 'ratio' && row.key === 'estimate' ? tierColorClass(dept, metrics.ratio) : undefined;

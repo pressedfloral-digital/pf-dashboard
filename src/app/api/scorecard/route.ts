@@ -501,7 +501,9 @@ function normalizeDeptForScorecard(raw: string): string {
   if (l.includes('design'))                         return 'Design';
   if (l.includes('preservation'))                   return 'Preservation';
   if (l.includes('fulfillment'))                    return 'Fulfillment';
-  if (l.includes('general') || l.includes('admin') || l === 'g&a') return 'G&A';
+  // Checked before the G&A/admin branch below — "Resin - Admin" contains
+  // "admin" too, and its labor cost belongs in Resin's CPO, not G&A's.
   if (l.includes('resin'))                          return 'Resin';
+  if (l.includes('general') || l.includes('admin') || l === 'g&a') return 'G&A';
   return raw;
 }

@@ -22,6 +22,11 @@ export interface ResinMember {
   role?:       'specialist' | 'senior' | 'master';
   // Standard Mon-Sun hours (index 0=Monday..6=Sunday) — see src/lib/scheduleResolution.ts.
   standardWeeklyHours?: number[];
+  // Manager-only: standing full work-week template (management + production
+  // combined) — the fallback a manager's per-week mgrTotalHours entry drops
+  // to when unset, mirroring Design/Preservation/Fulfillment's own field of
+  // the same name (see SchedulePage.tsx and route.ts's projectDept).
+  standardTotalWeeklyHours?: number[];
   // Employment window, both ISO 'YYYY-MM-DD' and inclusive — see scheduleResolution.ts.
   startDate?: string;
   endDate?:   string;
@@ -193,17 +198,18 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
   function resolveMgrTotalWeekHours(weekIdx: number, m: ResinMember, payHrs: number): number {
     const weekIso = isoMonday(weekIdx);
     const weekKey = `${weekIso}-${m.id}`;
-    const dailyOverrides = mgrTotalDailyHours[weekKey];
-    if (dailyOverrides !== undefined) {
-      let sum = 0;
-      for (let day = 0; day < 7; day++) {
-        const override = dailyOverrides[day];
-        sum += override != null ? override : resolveDayHours(resinDailyHours, weekKey, day, m.standardWeeklyHours,
-          { weekIso, startDate: m.startDate, endDate: m.endDate }, paidHolidays).payHours;
-      }
-      return sum;
-    }
-    return mgrTotalHours[m.id]?.[weekIso] ?? payHrs;
+    const hasDailyOverrides = mgrTotalDailyHours[weekKey] !== undefined;
+    const weeklyOverride = mgrTotalHours[m.id]?.[weekIso];
+    // A flat weekly total (no day-by-day breakdown for this week) wins
+    // outright when set — same priority getMgrTotalDH gives an explicit
+    // per-day override, just at the week level instead.
+    if (!hasDailyOverrides && weeklyOverride != null) return weeklyOverride;
+    if (!hasDailyOverrides && !m.standardTotalWeeklyHours) return payHrs;
+    // Sum day-by-day via getMgrTotalDH so this always matches what the "This
+    // week" total cells display (override > template day > production pay).
+    let sum = 0;
+    for (let day = 0; day < 7; day++) sum += getMgrTotalDH(m, weekIdx, day);
+    return sum;
   }
 
   // Production hours drive units/ratio; managers' total hours (production +
@@ -370,9 +376,14 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     setResinDailyHours({ ...resinDailyHours, [key]: padded });
   }
 
-  function getMgrTotalDH(memberId: string, weekIdx: number, di: number): number {
-    const override = mgrTotalDailyHours[`${isoMonday(weekIdx)}-${memberId}`]?.[di];
-    return override != null ? override : getDHPay(memberId, weekIdx, di);
+  // Priority: an explicit override for this exact day, then this day's slot
+  // in the standing Total-schedule template, then production pay hours —
+  // matches resolveMgrTotalWeekHours' own chain (see below) day-by-day.
+  function getMgrTotalDH(m: ResinMember, weekIdx: number, di: number): number {
+    const override = mgrTotalDailyHours[`${isoMonday(weekIdx)}-${m.id}`]?.[di];
+    if (override != null) return override;
+    if (m.standardTotalWeeklyHours) return m.standardTotalWeeklyHours[di] ?? 0;
+    return getDHPay(m.id, weekIdx, di);
   }
 
   function setMgrTotalDH(memberId: string, weekIdx: number, di: number, val: number) {
@@ -384,7 +395,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
   }
 
   function dailyCost(m: ResinMember, weekIdx: number, di: number): number {
-    const h = m.isManager ? getMgrTotalDH(m.id, weekIdx, di) : getDHPay(m.id, weekIdx, di);
+    const h = m.isManager ? getMgrTotalDH(m, weekIdx, di) : getDHPay(m.id, weekIdx, di);
     return m.payType === 'salary' ? m.annualSalary / 260 : h * m.hourlyRate;
   }
 
@@ -424,6 +435,18 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
       changed = true;
     }
     if (changed) setHours({ ...hours, ...nextWeekly });
+  }
+
+  // Manager-only: the standing full work-week template (management +
+  // production combined) that resolveMgrTotalWeekHours falls back to when no
+  // per-week mgrTotalHours entry is set — mirrors updateTemplate above, just
+  // for the total-hours field instead of the production one.
+  function updateTotalTemplate(id: string, dayIdx: number, value: number) {
+    setRoster(roster.map(m => {
+      if (m.id !== id) return m;
+      const prevTemplate = m.standardTotalWeeklyHours ?? [0, 0, 0, 0, 0, 0, 0];
+      return { ...m, standardTotalWeeklyHours: prevTemplate.map((h, j) => j === dayIdx ? value : h) };
+    }));
   }
   // Clears every frozen day/week override for this member from the current
   // week forward (past weeks untouched) so they fall back to the template.
@@ -660,6 +683,24 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                     ↺ Reset to template
                   </button>
                 </div>
+                {m.isManager && (
+                  <div className="flex items-center gap-1.5 pl-1">
+                    <span className="text-[10px] text-violet-500 w-32 shrink-0">
+                      Total schedule{!m.standardTotalWeeklyHours && <span className="text-amber-500"> — not set</span>}
+                    </span>
+                    {WEEKDAY_LABELS.map((label, di) => (
+                      <label key={di} className="flex flex-col items-center gap-0.5">
+                        <span className="text-[9px] text-slate-300">{label[0]}</span>
+                        <input type="number" min="0" step="0.5" placeholder="0"
+                          value={m.standardTotalWeeklyHours?.[di] || ''}
+                          onChange={e => updateTotalTemplate(m.id, di, parseFloat(e.target.value) || 0)}
+                          title={`${label} standard total hours (production + managerial)`}
+                          className="w-10 border border-violet-200 rounded px-1 py-0.5 text-center text-[11px] text-violet-600 bg-violet-50 focus:outline-none focus:ring-1 focus:ring-violet-300" />
+                      </label>
+                    ))}
+                    <span className="text-[10px] text-slate-400 ml-1">falls back here when no weekly total is entered</span>
+                  </div>
+                )}
                 <div className="flex items-center gap-1.5 pl-1">
                   <span className="text-[10px] text-slate-400 w-32 shrink-0">Employment dates</span>
                   <EmploymentDatesEditor
@@ -755,7 +796,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                         const isOverride = isDHOverride(m.id, thisWeekOffset, di);
                         const isHoliday = isDHHoliday(m.id, thisWeekOffset, di);
                         const dayUnits = m.ratio > 0 ? dayVal / m.ratio : 0;
-                        const totalDayVal = m.isManager ? getMgrTotalDH(m.id, thisWeekOffset, di) : dayVal;
+                        const totalDayVal = m.isManager ? getMgrTotalDH(m, thisWeekOffset, di) : dayVal;
                         const cost = dailyCost(m, thisWeekOffset, di);
                         const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && dayUnits > 0 && cost > 0 ? cost / dayUnits : null;
                         return (

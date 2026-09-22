@@ -31,9 +31,11 @@ function normalizeDept(raw: string): string {
   if (l.includes('design'))                         return 'Design';
   if (l.includes('preservation'))                   return 'Preservation';
   if (l.includes('fulfillment'))                    return 'Fulfillment';
+  // Checked before the G&A/admin branch below — "Resin - Admin" contains
+  // "admin" too, and its labor cost belongs in Resin's CPO, not G&A's.
+  if (l.includes('resin'))                          return 'Resin';
   if (l.includes('general') || l.includes('admin')) return 'G&A';
   if (l.includes('operations'))                     return 'G&A';
-  if (l.includes('resin'))                          return 'Resin';
   return raw;
 }
 

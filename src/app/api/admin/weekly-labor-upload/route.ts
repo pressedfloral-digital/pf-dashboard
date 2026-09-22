@@ -26,9 +26,11 @@ function normalizeDept(raw: string): string {
   if (l.includes('design'))                          return 'Design';
   if (l.includes('preservation'))                    return 'Preservation';
   if (l.includes('fulfillment'))                     return 'Fulfillment';
+  // Checked before the G&A/admin branch below — "Resin - Admin" contains
+  // "admin" too, and its labor cost belongs in Resin's CPO, not G&A's.
+  if (l.includes('resin'))                           return 'Resin';
   if (l.includes('general') || l.includes('admin'))  return 'G&A';
   if (l.includes('operations'))                      return 'G&A';
-  if (l.includes('resin'))                           return 'Resin';
   return raw;
 }
 
@@ -51,16 +53,31 @@ export async function POST(req: NextRequest) {
     if (!Array.isArray(rows) || rows.length === 0)
       return NextResponse.json({ error: 'No rows provided' }, { status: 400 });
 
-    const records = rows
-      .filter(r => r.employee && r.location && r.department && r.weekOf && r.grossPay > 0)
-      .map(r => ({
-        employee:   r.employee.trim(),
-        location:   normalizeLocation(r.location),
-        department: normalizeDept(r.department),
-        week_of:    r.weekOf,
-        gross_pay:  r.grossPay,
-        uploaded_at: new Date().toISOString(),
-      }));
+    // Two raw rows can normalize onto the same (employee, location,
+    // department, week_of) key — e.g. "Resin" and "Resin - Admin" both
+    // collapse to department "Resin" — and Postgres's ON CONFLICT DO UPDATE
+    // can't touch the same row twice in one upsert. Sum gross_pay for any
+    // rows sharing a key instead of upserting them as separate records.
+    const byKey = new Map<string, { employee: string; location: string; department: string; week_of: string; gross_pay: number; uploaded_at: string }>();
+    for (const r of rows) {
+      if (!(r.employee && r.location && r.department && r.weekOf && r.grossPay > 0)) continue;
+      const employee   = r.employee.trim();
+      const location    = normalizeLocation(r.location);
+      const department  = normalizeDept(r.department);
+      const key = `${employee}|${location}|${department}|${r.weekOf}`;
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.gross_pay += r.grossPay;
+      } else {
+        byKey.set(key, {
+          employee, location, department,
+          week_of:    r.weekOf,
+          gross_pay:  r.grossPay,
+          uploaded_at: new Date().toISOString(),
+        });
+      }
+    }
+    const records = [...byKey.values()];
 
     if (records.length === 0)
       return NextResponse.json({ error: 'No valid rows after filtering' }, { status: 400 });
