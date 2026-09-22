@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { RATIO_TARGETS } from '@/lib/ratioTargets';
+import { MemberTierBadges } from './MemberTierBadge';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -587,7 +588,10 @@ export default function ScorecardTab() {
 
                       return (
                         <tr key={name} className={`border-b border-slate-50 ${ni % 2 === 0 ? '' : 'bg-slate-50/30'}`}>
-                          <td className="sticky left-0 bg-inherit px-4 py-2 font-medium text-slate-700">{name}</td>
+                          <td className={`sticky left-0 z-10 ${ni % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2`}>
+                            <div className="font-medium text-slate-700 whitespace-nowrap">{name}</div>
+                            <MemberTierBadges name={name} location={loc} dept={dept} />
+                          </td>
                           {ratioSeries.map((ratio, i) => {
                             if (ratio === null) return <td key={i} className="px-3 py-2 text-center text-slate-200">—</td>;
                             const tier =

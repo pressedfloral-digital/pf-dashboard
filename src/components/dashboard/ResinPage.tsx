@@ -8,6 +8,7 @@ import { resolveDayHours, resolveWeekHours, resolveWeekPayHours, baseDailyArray,
 import { HistoricalsSection } from './HistoricalsSection';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
+import { MemberTierBadges } from './MemberTierBadge';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -639,9 +640,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                         }}
                       />
                     </div>
-                    {m.isManager && (
-                      <span className="shrink-0 text-[9px] font-medium text-violet-600 bg-violet-50 border border-violet-200 rounded px-1.5 py-0.5">Manager</span>
-                    )}
+                    <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} className="inline-flex shrink-0" />
                   </div>
                   <select value={m.role ?? 'specialist'} onChange={e => updateRosterField(m.id, 'role', e.target.value)}
                     className="border border-slate-200 rounded px-1.5 py-1.5 text-xs text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300">
@@ -787,8 +786,9 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                   const weekCPO = (!m.isManager || canSeeManagerCPO(m.name)) && units > 0 && weekCost > 0 ? weekCost / units : null;
                   return (
                     <tr key={m.id} className={`border-b border-slate-50 ${mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
-                      <td className="sticky left-0 bg-inherit px-4 py-2 font-medium text-slate-700 whitespace-nowrap">
+                      <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 font-medium text-slate-700 whitespace-nowrap`}>
                         {m.name}
+                        <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
                         <div className="text-[10px] text-slate-400 font-normal">{m.ratio}h/unit</div>
                       </td>
                       {[0,1,2,3,4,5,6].map(di => {
@@ -915,6 +915,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                   <tr key={m.id} className={`border-b border-slate-50 ${mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
                     <td className="sticky left-0 bg-white px-4 py-1.5 font-medium text-slate-700 whitespace-nowrap">
                       {m.name}
+                      <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
                       <div className="text-[10px] text-slate-400 font-normal">{m.ratio}h/unit</div>
                     </td>
                     {windowWeeks.map(w => {

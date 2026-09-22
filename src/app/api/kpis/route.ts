@@ -6,6 +6,7 @@ import { RATIO_TARGETS, type RatioTier } from '@/lib/ratioTargets';
 import type { WageDept } from '@/lib/wageTargets';
 import { resolveWeekHours, resolveWeekPayHours } from '@/lib/scheduleResolution';
 import { fetchAllRows } from '@/lib/fetchAllRows';
+import { filterToHistoricalsRows, HISTORICALS_ROSTER_KEYS } from '@/lib/historicalsRows';
 
 // MTD/QTD/YTD figures need to reflect whatever's in weekly_labor_cost right
 // now — a payroll upload landing mid-month should show up on next load, not
@@ -261,26 +262,6 @@ function buildManagerNameSet(rosterRows: ScheduleSettingRow[]): Set<string> {
       if (member?.isManager && member.name) {
         set.add(`${row.location}|${dept}|${member.name.trim().toLowerCase()}`);
       }
-    }
-  }
-  return set;
-}
-
-// Every recognized roster name (manager or not), same key format as
-// buildManagerNameSet. Used to gate out unconfirmed flex/auto-sync rows —
-// see the confirmedActualRows filter below.
-function buildRosterNameSet(rosterRows: ScheduleSettingRow[]): Set<string> {
-  const deptByKey: Record<string, string> = {
-    designRoster: 'Design', presRoster: 'Preservation', ffRoster: 'Fulfillment',
-  };
-  const set = new Set<string>();
-  for (const row of rosterRows) {
-    const dept = deptByKey[row.key];
-    if (!dept) continue;
-    const roster = row.value as Record<string, { name?: string }> | null;
-    if (!roster) continue;
-    for (const member of Object.values(roster)) {
-      if (member?.name) set.add(`${row.location}|${dept}|${member.name.trim().toLowerCase()}`);
     }
   }
   return set;
@@ -1118,7 +1099,7 @@ export async function GET(req: NextRequest) {
       supabase
         .from('schedule_settings')
         .select('location,key,value')
-        .in('key', ['designRoster', 'presRoster', 'ffRoster']),
+        .in('key', HISTORICALS_ROSTER_KEYS),
       // Only ever consumed by the Monthly series below — fetched here
       // alongside everything else so it's available for that block.
       fetchAllRows<BonusRow>((from, to) =>
@@ -1133,20 +1114,10 @@ export async function GET(req: NextRequest) {
     if (rosterRes.error)  throw rosterRes.error;
 
     const managerNames = buildManagerNameSet(rosterRes.data ?? []);
-    const rosterNames  = buildRosterNameSet(rosterRes.data ?? []);
 
-    // All KPIs should never show a number Historicals doesn't back up: a row
-    // for someone not on the roster only counts once it has actual hours
-    // logged — that's the same gate Historicals' own flex-worker list uses
-    // (see HistoricalsSection.tsx's flexNames) before it'll even show that
-    // person as a row. The auto-sync isn't always right, so an order-only
-    // row sits invisible until Historicals surfaces it and a manager can
-    // confirm/correct it there; only then should it flow into All KPIs.
-    const confirmedActualRows = actualRows.filter(row => {
-      const dept = normDept(row.department);
-      const key  = `${row.location}|${dept}|${row.member_name.trim().toLowerCase()}`;
-      return rosterNames.has(key) || row.actual_hours > 0;
-    });
+    // All KPIs counts exactly the production/hours Historicals shows — see
+    // src/lib/historicalsRows.ts for the rule (shared with Scorecards).
+    const confirmedActualRows = filterToHistoricalsRows(actualRows, rosterRes.data ?? []);
 
     const results: WindowResult[] = [];
 

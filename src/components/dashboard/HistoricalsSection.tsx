@@ -5,6 +5,7 @@ import { useActualsWithPayroll } from './useActualsWithPayroll';
 import type { EnrichedActual } from './useActualsWithPayroll';
 import { getMondayDate } from '@/lib/weekDates';
 import { isActiveGm, activeGmNames } from '@/lib/managers';
+import { MemberTierBadges } from './MemberTierBadge';
 
 interface TeamMember {
   id:           string;
@@ -381,12 +382,9 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                 const member = members.find(m => m.name === name);
                 return (
                   <tr key={name} className={`${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50/40'} ${isFlex ? 'border-t border-dashed border-slate-200' : ''}`}>
-                    <td className="sticky left-0 bg-inherit px-4 py-2 whitespace-nowrap border-r border-slate-200 border-b border-b-slate-100">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-medium text-slate-700">{name}</span>
-                        {member?.isManager && <span className="text-[9px] bg-violet-100 text-violet-700 rounded px-1 py-px font-semibold">MGR</span>}
-                        {isFlex && <span className="text-[9px] bg-indigo-50 text-indigo-500 rounded px-1 py-px">flex</span>}
-                      </div>
+                    <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap border-r border-slate-200 border-b border-b-slate-100`}>
+                      <div className="font-medium text-slate-700">{name}</div>
+                      <MemberTierBadges name={name} location={location} dept={department} fallbackIsManager={member?.isManager} notOnRoster={isFlex} />
                       {member?.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
                     </td>
                     {visibleWeeks.map(w => {
@@ -573,12 +571,9 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                 const member = members.find(m => m.name === name);
                 return (
                   <tr key={name} className={`border-b border-slate-100 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50/40'}`}>
-                    <td className="sticky left-0 bg-inherit px-4 py-2 whitespace-nowrap border-r border-slate-200">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-medium text-slate-700">{name}</span>
-                        {member?.isManager && <span className="text-[9px] bg-violet-100 text-violet-700 rounded px-1 py-px font-semibold">MGR</span>}
-                        {isFlex && <span className="text-[9px] bg-indigo-50 text-indigo-500 rounded px-1 py-px">flex</span>}
-                      </div>
+                    <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap border-r border-slate-200`}>
+                      <div className="font-medium text-slate-700">{name}</div>
+                      <MemberTierBadges name={name} location={location} dept={department} fallbackIsManager={member?.isManager} notOnRoster={isFlex} />
                     </td>
                     {visibleMonths.map(mk => [mk, monthlyData[mk]] as const).map(([mk, md]) => {
                       const d = md.byMember[name];
