@@ -59,3 +59,21 @@ export function getISOWeekNumber(iso: string): number {
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
   return Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
 }
+
+// Every Monday (ISO date) whose week belongs to [start, end] under the
+// first-Monday rule: a week belongs to the period its Monday falls in, so the
+// week containing `start` is skipped if its Monday is before `start`. This is
+// how /api/kpis and /api/labor-forecast bucket weeks into business months.
+export function getWeekMondays(start: string, end: string): string[] {
+  const iso = (d: Date) => d.toISOString().split('T')[0];
+  const mondays: string[] = [];
+  const cur = new Date(start + 'T12:00:00');
+  const dow = cur.getDay();
+  cur.setDate(cur.getDate() + (dow === 0 ? -6 : 1 - dow));
+  if (iso(cur) < start) cur.setDate(cur.getDate() + 7);
+  while (iso(cur) <= end) {
+    mondays.push(iso(cur));
+    cur.setDate(cur.getDate() + 7);
+  }
+  return mondays;
+}

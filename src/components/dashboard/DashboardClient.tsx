@@ -10,6 +10,7 @@ import { GrowthDistributionPage } from './GrowthDistributionPage';
 import { SchedulePage } from './SchedulePage';
 import UserManagementPage from './UserManagementPage';
 import MyDashboardClient from './MyDashboardClient';
+import LaborCostPage from './LaborCostPage';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 
 interface PipelineCount {
@@ -25,7 +26,7 @@ interface LocationCounts {
 }
 
 export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
-  const [mainTab, setMainTab] = useState<'dashboard' | 'scheduling' | 'scorecards' | 'kpis' | 'growth' | 'team'>('dashboard');
+  const [mainTab, setMainTab] = useState<'dashboard' | 'scheduling' | 'scorecards' | 'kpis' | 'growth' | 'labor' | 'team'>('dashboard');
   // Redirect user role to personal dashboard handled server-side
   const { user, loading: userLoading, error: userError } = useCurrentUser();
 
@@ -99,6 +100,7 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
           ...((user?.permissions.canViewScorecards ?? true) ? [['scorecards',  'Scorecards'] as const] : []),
           ...((user?.permissions.canViewScorecards ?? true) ? [['kpis', 'All KPIs'] as const] : []),
           ...((user?.permissions.canViewScheduling ?? true) ? [['growth', 'Growth & Distribution'] as const] : []),
+          ...(user?.profile.role === 'admin'      ? [['labor', 'Labor Cost'] as const] : []),
           ...(user?.permissions.canManageUsers    ? [['team', 'Team Access'] as const] : []),
         ] as const).map(([id, label]) => (
           <button
@@ -149,6 +151,8 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
       {mainTab === 'kpis' && <AllKpisPage />}
       {/* ── GROWTH & DISTRIBUTION TAB ────────────────────────────────────────── */}
       {mainTab === 'growth' && <GrowthDistributionPage />}
+      {/* ── LABOR COST TAB (admins only; API enforces it too) ─────────────── */}
+      {mainTab === 'labor' && user?.profile.role === 'admin' && <LaborCostPage />}
       {/* ── TEAM ACCESS TAB ─────────────────────────────────────────────────── */}
       {mainTab === 'team' && <UserManagementPage />}
       {/* ── SCHEDULING TAB ───────────────────────────────────────────────────── */}
