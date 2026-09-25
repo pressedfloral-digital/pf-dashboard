@@ -149,7 +149,6 @@ export function projectDept(
   // Paid hours that aren't production, keyed like dailyHours — Preservation's
   // check/unboxing time (presCheckHours), which the Scheduling page's This
   // Week cost already includes. Adds to pay only, never to hours/production.
-  // /api/kpis doesn't pass it yet, so its Est./planned cost excludes them.
   payOnlyDailyHours?: DailyHoursMap
 ): { hours: number; production: number; laborCost: number; ratioHours: number; ratioProduction: number } {
   const holidays = Array.from(holidaySet);
