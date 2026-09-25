@@ -13,7 +13,7 @@ import {
 // Admin-only: labor cost per location / department / month.
 //  - Planned: projected from the saved Scheduling rosters + schedules
 //    (schedule_settings) and each person's pay on the roster — the same
-//    projectDept math as All KPIs' "Est." months, plus Preservation's
+//    projectDept math as All KPIs' "Est." months, including Preservation's
 //    check/unboxing hours (see payOnlyDailyHours in scheduleProjection.ts).
 //  - Actual (past + current months): what payroll actually paid, from
 //    weekly_labor_cost, plus salaried managers (never in that upload).
@@ -118,9 +118,7 @@ function monthLabel(monthStart: string): string {
 
 // Payroll department -> this view's department. Local copy per repo
 // convention (every route keeps its own), same as /api/kpis' normDept except
-// Checks & Unboxing counts as Preservation here — matching Historicals and
-// Scheduling, where check/unboxing time is part of Preservation. (/api/kpis
-// currently maps it nowhere, so that pay is missing from its dept costs.)
+// Checks & Unboxing counts as Preservation, as it does everywhere.
 function normPayrollDept(raw: string): string {
   const l = raw.toLowerCase();
   if (l.includes('design'))                                         return 'Design';

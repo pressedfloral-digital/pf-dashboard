@@ -203,6 +203,10 @@ function normDept(raw: string): string {
   const l = raw.toLowerCase();
   if (l.includes('design'))                                         return 'Design';
   if (l.includes('preservation'))                                   return 'Preservation';
+  // Preservation labor = Preservation + Checks & Unboxing, everywhere: pay
+  // (payroll's "Checks & Unboxing" department), hours ('checks_unboxing'
+  // actuals rows) and bonuses — same as Historicals and Scheduling.
+  if (l.includes('checks') || l.includes('unboxing'))               return 'Preservation';
   if (l.includes('fulfillment'))                                    return 'Fulfillment';
   // Checked before the G&A/admin branch below — "Resin - Admin" contains
   // "admin" too, and its labor cost belongs in Resin's CPO, not G&A's.
@@ -708,7 +712,9 @@ function projectPeriodForLocation(
   const resinDailyHours  = get('resinDailyHours')  as DailyHoursMap;
 
   const designMetrics = projectDept(designRoster, designHours, designDailyHours, weekOfs, location, 'Design',       holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride);
-  const presMetrics   = projectDept(presRoster,   presHours,   presDailyHours,   weekOfs, location, 'Preservation', holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride);
+  // Scheduled check/unboxing hours are paid Preservation time (not production).
+  const presCheckHours   = get('presCheckHours')   as DailyHoursMap;
+  const presMetrics   = projectDept(presRoster,   presHours,   presDailyHours,   weekOfs, location, 'Preservation', holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride, undefined, presCheckHours);
   const ffMetrics     = projectDept(ffRoster,     ffHours,     ffDailyHours,     weekOfs, location, 'Fulfillment',  holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride);
   const resinMetrics  = projectDept(resinRoster,  resinHours,  resinDailyHours,  weekOfs, location, 'Resin',        holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride);
 

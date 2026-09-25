@@ -304,7 +304,7 @@ export default function LaborCostPage() {
       </div>
 
       <p className="text-[11px] text-slate-400 leading-relaxed">
-        Same math as the Est. months in All KPIs, plus Preservation&apos;s check/unboxing hours. Hours come from each person&apos;s Scheduling standard weekly template plus any This Week
+        Same math as the Est. months in All KPIs; Preservation includes check/unboxing hours. Hours come from each person&apos;s Scheduling standard weekly template plus any This Week
         overrides, limited to their employment dates. Hourly pay = paid hours × roster rate, where paid holidays are still paid and hourly managers are
         paid for their total schedule. Salaried pay = annual ÷ 52 per week. A week counts toward the month its Monday falls in, so 5-Monday months cost more.
         Excludes G&amp;A, bonuses, payroll taxes, and benefits. Click a department to see each person.
