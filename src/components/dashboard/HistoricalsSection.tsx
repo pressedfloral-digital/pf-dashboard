@@ -71,7 +71,7 @@ const RANGE_OPTIONS: { value: number | 'all'; label: string }[] = [
 ];
 
 export function HistoricalsSection({ department, location, members, ordersLabel, onRatioUpdate, presActuals = {}, onReceivedSaved, canSeeManagerCPO = () => false }: HistoricalsSectionProps) {
-  const { enrichedActuals, loading, refresh, getWeekCosts, getRateForWeek, getManagerDeptCost } = useActualsWithPayroll(location);
+  const { enrichedActuals, laborRows, loading, refresh, getWeekCosts, getRateForWeek, getManagerDeptCost } = useActualsWithPayroll(location);
   // team_member_week_actuals stores resin rows as 'Resin' (capitalized) — the
   // other three departments store lowercase. This is the one place that
   // casing difference needs to be bridged.
@@ -180,6 +180,22 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
     return deptActuals.find(r => r.week_of === weekOf && r.member_name === name);
   }
 
+  // Preservation labor = Preservation + Checks & Unboxing. Payroll files C&U
+  // pay under its own department, so it never matches a person's
+  // 'preservation' actuals row in enrich() — add it to their Preservation
+  // cost here, keyed `${weekOf}|${name}`.
+  const checksUnboxingPay = useMemo(() => {
+    const map: Record<string, number> = {};
+    if (department !== 'preservation') return map;
+    for (const r of laborRows) {
+      const d = r.department.toLowerCase();
+      if (!d.includes('checks') && !d.includes('unboxing')) continue;
+      const key = `${r.week_of}|${r.employee}`;
+      map[key] = (map[key] ?? 0) + r.gross_pay;
+    }
+    return map;
+  }, [laborRows, department]);
+
   function getEntry(weekOf: string, name: string): { hours: number; orders: number; cost: number; isActual: boolean; ordersSource?: string } {
     const edit = localEdits[weekOf]?.[name];
     const actual = getActual(weekOf, name);
@@ -221,6 +237,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
         }
       }
     }
+    cost += checksUnboxingPay[`${weekOf}|${name}`] ?? 0;
     return { hours, orders, cost, isActual, ordersSource };
   }
 
@@ -262,6 +279,29 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
   // totalCost additionally excludes a GM's own pay for any week they were
   // actively in that role — a GM's cost only ever belongs in the flat
   // Incl.-GM combined metric, never a department's CPO (see isActiveGm).
+  // The department's total cost for one week — shared by the Week-total row
+  // and the Month-total row so the two can never disagree. Department payroll
+  // from weekly_labor_cost (for Preservation that includes Checks & Unboxing)
+  // plus salaried managers, via getWeekCosts, less an active GM's own pay;
+  // falls back to summing each person's cost when no payroll is uploaded yet.
+  function weekTeamCost(w: string): { cost: number; isActual: boolean } {
+    const weekCosts = getWeekCosts(w);
+    const deptKey = department.charAt(0).toUpperCase() + department.slice(1);
+    const deptEntry = weekCosts.find(wc => wc.department === deptKey);
+    const deptCost = deptEntry?.totalCost ?? 0;
+    const memberCost = [...members.map(m => m.name), ...flexNames].reduce((s, name) => {
+      const m = members.find(m => m.name === name);
+      if (m?.excludeFromCPO) return s;
+      if (isActiveGm(location, name, w)) return s;
+      return s + getEntry(w, name).cost;
+    }, 0);
+    const excludedCost = activeGmNames(location, w).reduce((s, name) => s + getEntry(w, name).cost, 0);
+    return {
+      cost:     deptCost > 0 ? Math.max(0, deptCost - excludedCost) : memberCost,
+      isActual: weekCosts.length > 0 && (deptEntry?.isActual ?? false),
+    };
+  }
+
   const monthlyData = useMemo(() => {
     const map: Record<string, {
       byMember: Record<string, { hours: number; orders: number; cost: number; isActual: boolean }>;
@@ -271,6 +311,9 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
     allWeeks.forEach(w => {
       const mk = getMonthKey(w);
       if (!map[mk]) map[mk] = { byMember: {}, totalOrders: 0, totalCost: 0, totalHours: 0, allActual: true, ratioOrders: 0, ratioHours: 0 };
+      // Same team cost as that week's Week-total row, so the Month total is
+      // exactly the sum of its weeks (and matches All KPIs).
+      map[mk].totalCost += weekTeamCost(w).cost;
       [...members, ...flexNames.map(n => ({ id: n, name: n, payType: 'hourly' as const, hourlyRate: 0, annualSalary: 0 }))].forEach(m => {
         const e = getEntry(w, m.name);
         if (!map[mk].byMember[m.name]) map[mk].byMember[m.name] = { hours: 0, orders: 0, cost: 0, isActual: true };
@@ -280,16 +323,20 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
         if (!e.isActual && e.hours > 0) map[mk].byMember[m.name].isActual = false;
         map[mk].totalOrders += e.orders;
         map[mk].totalHours  += e.hours;
-        if (!isActiveGm(location, m.name, w)) map[mk].totalCost += e.cost;
         if (!('isManager' in m) || !m.isManager) {
           map[mk].ratioOrders += e.orders;
-          map[mk].ratioHours  += e.hours;
+          // Checks & Unboxing hours count toward Preservation's ratio, same
+          // as the Week-total row.
+          const cuH = department === 'preservation'
+            ? checksUnboxingActuals.filter(r => r.week_of === w && r.member_name === m.name).reduce((acc, r) => acc + r.actual_hours, 0)
+            : 0;
+          map[mk].ratioHours  += e.hours + cuH;
         }
         if (!e.isActual && e.hours > 0) map[mk].allActual = false;
       });
     });
     return map;
-  }, [allWeeks, deptActuals, localEdits, members, managerHours, flexNames, location]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [allWeeks, deptActuals, localEdits, members, managerHours, flexNames, location, checksUnboxingPay, checksUnboxingActuals, getWeekCosts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) return <div className="text-xs text-slate-400 p-4">Loading historicals…</div>;
 
@@ -503,20 +550,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                     return s + getEntry(w, name).hours + cuH;
                   }, 0);
                   const weekRatio = nonMgrOrders > 0 && nonMgrHours > 0 ? nonMgrHours / nonMgrOrders : null;
-                  // Get total dept cost from weekly_labor_cost via getWeekCosts, plus salary managers
-                  const weekCosts = getWeekCosts(w);
-                  const deptKey = department.charAt(0).toUpperCase() + department.slice(1);
-                  const deptCost = weekCosts.find(wc => wc.department === deptKey)?.totalCost ?? 0;
-                  // Fall back to summing individual costs if no labor upload data
-                  const memberCost = allDisplayMembers.reduce((s, name) => {
-                    const m = members.find(m => m.name === name);
-                    if (m?.excludeFromCPO) return s;
-                    if (isActiveGm(location, name, w)) return s;
-                    return s + getEntry(w, name).cost;
-                  }, 0);
-                  const excludedCost = activeGmNames(location, w).reduce((s, name) => s + getEntry(w, name).cost, 0);
-                  const totalCost = deptCost > 0 ? Math.max(0, deptCost - excludedCost) : memberCost;
-                  const allActual = weekCosts.length > 0 && (weekCosts.find(wc => wc.department === deptKey)?.isActual ?? false);
+                  const { cost: totalCost, isActual: allActual } = weekTeamCost(w);
                   const teamCPO = totalOrders > 0 && totalCost > 0 ? totalCost / totalOrders : null;
                   const isFirst = monthStartWeeks.has(w);
                   return (

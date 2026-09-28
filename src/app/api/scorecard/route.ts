@@ -506,6 +506,9 @@ function normalizeDeptForScorecard(raw: string): string {
   const l = raw.toLowerCase();
   if (l.includes('design'))                         return 'Design';
   if (l.includes('preservation'))                   return 'Preservation';
+  // Preservation labor = Preservation + Checks & Unboxing (pay and hours) —
+  // same as /api/kpis, Historicals and Scheduling.
+  if (l.includes('checks') || l.includes('unboxing')) return 'Preservation';
   if (l.includes('fulfillment'))                    return 'Fulfillment';
   // Checked before the G&A/admin branch below — "Resin - Admin" contains
   // "admin" too, and its labor cost belongs in Resin's CPO, not G&A's.
