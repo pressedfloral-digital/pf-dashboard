@@ -14,19 +14,25 @@ export interface WeekEstimate { utPct: number | null; hasSeasonalData: boolean }
 // Call refresh() after adding/removing a planned_state_moves row — the
 // server recomputes from scratch each request, so there's no other way for
 // a client to know the estimate shifted.
-export function useDistributionEstimate(weeks = 52) {
+//
+// pastWeeks > 0 also returns reconstructed estimates for weeks before this
+// one (see the route's comment) — only the Growth & Distribution tab's
+// history columns need those.
+export function useDistributionEstimate(weeks = 52, pastWeeks = 0) {
   const [estimates, setEstimates] = useState<Record<string, WeekEstimate>>({});
   const [yearsOfHistory, setYearsOfHistory] = useState(0);
+  const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(() => {
-    return fetch(`/api/distribution-estimate?weeks=${weeks}`)
+    return fetch(`/api/distribution-estimate?weeks=${weeks}&past=${pastWeeks}`)
       .then(r => r.json())
       .then((d: { estimates?: Record<string, WeekEstimate>; yearsOfHistory?: number }) => {
         setEstimates(d.estimates ?? {});
         setYearsOfHistory(d.yearsOfHistory ?? 0);
+        if (d.estimates) setLoaded(true);
       })
       .catch(() => {});
-  }, [weeks]);
+  }, [weeks, pastWeeks]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -34,5 +40,5 @@ export function useDistributionEstimate(weeks = 52) {
     return estimates[weekOf]?.utPct ?? 50;
   }
 
-  return { estimates, yearsOfHistory, getSuggestedUtPct, refresh };
+  return { estimates, yearsOfHistory, getSuggestedUtPct, refresh, loaded };
 }
