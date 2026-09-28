@@ -28,6 +28,8 @@ import {
 import { useGrowthSettings } from '@/hooks/useGrowthSettings';
 import { useDistributionEstimate } from '@/hooks/useDistributionEstimate';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
+import { SyncedOrdersPopover } from './SyncedOrdersPopover';
+import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -157,11 +159,26 @@ function sumActuals(values: (number | null)[]): number | null {
   return available.length > 0 ? available.reduce((sum, value) => sum + value, 0) : null;
 }
 
-function ProductionActual({ value, loading, unit }: { value: number | null; loading: boolean; unit: string }) {
+// A single person's count can open the orders behind it; team totals can't.
+interface ActualDrill { name: string; start: string; end: string; department: 'design' | 'preservation' | 'fulfillment' }
+
+function ProductionActual({ value, loading, unit, drill }: { value: number | null; loading: boolean; unit: string; drill?: ActualDrill }) {
+  const [open, setOpen] = useState(false);
+  const label = `Actual ${loading && value === null ? '…' : `${value ?? '—'}${value === null ? '' : unit}`}`;
+  const cls = 'mt-0.5 text-[10px] font-semibold text-sky-600 tabular-nums';
+  if (!drill || !value) return <div className={cls} title="Live assignment count from the production app">{label}</div>;
   return (
-    <div className="mt-0.5 text-[10px] font-semibold text-sky-600 tabular-nums" title="Live assignment count from the production app">
-      Actual {loading && value === null ? '…' : `${value ?? '—'}${value === null ? '' : unit}`}
-    </div>
+    <>
+      <button type="button" onClick={() => setOpen(true)}
+        className={`${cls} block mx-auto underline decoration-dotted underline-offset-2 hover:text-sky-800 cursor-pointer`}
+        title="Live assignment count from the production app — click to see the orders">
+        {label}
+      </button>
+      {open && (
+        <SyncedOrdersPopover name={drill.name} department={drill.department} start={drill.start} end={drill.end}
+          syncedCount={value} countLabel="actual" onClose={() => setOpen(false)} />
+      )}
+    </>
   );
 }
 
@@ -1860,7 +1877,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
         } as PresTeamMember & { hours: Record<string, number>; defaultHrs: number });
       }
     });
-    return base;
+    return base.filter(m => !isNonProductionStaff(m.name));
   };
   const team = buildPresTeam(false);
   const fullTeam = buildPresTeam(true);
@@ -2270,7 +2287,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                               {presInputMode === 'output'
                                 ? (prodH > 0 && <div className="text-slate-400 mt-0.5">{round2(prodH)}h</div>)
                                 : (orders > 0 && <div className="text-slate-400 mt-0.5">{round2(orders)} ord</div>)}
-                              <ProductionActual value={preservationActuals.getCount(m.name, days[di].iso, 'preservation')} loading={preservationActuals.loading} unit=" bouq" />
+                              <ProductionActual value={preservationActuals.getCount(m.name, days[di].iso, 'preservation')} loading={preservationActuals.loading} unit=" bouq" drill={{ name: m.name, start: days[di].iso, end: days[di].iso, department: 'preservation' }} />
                               {cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
                             </td>
                           );
@@ -2798,7 +2815,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
         role: (r as {role?: FfTeamMember['role']}).role, isManager: (r as {isManager?: boolean}).isManager });
       }
     });
-    return base;
+    return base.filter(m => !isNonProductionStaff(m.name));
   };
   const team = buildFfTeam(false);
   const fullTeam = buildFfTeam(true);
@@ -3124,7 +3141,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                               {ffInputMode === 'output'
                                 ? (h > 0 && <div className="text-slate-400 mt-0.5">{round2(h)}h</div>)
                                 : (orders > 0 && <div className="text-slate-400 mt-0.5">{round2(orders)} ord</div>)}
-                              <ProductionActual value={fulfillmentActuals.getCount(m.name, days[dayIdx].iso, 'fulfillment')} loading={fulfillmentActuals.loading} unit=" ord" />
+                              <ProductionActual value={fulfillmentActuals.getCount(m.name, days[dayIdx].iso, 'fulfillment')} loading={fulfillmentActuals.loading} unit=" ord" drill={{ name: m.name, start: days[dayIdx].iso, end: days[dayIdx].iso, department: 'fulfillment' }} />
                               {ffHasRates && cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
                             </td>
                           );
@@ -3136,6 +3153,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                             value={sumActuals(days.map(day => fulfillmentActuals.getCount(m.name, day.iso, 'fulfillment')))}
                             loading={fulfillmentActuals.loading}
                             unit=" ord"
+                            drill={{ name: m.name, start: days[0].iso, end: days[days.length - 1].iso, department: 'fulfillment' }}
                           />
                           {ffHasRates && (!m.isManager || canSeeManagerCPO(m.name)) && weekCPO !== null && <div className="text-amber-600 text-[10px]">{fmt$(weekCPO)}</div>}
                         </td>
@@ -4050,7 +4068,7 @@ export function SchedulePage({
         base.push({ id, name: r.name ?? 'New Designer', ratio: r.ratio ?? 1.5, payType: r.payType ?? 'hourly', hourlyRate: r.hourlyRate ?? 0, annualSalary: r.annualSalary ?? 0, role: (r as {role?: Designer['role']}).role, isManager: (r as {isManager?: boolean}).isManager });
       }
     });
-    return base;
+    return base.filter(d => !isNonProductionStaff(d.name));
   };
   const designers: Designer[] = buildDesigners(false);
 
@@ -4850,7 +4868,7 @@ export function SchedulePage({
           rate: r.rate > 0 ? r.rate : 0, hours: [], defaultHrs: 0 });
       }
     });
-    return base;
+    return base.filter(m => !isNonProductionStaff(m.name));
   }, [location, settings.ffRoster]);
 
   const ffCapacityByWeekForPipeline = useMemo(() => Array.from({ length: WEEKS }, (_, w) => {
@@ -5477,7 +5495,7 @@ export function SchedulePage({
                                   {designInputMode === 'output'
                                     ? (h > 0 && <div className="text-slate-400 mt-0.5">{round2(h)}h</div>)
                                     : (frames > 0 && <div className="text-slate-400 mt-0.5">{round2(frames)}f</div>)}
-                                  <ProductionActual value={designActuals.getCount(d.name, days[dayIdx].iso, 'design')} loading={designActuals.loading} unit="f" />
+                                  <ProductionActual value={designActuals.getCount(d.name, days[dayIdx].iso, 'design')} loading={designActuals.loading} unit="f" drill={{ name: d.name, start: days[dayIdx].iso, end: days[dayIdx].iso, department: 'design' }} />
                                   {hasRates && cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
                                 </td>
                               );
@@ -5489,6 +5507,7 @@ export function SchedulePage({
                                 value={sumActuals(days.map(day => designActuals.getCount(d.name, day.iso, 'design')))}
                                 loading={designActuals.loading}
                                 unit="f"
+                                drill={{ name: d.name, start: days[0].iso, end: days[days.length - 1].iso, department: 'design' }}
                               />
                               {hasRates && (!isMgr || canSeeManagerCPO(d.name)) && weekCPO !== null && <div className="text-amber-600 text-[10px]">{fmt$(weekCPO)}</div>}
                             </td>

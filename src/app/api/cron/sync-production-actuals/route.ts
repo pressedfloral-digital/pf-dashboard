@@ -7,6 +7,7 @@ import {
   normalizeAssignmentStaffName,
   type AssignmentDepartment,
 } from '@/lib/assignment-counts';
+import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 
 export const maxDuration = 300;
 
@@ -45,7 +46,7 @@ interface PlannedWrite {
   weekOf: string;
   computedOrders: number;
   previousOrders: number | null;
-  action: 'write' | 'skip_locked' | 'skip_unresolved_location';
+  action: 'write' | 'skip_locked' | 'skip_unresolved_location' | 'skip_non_production';
 }
 
 export async function GET(req: NextRequest) {
@@ -157,6 +158,17 @@ export async function GET(req: NextRequest) {
         const count = row.counts[countKey];
         if (!row.staff) continue;
 
+        // App/technology staff show up in assignment counts while testing,
+        // but that isn't production — never write it (see nonProductionStaff.ts).
+        if (isNonProductionStaff(row.staff)) {
+          if (count > 0) planned.push({
+            location: '(excluded)', department: actualsDept, member: row.staff,
+            weekOf: weekStart, computedOrders: count, previousOrders: null,
+            action: 'skip_non_production',
+          });
+          continue;
+        }
+
         const normalizedStaff = normalizeAssignmentStaffName(row.staff);
         const existingForPerson = existingRows?.filter(r =>
           r.department === actualsDept &&
@@ -231,6 +243,7 @@ export async function GET(req: NextRequest) {
       written:  planned.filter(p => p.action === 'write').length,
       skippedLocked: planned.filter(p => p.action === 'skip_locked').length,
       skippedUnresolved: planned.filter(p => p.action === 'skip_unresolved_location').length,
+      skippedNonProduction: planned.filter(p => p.action === 'skip_non_production').length,
       unmatchedStaff: computed.unmatched,
       planned,
     });

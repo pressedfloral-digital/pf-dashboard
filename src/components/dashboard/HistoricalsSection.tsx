@@ -6,6 +6,8 @@ import type { EnrichedActual } from './useActualsWithPayroll';
 import { getMondayDate } from '@/lib/weekDates';
 import { isActiveGm, activeGmNames } from '@/lib/managers';
 import { MemberTierBadges } from './MemberTierBadge';
+import { SyncedOrdersPopover } from './SyncedOrdersPopover';
+import { useCurrentUser } from '@/hooks/useCurrentUser';
 
 interface TeamMember {
   id:           string;
@@ -72,6 +74,10 @@ const RANGE_OPTIONS: { value: number | 'all'; label: string }[] = [
 
 export function HistoricalsSection({ department, location, members, ordersLabel, onRatioUpdate, presActuals = {}, onReceivedSaved, canSeeManagerCPO = () => false }: HistoricalsSectionProps) {
   const { enrichedActuals, laborRows, loading, refresh, getWeekCosts, getRateForWeek, getManagerDeptCost } = useActualsWithPayroll(location);
+  // Only admins may override an auto-synced order count (enforced again in
+  // /api/actuals); everyone else can open the drill-down to see its orders.
+  const { user } = useCurrentUser();
+  const isAdmin = user?.profile.role === 'admin';
   // team_member_week_actuals stores resin rows as 'Resin' (capitalized) — the
   // other three departments store lowercase. This is the one place that
   // casing difference needs to be bridged.
@@ -116,6 +122,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
 
   const [range, setRange] = useState<number | 'all'>(12);
   const [showInactive, setShowInactive] = useState(false);
+  const [syncedDetail, setSyncedDetail] = useState<{ name: string; weekOf: string; count: number } | null>(null);
   // Oldest → newest, trimmed to the most recent `range` weeks.
   const visibleWeeks = useMemo(
     () => (range === 'all' ? allWeeks : allWeeks.slice(-range)),
@@ -202,9 +209,10 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
     const hours  = edit?.hours  ?? actual?.actual_hours  ?? 0;
     const orders = edit?.orders ?? actual?.actual_orders ?? 0;
     const isActual = !edit && (actual?.isActual ?? false);
-    // A pending local edit means the user is actively typing over this cell —
-    // treat it as manual immediately rather than waiting on the save round-trip.
-    const ordersSource = edit ? 'manual' : actual?.orders_source;
+    // A pending local edit to the order count means the user is typing over
+    // this cell — treat it as manual immediately rather than waiting on the
+    // save round-trip. An hours-only edit leaves the synced count as-is.
+    const ordersSource = edit && edit.orders !== (actual?.actual_orders ?? 0) ? 'manual' : actual?.orders_source;
     // Cost: use enriched cost if actual, else estimate from rate
     let cost = 0;
     if (isActual && actual) {
@@ -360,6 +368,16 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
 
   return (
     <div className="space-y-6">
+      {syncedDetail && department !== 'resin' && (
+        <SyncedOrdersPopover
+          name={syncedDetail.name}
+          department={department}
+          start={syncedDetail.weekOf}
+          end={(() => { const d = new Date(syncedDetail.weekOf + 'T12:00:00'); d.setDate(d.getDate() + 6); return isoDate(d); })()}
+          syncedCount={syncedDetail.count}
+          onClose={() => setSyncedDetail(null)}
+        />
+      )}
 
       {/* ── WEEKLY TABLE ── */}
       <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
@@ -368,7 +386,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
             <h3 className="text-sm font-semibold text-slate-700">Weekly — {department} · {location}</h3>
             <p className="text-xs text-slate-400 mt-0.5">
               Oldest → newest. <span className="text-amber-600 font-medium">Amber</span> = missing actuals.{' '}
-              <span className="text-sky-600 font-medium">Blue orders</span> = auto-synced from the production app, still editable.{' '}
+              <span className="text-sky-600 font-medium">Blue orders</span> = auto-synced from the production app — click &quot;synced&quot; to see the orders{isAdmin ? ', still editable' : '; only an admin can change them'}.{' '}
               <span className="text-green-600 font-medium">Green CPO</span> = from Rippling payroll.{' '}
               <span className="text-amber-600 font-medium">Amber CPO</span> = estimated from rate.
             </p>
@@ -453,12 +471,20 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                             <input type="number" min="0" step="0.01"
                               value={e.orders > 0 ? e.orders : ''}
                               placeholder=""
-                              title={e.ordersSource === 'auto' ? 'Auto-synced from production app — edit to override' : undefined}
+                              readOnly={e.ordersSource === 'auto' && !isAdmin}
+                              title={e.ordersSource === 'auto' ? (isAdmin ? 'Auto-synced from production app — edit to override' : 'Auto-synced from production app — click "synced" to see the orders, and ask an admin if it needs changing') : undefined}
                               onChange={ev => handleEdit(w, name, 'orders', parseFloat(ev.target.value) || 0)}
                               className={`hist-input w-full px-2 py-1 text-center text-[11px] font-semibold bg-transparent border-none outline-none focus:bg-indigo-50 ${isMissing && !hasData ? 'text-amber-400' : e.ordersSource === 'auto' ? 'text-sky-600' : 'text-indigo-700'}`}
                             />
                             {e.ordersSource === 'auto' && (
-                              <div className="text-[8px] leading-none text-sky-500 text-center -mt-0.5" title="Auto-synced from production app">synced</div>
+                              department === 'resin' ? (
+                                <div className="text-[8px] leading-none text-sky-500 text-center -mt-0.5" title="Auto-synced from production app">synced</div>
+                              ) : (
+                                <button type="button"
+                                  onClick={() => setSyncedDetail({ name, weekOf: w, count: e.orders })}
+                                  className="text-[8px] leading-none text-sky-500 text-center -mt-0.5 underline decoration-dotted underline-offset-2 hover:text-sky-700 cursor-pointer"
+                                  title="Auto-synced from production app — click to see the orders">synced</button>
+                              )
                             )}
                             <input type="number" min="0" step="0.5"
                               value={e.hours > 0 ? e.hours : ''}

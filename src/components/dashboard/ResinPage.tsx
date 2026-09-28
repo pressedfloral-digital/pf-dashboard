@@ -9,6 +9,7 @@ import { HistoricalsSection } from './HistoricalsSection';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { MemberTierBadges } from './MemberTierBadge';
+import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -144,6 +145,9 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     paidHolidays,
     loading, saveState,
   } = useResinSettings();
+
+  // App/technology staff are kept off every roster view (see nonProductionStaff.ts).
+  const productionRoster = roster.filter(m => !isNonProductionStaff(m.name));
 
   // Fetch queue summary — re-fetches whenever queueFrontWeek changes so the
   // top summary cards (total/Utah/Georgia) stay consistent with the
@@ -620,7 +624,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
               <span />
             </div>
             <div className="space-y-3">
-              {roster.map(m => (
+              {productionRoster.map(m => (
                 <div key={m.id} className="space-y-1.5">
                 <div className="grid grid-cols-[1fr_80px_90px_20px] gap-2 items-center">
                   <div className="flex items-center gap-1.5 min-w-0">
@@ -779,7 +783,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                 </tr>
               </thead>
               <tbody>
-                {roster.map((m, mi) => {
+                {productionRoster.map((m, mi) => {
                   const weekTotal = [0,1,2,3,4,5,6].reduce((s, di) => s + getDH(m.id, thisWeekOffset, di), 0);
                   const units = m.ratio > 0 ? weekTotal / m.ratio : 0;
                   const weekCost = [0,1,2,3,4,5,6].reduce((s, di) => s + dailyCost(m, thisWeekOffset, di), 0);
@@ -911,7 +915,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                 </tr>
               </thead>
               <tbody>
-                {roster.map((m, mi) => (
+                {productionRoster.map((m, mi) => (
                   <tr key={m.id} className={`border-b border-slate-50 ${mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
                     <td className="sticky left-0 bg-white px-4 py-1.5 font-medium text-slate-700 whitespace-nowrap">
                       {m.name}
@@ -1130,7 +1134,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
         <HistoricalsSection
           department="resin"
           location="Utah"
-          members={roster.map(m => ({
+          members={productionRoster.map(m => ({
             id: m.id, name: m.name, payType: m.payType, hourlyRate: m.hourlyRate, annualSalary: m.annualSalary, isManager: m.isManager,
           }))}
           ordersLabel="pieces"

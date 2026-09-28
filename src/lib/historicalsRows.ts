@@ -8,7 +8,10 @@
 // auto-synced credits) — only once they have actual hours logged (its
 // `flexNames`). An order-only row for someone off the roster (e.g. a stray
 // "Kale" beside "Kale Haug") never appears there, so it must not count
-// anywhere else either.
+// anywhere else either. Non-production staff (see nonProductionStaff.ts) never
+// count at all.
+
+import { isNonProductionStaff } from './nonProductionStaff';
 
 interface ScheduleSettingRow {
   location: string;
@@ -65,7 +68,9 @@ export function buildHistoricalsRosterNameSet(rosterRows: ScheduleSettingRow[]):
 export function filterToHistoricalsRows<T extends ActualsRowLike>(rows: T[], rosterRows: ScheduleSettingRow[]): T[] {
   const rosterNames = buildHistoricalsRosterNameSet(rosterRows);
   return rows.filter(row =>
-    row.actual_hours > 0 ||
-    rosterNames.has(memberKey(row.location, rosterDept(row.department), row.member_name))
+    !isNonProductionStaff(row.member_name) && (
+      row.actual_hours > 0 ||
+      rosterNames.has(memberKey(row.location, rosterDept(row.department), row.member_name))
+    )
   );
 }
