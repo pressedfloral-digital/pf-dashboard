@@ -11,6 +11,18 @@ import { pfGet, pfPost } from '@/lib/pf-api';
 
 export type AssignmentDepartment = 'preservation' | 'design' | 'fulfillment';
 
+const ASSIGNMENT_DEPARTMENTS: AssignmentDepartment[] = ['preservation', 'design', 'fulfillment'];
+
+// Products that never count toward production order counts — and so never
+// toward Historicals, ratios or CPO — even though staff are assigned to them.
+// Matched on the product title, case-insensitively.
+const EXCLUDED_PRODUCT_TITLES = ['bloom arrangement recreation'];
+
+export function isExcludedFromCounts(productTitle: string | null | undefined): boolean {
+  const title = productTitle?.trim().toLowerCase() ?? '';
+  return EXCLUDED_PRODUCT_TITLES.some(t => title.includes(t));
+}
+
 export interface AssignmentCounts {
   preservation: number;
   design: number;
@@ -191,7 +203,7 @@ function resolveRequestedStaff(
 
 async function fetchTargetCounts(target: StaffTarget, start: string, end: string): Promise<AssignmentCounts> {
   const perAccount = await Promise.all(target.accounts.map(a => fetchAssignmentCounts(a.uuid, start, end)));
-  return perAccount.reduce(
+  const gross = perAccount.reduce(
     (sum, c) => ({
       preservation: sum.preservation + c.preservation,
       design: sum.design + c.design,
@@ -199,6 +211,16 @@ async function fetchTargetCounts(target: StaffTarget, start: string, end: string
     }),
     { preservation: 0, design: 0, fulfillment: 0 },
   );
+  if (!ASSIGNMENT_DEPARTMENTS.some(d => gross[d] > 0)) return gross;
+
+  // The counts endpoint can't filter by product, so take the products that
+  // don't count (see isExcludedFromCounts) back out using the list.
+  const listed = await listTargetOrderProducts(target.accounts, start, end);
+  const net = { ...gross };
+  ASSIGNMENT_DEPARTMENTS.forEach(d => {
+    if (gross[d] > 0) net[d] = gross[d] - excludedInCount(deptOrderProducts(listed, d), gross[d]);
+  });
+  return net;
 }
 
 /** One aggregate count per person for a date range; used by Historicals sync. */
@@ -274,8 +296,10 @@ export interface AssignedOrderProduct {
   status: string | null;
   clientName: string | null;
   eventDate: string | null;
-  /** Other stages this person also holds on the product — see fetchAssignedOrderProducts. */
+  /** Other stages this person also holds on the product — see deptOrderProducts. */
   otherStages: AssignmentDepartment[];
+  /** A product that never counts — see isExcludedFromCounts. */
+  excluded: boolean;
 }
 
 interface OrderProductSummaryDTO {
@@ -304,24 +328,22 @@ const DEPT_USER_FIELD: Record<AssignmentDepartment, keyof OrderProductSummaryDTO
   fulfillment: 'fulfillmentUserUuid',
 };
 
-/**
- * The order products behind one person's assignment count for a date range —
- * the drill-down for Historicals' "synced" cells. Uses the list counterpart of
- * the /ForUser/Counts endpoint, then keeps only rows where the person holds
- * the requested department's role (the list spans all three roles).
- */
-export async function fetchAssignedOrderProducts(
-  name: string,
-  department: AssignmentDepartment,
+interface ListedOrderProduct {
+  account: AssignableStaff;
+  row: OrderProductSummaryDTO;
+}
+
+interface DeptOrderProduct {
+  row: OrderProductSummaryDTO;
+  otherStages: AssignmentDepartment[];
+}
+
+async function listTargetOrderProducts(
+  accounts: AssignableStaff[],
   start: string,
   end: string,
-): Promise<{ matched: boolean; items: AssignedOrderProduct[] }> {
-  const { targets } = resolveRequestedStaff(await fetchAssignableStaff(), [name]);
-  const accounts = targets[0]?.accounts ?? [];
-  if (accounts.length === 0) return { matched: false, items: [] };
-
-  const field = DEPT_USER_FIELD[department];
-  const rows: { row: OrderProductSummaryDTO; otherStages: AssignmentDepartment[] }[] = [];
+): Promise<ListedOrderProduct[]> {
+  const listed: ListedOrderProduct[] = [];
   for (const account of accounts) {
     const pageSize = 50;
     for (let pageNumber = 1; pageNumber <= 40; pageNumber++) {
@@ -334,24 +356,72 @@ export async function fetchAssignedOrderProducts(
         pageSize,
       });
       const items = page.items ?? [];
-      const mine = (row: OrderProductSummaryDTO, f: keyof OrderProductSummaryDTO) =>
-        String(row[f] ?? '').toLowerCase() === account.uuid.toLowerCase();
-      for (const row of items) {
-        if (!mine(row, field)) continue;
-        // The API's date filter matches if ANY of the person's stage
-        // assignments falls in range, while the counts endpoint checks only
-        // this stage's date — and the list doesn't return per-stage dates. So
-        // when someone holds more than one stage of a product, it may be here
-        // because of the other stage (e.g. preserved last month, fulfilled
-        // today). Flag it rather than guess.
-        const otherStages = (Object.keys(DEPT_USER_FIELD) as AssignmentDepartment[])
-          .filter(d => d !== department && mine(row, DEPT_USER_FIELD[d]));
-        rows.push({ row, otherStages });
-      }
+      items.forEach(row => listed.push({ account, row }));
       if (items.length < pageSize || (page.totalPages != null && pageNumber >= page.totalPages)) break;
     }
   }
+  return listed;
+}
 
+// Keeps only rows where the person holds the requested department's role
+// (the list spans all three roles).
+function deptOrderProducts(listed: ListedOrderProduct[], department: AssignmentDepartment): DeptOrderProduct[] {
+  const rows: DeptOrderProduct[] = [];
+  for (const { account, row } of listed) {
+    const mine = (d: AssignmentDepartment) =>
+      String(row[DEPT_USER_FIELD[d]] ?? '').toLowerCase() === account.uuid.toLowerCase();
+    if (!mine(department)) continue;
+    // The API's date filter matches if ANY of the person's stage assignments
+    // falls in range, while the counts endpoint checks only this stage's date
+    // — and the list doesn't return per-stage dates. So when someone holds
+    // more than one stage of a product, it may be here because of the other
+    // stage (e.g. preserved last month, fulfilled today). Flag it rather than
+    // guess.
+    const otherStages = ASSIGNMENT_DEPARTMENTS.filter(d => d !== department && mine(d));
+    rows.push({ row, otherStages });
+  }
+  return rows;
+}
+
+// How many of a department's gross count are excluded products. Single-stage
+// products in the list are all in the count; multi-stage ones only partly
+// (same reasoning as SyncedOrdersPopover). When the count doesn't settle
+// which multi-stage products it covers, assume excluded ones make up their
+// proportional share.
+function excludedInCount(rows: DeptOrderProduct[], grossCount: number): number {
+  const single = rows.filter(r => r.otherStages.length === 0);
+  const multi = rows.filter(r => r.otherStages.length > 0);
+  const excludedSingle = single.filter(r => isExcludedFromCounts(r.row.productTitle)).length;
+  const excludedMulti = multi.filter(r => isExcludedFromCounts(r.row.productTitle)).length;
+  const needed = grossCount - single.length;
+  let excludedMultiCounted = 0;
+  if (needed >= multi.length) {
+    excludedMultiCounted = excludedMulti;
+  } else if (needed > 0) {
+    const lower = Math.max(0, needed - (multi.length - excludedMulti));
+    const upper = Math.min(needed, excludedMulti);
+    excludedMultiCounted = Math.min(upper, Math.max(lower, Math.round(needed * excludedMulti / multi.length)));
+  }
+  return Math.min(grossCount, excludedSingle + excludedMultiCounted);
+}
+
+/**
+ * The order products behind one person's assignment count for a date range —
+ * the drill-down for Historicals' "synced" cells. Uses the list counterpart of
+ * the /ForUser/Counts endpoint. Excluded products (isExcludedFromCounts) are
+ * returned flagged so the drill-down can show them as not counted.
+ */
+export async function fetchAssignedOrderProducts(
+  name: string,
+  department: AssignmentDepartment,
+  start: string,
+  end: string,
+): Promise<{ matched: boolean; items: AssignedOrderProduct[] }> {
+  const { targets } = resolveRequestedStaff(await fetchAssignableStaff(), [name]);
+  const accounts = targets[0]?.accounts ?? [];
+  if (accounts.length === 0) return { matched: false, items: [] };
+
+  const rows = deptOrderProducts(await listTargetOrderProducts(accounts, start, end), department);
   const items = rows
     .map(({ row, otherStages }) => ({
       uuid: row.uuid,
@@ -362,6 +432,7 @@ export async function fetchAssignedOrderProducts(
       clientName: [row.clientFirstName, row.clientLastName].filter(Boolean).join(' ') || null,
       eventDate: row.eventDate ? row.eventDate.slice(0, 10) : null,
       otherStages,
+      excluded: isExcludedFromCounts(row.productTitle),
     }))
     .sort((a, b) => a.orderName.localeCompare(b.orderName, undefined, { numeric: true }));
   return { matched: true, items };
