@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
+import { canonicalPayrollName } from '@/lib/payrollNames';
 
 function normalizeLocation(raw: string): string {
   if (!raw) return '';
@@ -69,10 +70,13 @@ export async function POST(req: NextRequest) {
       if (!['design', 'preservation', 'fulfillment', 'checks_unboxing', 'Resin'].includes(dept)) continue;
 
       const weekOf = getMondayISO(r.date);
-      const key    = `${r.employee}|${loc}|${dept}|${weekOf}`;
+      // File hours under the roster name so they share a row with the
+      // person's synced orders (see payrollNames.ts).
+      const member = canonicalPayrollName(r.employee);
+      const key    = `${member}|${loc}|${dept}|${weekOf}`;
 
       if (!grouped[key]) {
-        grouped[key] = { member_name: r.employee.trim(), location: loc, department: dept, week_of: weekOf, hours: 0 };
+        grouped[key] = { member_name: member, location: loc, department: dept, week_of: weekOf, hours: 0 };
       }
       grouped[key].hours += r.durationHours ?? 0;
     }
@@ -87,7 +91,7 @@ export async function POST(req: NextRequest) {
       // Check if row exists — if so, update hours only
       const { data: existing } = await supabase
         .from('team_member_week_actuals')
-        .select('actual_orders')
+        .select('actual_orders, orders_source')
         .eq('location', rec.location)
         .eq('department', rec.department)
         .eq('week_of', rec.week_of)
@@ -103,6 +107,11 @@ export async function POST(req: NextRequest) {
           member_name:  rec.member_name,
           actual_hours: Math.round(rec.hours * 100) / 100,
           actual_orders: existing?.actual_orders ?? 0,
+          // A row created here has no typed order count, so leave it open to
+          // the production sync. The column defaults to 'manual', which would
+          // lock a new row at 0 orders forever (sync-production-actuals skips
+          // anything not 'auto').
+          orders_source: existing?.orders_source ?? 'auto',
           hours_source: 'upload',
           updated_at:   new Date().toISOString(),
         }, { onConflict: 'location,department,week_of,member_name' });
