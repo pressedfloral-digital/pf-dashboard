@@ -145,7 +145,12 @@ export function projectDept(
   // this is undefined there and every member falls back to their roster
   // ratio, same as before this param existed.
   ratioOverride?: Map<string, number>,
-  breakdown?: MemberCostLine[]
+  breakdown?: MemberCostLine[],
+  // Paid hours that aren't production, keyed like dailyHours — Preservation's
+  // check/unboxing time (presCheckHours), which the Scheduling page's This
+  // Week cost already includes. Adds to pay only, never to hours/production.
+  // /api/kpis doesn't pass it yet, so its Est./planned cost excludes them.
+  payOnlyDailyHours?: DailyHoursMap
 ): { hours: number; production: number; laborCost: number; ratioHours: number; ratioProduction: number } {
   const holidays = Array.from(holidaySet);
   let totalHours = 0, totalProduction = 0, totalCost = 0;
@@ -167,7 +172,10 @@ export function projectDept(
     // Guaranteed-PAY basis — equals memberHours on non-holiday weeks, but on
     // a holiday reflects the member's standard hours for that weekday (paid
     // regardless) plus any worked hours a manager entered on top.
-    const memberPayHours = weekOfs.reduce((sum, w) => sum + resolveMemberWeekPayHours(memberId, w, hours, dailyHours, member, holidays), 0);
+    const payOnlyHours = payOnlyDailyHours
+      ? weekOfs.reduce((sum, w) => sum + (payOnlyDailyHours[`${w}-${memberId}`] ?? []).reduce((s, h) => s + (h ?? 0), 0), 0)
+      : 0;
+    const memberPayHours = weekOfs.reduce((sum, w) => sum + resolveMemberWeekPayHours(memberId, w, hours, dailyHours, member, holidays), 0) + payOnlyHours;
 
     totalHours += memberHours;
     if (!member.isManager) ratioHours += memberHours;
@@ -238,7 +246,8 @@ export function projectDept(
       const totalTemplateWeekly = (member as DesignRosterEntry).standardTotalWeeklyHours
         ?.reduce((s, h) => s + (h ?? 0), 0);
       const payHours = member.isManager
-        ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? totalTemplateWeekly ?? resolveMemberWeekPayHours(memberId, w, hours, dailyHours, member, holidays)), 0)
+        ? weekOfs.reduce((sum, w) => sum + (mgrTotalHours[memberId]?.[w] ?? totalTemplateWeekly ?? (resolveMemberWeekPayHours(memberId, w, hours, dailyHours, member, holidays)
+            + (payOnlyDailyHours?.[`${w}-${memberId}`] ?? []).reduce((s, h) => s + (h ?? 0), 0))), 0)
         : memberPayHours;
       totalCost += payHours * hourlyRate;
       costedNames.add(member.name.trim().toLowerCase());
