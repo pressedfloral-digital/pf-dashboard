@@ -149,31 +149,56 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+// Some people have more than one production-app account under the same name
+// (e.g. a personal-email login alongside their work one), and orders can land
+// on either. Every lookup resolves a name to all of its accounts and sums
+// them — picking just one silently undercounts, or zeroes, that person.
+interface StaffTarget {
+  requestedName: string;
+  accounts: AssignableStaff[];
+}
+
+function accountsByName(staff: AssignableStaff[]): Map<string, AssignableStaff[]> {
+  const byName = new Map<string, AssignableStaff[]>();
+  staff.forEach(person => {
+    const key = normalizeAssignmentStaffName(person.name);
+    if (key) byName.set(key, [...(byName.get(key) ?? []), person]);
+  });
+  return byName;
+}
+
 function resolveRequestedStaff(
   staff: AssignableStaff[],
   requestedNames?: string[],
-): { targets: { requestedName: string; staff: AssignableStaff }[]; unmatched: string[] } {
+): { targets: StaffTarget[]; unmatched: string[] } {
+  const byName = accountsByName(staff);
   if (!requestedNames) {
     return {
-      targets: staff.map(person => ({ requestedName: person.name, staff: person })),
+      targets: [...byName.values()].map(accounts => ({ requestedName: accounts[0].name, accounts })),
       unmatched: [],
     };
   }
 
-  const byName = new Map<string, AssignableStaff>();
-  staff.forEach(person => {
-    const key = normalizeAssignmentStaffName(person.name);
-    if (key && !byName.has(key)) byName.set(key, person);
-  });
-
-  const targets: { requestedName: string; staff: AssignableStaff }[] = [];
+  const targets: StaffTarget[] = [];
   const unmatched: string[] = [];
   [...new Set(requestedNames.map(name => name.trim()).filter(Boolean))].forEach(requestedName => {
-    const person = byName.get(normalizeAssignmentStaffName(requestedName));
-    if (person) targets.push({ requestedName, staff: person });
+    const accounts = byName.get(normalizeAssignmentStaffName(requestedName));
+    if (accounts) targets.push({ requestedName, accounts });
     else unmatched.push(requestedName);
   });
   return { targets, unmatched };
+}
+
+async function fetchTargetCounts(target: StaffTarget, start: string, end: string): Promise<AssignmentCounts> {
+  const perAccount = await Promise.all(target.accounts.map(a => fetchAssignmentCounts(a.uuid, start, end)));
+  return perAccount.reduce(
+    (sum, c) => ({
+      preservation: sum.preservation + c.preservation,
+      design: sum.design + c.design,
+      fulfillment: sum.fulfillment + c.fulfillment,
+    }),
+    { preservation: 0, design: 0, fulfillment: 0 },
+  );
 }
 
 /** One aggregate count per person for a date range; used by Historicals sync. */
@@ -186,8 +211,8 @@ export async function computeAssignmentCounts(
   const { targets, unmatched } = resolveRequestedStaff(staff, requestedNames);
   const rows = await mapWithConcurrency(targets, 12, async target => ({
     staff: target.requestedName,
-    userUuid: target.staff.uuid,
-    counts: await fetchAssignmentCounts(target.staff.uuid, start, end),
+    userUuid: target.accounts[0].uuid,
+    counts: await fetchTargetCounts(target, start, end),
   }));
   return { rows, unmatched };
 }
@@ -223,9 +248,9 @@ export async function computeDailyAssignmentCounts(
   const jobs = targets.flatMap(target => dates.map(date => ({ target, date })));
   const results = await mapWithConcurrency(jobs, 12, async job => ({
     requestedName: job.target.requestedName,
-    uuid: job.target.staff.uuid,
+    uuid: job.target.accounts[0].uuid,
     date: job.date,
-    counts: await fetchAssignmentCounts(job.target.staff.uuid, job.date, job.date),
+    counts: await fetchTargetCounts(job.target, job.date, job.date),
   }));
 
   const rowsByName = new Map<string, DailyAssignmentCountRow>();
@@ -239,4 +264,105 @@ export async function computeDailyAssignmentCounts(
     rowsByName.set(result.requestedName, row);
   });
   return { rows: [...rowsByName.values()], unmatched };
+}
+
+export interface AssignedOrderProduct {
+  uuid: string;
+  orderName: string;
+  productTitle: string | null;
+  variantTitle: string | null;
+  status: string | null;
+  clientName: string | null;
+  eventDate: string | null;
+  /** Other stages this person also holds on the product — see fetchAssignedOrderProducts. */
+  otherStages: AssignmentDepartment[];
+}
+
+interface OrderProductSummaryDTO {
+  uuid: string;
+  shopifyOrderName?: string | null;
+  shopifyOrderNumber?: string | null;
+  productTitle?: string | null;
+  variantTitle?: string | null;
+  status?: string | number | null;
+  clientFirstName?: string | null;
+  clientLastName?: string | null;
+  eventDate?: string | null;
+  assignedToUserUuid?: string | null;
+  preservationUserUuid?: string | null;
+  fulfillmentUserUuid?: string | null;
+}
+
+interface OrderProductSummaryPage {
+  items?: OrderProductSummaryDTO[] | null;
+  totalPages?: number | null;
+}
+
+const DEPT_USER_FIELD: Record<AssignmentDepartment, keyof OrderProductSummaryDTO> = {
+  preservation: 'preservationUserUuid',
+  design: 'assignedToUserUuid',
+  fulfillment: 'fulfillmentUserUuid',
+};
+
+/**
+ * The order products behind one person's assignment count for a date range —
+ * the drill-down for Historicals' "synced" cells. Uses the list counterpart of
+ * the /ForUser/Counts endpoint, then keeps only rows where the person holds
+ * the requested department's role (the list spans all three roles).
+ */
+export async function fetchAssignedOrderProducts(
+  name: string,
+  department: AssignmentDepartment,
+  start: string,
+  end: string,
+): Promise<{ matched: boolean; items: AssignedOrderProduct[] }> {
+  const { targets } = resolveRequestedStaff(await fetchAssignableStaff(), [name]);
+  const accounts = targets[0]?.accounts ?? [];
+  if (accounts.length === 0) return { matched: false, items: [] };
+
+  const field = DEPT_USER_FIELD[department];
+  const rows: { row: OrderProductSummaryDTO; otherStages: AssignmentDepartment[] }[] = [];
+  for (const account of accounts) {
+    const pageSize = 50;
+    for (let pageNumber = 1; pageNumber <= 40; pageNumber++) {
+      const page = await pfPost<OrderProductSummaryPage>('/OrderProducts/ForUser', {
+        userUuid: account.uuid,
+        activeStatusesOnly: false,
+        assignedThisWeek: false,
+        ...rangeBounds(start, end),
+        pageNumber,
+        pageSize,
+      });
+      const items = page.items ?? [];
+      const mine = (row: OrderProductSummaryDTO, f: keyof OrderProductSummaryDTO) =>
+        String(row[f] ?? '').toLowerCase() === account.uuid.toLowerCase();
+      for (const row of items) {
+        if (!mine(row, field)) continue;
+        // The API's date filter matches if ANY of the person's stage
+        // assignments falls in range, while the counts endpoint checks only
+        // this stage's date — and the list doesn't return per-stage dates. So
+        // when someone holds more than one stage of a product, it may be here
+        // because of the other stage (e.g. preserved last month, fulfilled
+        // today). Flag it rather than guess.
+        const otherStages = (Object.keys(DEPT_USER_FIELD) as AssignmentDepartment[])
+          .filter(d => d !== department && mine(row, DEPT_USER_FIELD[d]));
+        rows.push({ row, otherStages });
+      }
+      if (items.length < pageSize || (page.totalPages != null && pageNumber >= page.totalPages)) break;
+    }
+  }
+
+  const items = rows
+    .map(({ row, otherStages }) => ({
+      uuid: row.uuid,
+      orderName: row.shopifyOrderName || (row.shopifyOrderNumber ? `#${row.shopifyOrderNumber}` : '—'),
+      productTitle: row.productTitle ?? null,
+      variantTitle: row.variantTitle ?? null,
+      status: row.status == null ? null : String(row.status),
+      clientName: [row.clientFirstName, row.clientLastName].filter(Boolean).join(' ') || null,
+      eventDate: row.eventDate ? row.eventDate.slice(0, 10) : null,
+      otherStages,
+    }))
+    .sort((a, b) => a.orderName.localeCompare(b.orderName, undefined, { numeric: true }));
+  return { matched: true, items };
 }

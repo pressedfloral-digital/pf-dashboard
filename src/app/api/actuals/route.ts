@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
+import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 
 // Admin/manager Clerk user IDs — add yours here
 // You can also use Clerk organizations or roles; this is the simple approach
@@ -10,6 +11,18 @@ function isAdmin(userId: string): boolean {
   // If no admin IDs are configured, allow any authenticated user (dev mode)
   if (ADMIN_IDS.length === 0) return true;
   return ADMIN_IDS.includes(userId);
+}
+
+// Auto-synced order counts (orders_source='auto') can only be overridden by
+// a dashboard admin — everyone else can see the orders behind them (the
+// "synced" drill-down) and ask an admin to correct it.
+async function hasAdminRole(userId: string): Promise<boolean> {
+  const { data } = await supabase
+    .from('user_profiles')
+    .select('role')
+    .eq('clerk_user_id', userId)
+    .maybeSingle();
+  return data?.role === 'admin';
 }
 
 // ── GET /api/actuals?location=Utah&type=preservation&weeks=26 ─────────────────
@@ -49,7 +62,9 @@ export async function GET(req: NextRequest) {
         .gte('week_of', sinceIso)
         .order('week_of', { ascending: true });
       if (error) throw error;
-      result.teamActuals = data ?? [];
+      // Orders credited to app/technology staff aren't production — hide them
+      // from Historicals and every Scheduling view (see nonProductionStaff.ts).
+      result.teamActuals = (data ?? []).filter(r => !isNonProductionStaff(r.member_name));
     }
 
     return NextResponse.json(result);
@@ -93,6 +108,19 @@ export async function POST(req: NextRequest) {
       const { department, memberName, actualHours, actualOrders } = body as {
         department: string; memberName: string; actualHours: number; actualOrders: number;
       };
+      const { data: existing, error: existingErr } = await supabase
+        .from('team_member_week_actuals')
+        .select('actual_orders, orders_source')
+        .eq('location', location)
+        .eq('department', department)
+        .eq('week_of', weekOf)
+        .eq('member_name', memberName)
+        .maybeSingle();
+      if (existingErr) throw existingErr;
+      const ordersChanged = Number(existing?.actual_orders ?? 0) !== Number(actualOrders);
+      if (existing?.orders_source === 'auto' && ordersChanged && !(await hasAdminRole(userId))) {
+        return NextResponse.json({ error: 'Only an admin can change an auto-synced order count' }, { status: 403 });
+      }
       const { error } = await supabase
         .from('team_member_week_actuals')
         .upsert({
@@ -100,11 +128,12 @@ export async function POST(req: NextRequest) {
           member_name: memberName,
           actual_hours: actualHours,
           actual_orders: actualOrders,
-          // A manager typing a number here always locks it — the automated
-          // production sync (src/app/api/cron/sync-production-actuals) skips
-          // any row not marked 'auto', so this edit will never be silently
-          // overwritten by the next sync.
-          orders_source: 'manual',
+          // Typing an order count locks it — the automated production sync
+          // (src/app/api/cron/sync-production-actuals) skips any row not
+          // marked 'auto', so this edit will never be silently overwritten by
+          // the next sync. An hours-only edit leaves the orders unlocked, so
+          // entering hours never blocks (or freezes) the synced count.
+          orders_source: ordersChanged ? 'manual' : (existing?.orders_source ?? 'auto'),
           entered_by: userId,
           updated_at: new Date().toISOString(),
         }, { onConflict: 'location,department,week_of,member_name' });
