@@ -5,9 +5,9 @@ import { supabase } from '@/lib/supabase';
 import { fetchAllRows } from '@/lib/fetchAllRows';
 import { isoMonday, isoMondayFromDate, getISOWeekNumber } from '@/lib/weekDates';
 
-// GET /api/distribution-estimate?weeks=52
+// GET /api/distribution-estimate?weeks=52&past=0
 //
-// For each of the next N weeks, suggests a Utah % distribution based on
+// For each of the next N weeks (plus `past` weeks before this one), suggests a Utah % distribution based on
 // real historical seasonality (which states' orders concentrate in which
 // week/month of year — e.g. FL/TX skewing heavier in winter) applied to
 // each state's EFFECTIVE location for that week: its current
@@ -27,13 +27,19 @@ import { isoMonday, isoMondayFromDate, getISOWeekNumber } from '@/lib/weekDates'
 // and only recomputed hourly or when a sync lands (sync-state-sales calls
 // revalidateTag). states/planned moves stay uncached (small tables, and a
 // plan needs to take effect immediately, not after an hour).
+//
+// Past weeks are a *reconstruction* — the model re-run with today's order
+// history, with implemented moves unwound for weeks before they took effect.
+// The Growth & Distribution tab prefers growth_forecast_snapshots (what was
+// actually forecast at the time) and only falls back to this for weeks that
+// predate snapshotting.
 
 const MIN_ORDERS_FOR_WEEK_SIGNAL = 40;
 export const STATE_SALES_CACHE_TAG = 'state-sales-facts';
 
 interface Fact { state_code: string; order_date: string }
 interface StateRow { state_code: string; location: 'Utah' | 'Georgia' }
-interface PlannedMove { state_code: string; new_location: 'Utah' | 'Georgia'; effective_date: string }
+interface PlannedMove { state_code: string; new_location: 'Utah' | 'Georgia'; effective_date: string; implemented_at: string | null }
 
 interface SeasonalAggregates {
   byWeekOfYear: Record<number, Record<string, number>>;
@@ -81,6 +87,7 @@ export async function GET(req: NextRequest) {
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const weeksCount = Math.min(104, Math.max(1, parseInt(req.nextUrl.searchParams.get('weeks') ?? '52', 10) || 52));
+  const pastCount  = Math.min(520, Math.max(0, parseInt(req.nextUrl.searchParams.get('past') ?? '0', 10) || 0));
 
   let seasonal: SeasonalAggregates;
   try {
@@ -92,7 +99,7 @@ export async function GET(req: NextRequest) {
 
   const [statesResult, movesResult] = await Promise.all([
     supabase.from('state_location_routing').select('state_code, location').returns<StateRow[]>(),
-    supabase.from('planned_state_moves').select('state_code, new_location, effective_date').returns<PlannedMove[]>(),
+    supabase.from('planned_state_moves').select('state_code, new_location, effective_date, implemented_at').returns<PlannedMove[]>(),
   ]);
   if (statesResult.error) return NextResponse.json({ error: statesResult.error.message }, { status: 500 });
   if (movesResult.error) return NextResponse.json({ error: movesResult.error.message }, { status: 500 });
@@ -100,17 +107,25 @@ export async function GET(req: NextRequest) {
   const moves  = movesResult.data ?? [];
 
   // A state's effective location for a given week: the most recent planned
-  // move whose effective_date has arrived by then, else its current routing.
+  // move whose effective_date has arrived by then, else — for a week before
+  // an implemented move took effect — the location it moved away from (the
+  // routing row was already flipped when it was marked implemented), else
+  // its current routing.
   function effectiveLocation(stateCode: string, weekOf: string): 'Utah' | 'Georgia' {
-    const applicable = moves
-      .filter(m => m.state_code === stateCode && m.effective_date <= weekOf)
+    const stateMoves = moves.filter(m => m.state_code === stateCode);
+    const applicable = stateMoves
+      .filter(m => m.effective_date <= weekOf)
       .sort((a, b) => b.effective_date.localeCompare(a.effective_date))[0];
     if (applicable) return applicable.new_location;
+    const nextImplemented = stateMoves
+      .filter(m => m.implemented_at && m.effective_date > weekOf)
+      .sort((a, b) => a.effective_date.localeCompare(b.effective_date))[0];
+    if (nextImplemented) return nextImplemented.new_location === 'Utah' ? 'Georgia' : 'Utah';
     return states.find(s => s.state_code === stateCode)?.location ?? 'Utah';
   }
 
   const estimates: Record<string, { utPct: number | null; hasSeasonalData: boolean }> = {};
-  for (let w = 0; w < weeksCount; w++) {
+  for (let w = -pastCount; w < weeksCount; w++) {
     const weekOf = isoMonday(w);
     const weekNum  = getISOWeekNumber(weekOf);
     const monthNum = new Date(weekOf + 'T12:00:00').getMonth() + 1;

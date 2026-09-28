@@ -12,6 +12,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 export function useGrowthSettings() {
   const [companyMultipliers, setCompanyMultipliers] = useState<Record<string, number>>({});
   const [distributionPct,    setDistributionPct]    = useState<Record<string, { ut: number; ga: number }>>({});
+  const [loaded, setLoaded] = useState(false);
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
@@ -20,6 +21,7 @@ export function useGrowthSettings() {
       .then((data: { companyMultipliers?: Record<string, number>; distributionPct?: Record<string, { ut: number; ga: number }> }) => {
         setCompanyMultipliers(data.companyMultipliers ?? {});
         setDistributionPct(data.distributionPct ?? {});
+        setLoaded(true);
       })
       .catch(() => {});
   }, []);
@@ -51,5 +53,5 @@ export function useGrowthSettings() {
     });
   }, [persist]);
 
-  return { companyMultipliers, distributionPct, setMultiplier, setDistribution };
+  return { companyMultipliers, distributionPct, setMultiplier, setDistribution, loaded };
 }

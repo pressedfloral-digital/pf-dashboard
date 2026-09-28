@@ -23,6 +23,14 @@ const FORWARD_WEEKS = 52;
 // history for (computed from EARLIEST_HISTORICAL_WEEK, not a fixed trailing
 // window, so "actual" data isn't cut off), through the same 52-week
 // look-ahead Queue & Turnaround uses.
+// Past weeks the distribution estimate is reconstructed for (+1 so a
+// server-vs-browser timezone difference in "this week" can't leave the
+// current week uncovered).
+const PAST_WEEKS = weeksBetween(EARLIEST_HISTORICAL_WEEK, isoMonday(0)) + 1;
+
+type ForecastSource = 'manual' | 'snapshot' | 'reconstructed' | 'suggested';
+interface ForecastSnapshot { ut_pct: number; multiplier: number; captured_at: string }
+
 function buildWeekOffsets(): number[] {
   const start = -weeksBetween(EARLIEST_HISTORICAL_WEEK, isoMonday(0));
   const end = FORWARD_WEEKS - 1;
@@ -50,37 +58,73 @@ function fmtMoney(n: number | undefined | null): string {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
+// Input styling/tooltip by where a forecast value came from: amber italic
+// = computed default (live suggestion or past-week reconstruction), plain =
+// manually set or a frozen snapshot of what was forecast at the time.
+function sourceInputClass(source: ForecastSource | 'default'): string {
+  if (source === 'suggested') return 'border-amber-200 text-amber-700 italic';
+  if (source === 'reconstructed') return 'border-dashed border-amber-200 text-amber-700/70 italic';
+  return 'border-slate-200 text-slate-700';
+}
+function sourceTitle(source: ForecastSource | 'default', capturedAt: string | undefined, fallback: string): string {
+  if (source === 'snapshot') {
+    const when = capturedAt ? new Date(capturedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'that week';
+    return `What was forecast for this week, locked in ${when}. Type a value to override.`;
+  }
+  if (source === 'reconstructed') {
+    return 'Reconstructed — this week predates forecast snapshots, so this is the model re-run for that week (today\'s order history, with implemented state moves unwound), not a saved record of what was forecast.';
+  }
+  return fallback;
+}
+
 // ── Per-location intake fetch (team actuals + preservation actuals) ───────────
 function useLocationIntake(location: 'Utah' | 'Georgia') {
   const [teamActuals, setTeamActuals] = useState<TeamActualRow[]>([]);
   const [presActuals, setPresActuals] = useState<Record<string, number>>({});
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/actuals?location=${location}&type=team&weeks=110`)
-      .then(r => r.json())
-      .then((d: { teamActuals?: TeamActualRow[] }) => setTeamActuals(d.teamActuals ?? []))
-      .catch(() => {});
-    fetch(`/api/actuals?location=${location}&type=preservation&weeks=110`)
-      .then(r => r.json())
-      .then((d: { preservationActuals?: { week_of: string; received: number }[] }) => {
-        const map: Record<string, number> = {};
-        (d.preservationActuals ?? []).forEach(row => { map[row.week_of] = row.received; });
-        setPresActuals(map);
-      })
-      .catch(() => {});
+    Promise.all([
+      fetch(`/api/actuals?location=${location}&type=team&weeks=110`)
+        .then(r => r.json())
+        .then((d: { teamActuals?: TeamActualRow[] }) => setTeamActuals(d.teamActuals ?? [])),
+      fetch(`/api/actuals?location=${location}&type=preservation&weeks=110`)
+        .then(r => r.json())
+        .then((d: { preservationActuals?: { week_of: string; received: number }[] }) => {
+          const map: Record<string, number> = {};
+          (d.preservationActuals ?? []).forEach(row => { map[row.week_of] = row.received; });
+          setPresActuals(map);
+        }),
+    ]).then(() => setLoaded(true)).catch(() => {});
   }, [location]);
 
-  return useMemo(() => computeActualIntakeByWeek(location, teamActuals, presActuals), [location, teamActuals, presActuals]);
+  const byWeek = useMemo(() => computeActualIntakeByWeek(location, teamActuals, presActuals), [location, teamActuals, presActuals]);
+  return { byWeek, loaded };
 }
 
 interface StateRow { state_code: string; state_name: string; location: 'Utah' | 'Georgia' }
 interface PlannedMove { id: number; state_code: string; new_location: 'Utah' | 'Georgia'; effective_date: string; note: string | null; implemented_at: string | null }
 
 export function GrowthDistributionPage() {
-  const utActualByWeek = useLocationIntake('Utah');
-  const gaActualByWeek = useLocationIntake('Georgia');
-  const { companyMultipliers, distributionPct, setMultiplier, setDistribution } = useGrowthSettings();
-  const { estimates: distributionEstimates, yearsOfHistory, getSuggestedUtPct, refresh: refreshDistributionEstimate } = useDistributionEstimate(FORWARD_WEEKS);
+  const { byWeek: utActualByWeek, loaded: utIntakeLoaded } = useLocationIntake('Utah');
+  const { byWeek: gaActualByWeek, loaded: gaIntakeLoaded } = useLocationIntake('Georgia');
+  const { companyMultipliers, distributionPct, setMultiplier, setDistribution, loaded: growthSettingsLoaded } = useGrowthSettings();
+  const {
+    estimates: distributionEstimates, yearsOfHistory, getSuggestedUtPct,
+    refresh: refreshDistributionEstimate, loaded: distributionEstimateLoaded,
+  } = useDistributionEstimate(FORWARD_WEEKS, PAST_WEEKS);
+
+  // What was actually forecast for each week, frozen the first time this
+  // tab is opened during that week (see the growth_forecast_snapshots
+  // migration). Past weeks show these instead of today's live defaults, so
+  // the variance rows measure real forecast accuracy.
+  const [forecastSnapshots, setForecastSnapshots] = useState<Record<string, ForecastSnapshot> | null>(null);
+  useEffect(() => {
+    fetch('/api/growth-forecast-snapshots')
+      .then(r => r.json())
+      .then((d: { snapshots?: Record<string, ForecastSnapshot> }) => { if (d.snapshots) setForecastSnapshots(d.snapshots); })
+      .catch(() => {});
+  }, []);
 
   // The Company Total table now spans full history through a 52-week
   // look-ahead (see buildWeekOffsets) — scroll it to THIS week by default
@@ -118,7 +162,18 @@ export function GrowthDistributionPage() {
     const lastYear = (utLastYear !== undefined || gaLastYear !== undefined)
       ? (utLastYear ?? 0) + (gaLastYear ?? 0) : undefined;
 
-    const multiplier = companyMultipliers[weekOf] ?? rollingCompanyMultiplier;
+    // Current and past weeks prefer the frozen snapshot over today's live
+    // defaults. Past weeks without one (before snapshotting existed) get a
+    // reconstruction: the rolling multiplier as it would have been computed
+    // that week, and the distribution model re-run for that week.
+    const isCurrentOrPast = offset <= 0;
+    const snapshot = isCurrentOrPast ? forecastSnapshots?.[weekOf] : undefined;
+    const multiplierOverride = companyMultipliers[weekOf];
+    const multiplier = multiplierOverride ?? snapshot?.multiplier ?? (offset < 0
+      ? computeRollingMultiplier(combinedActualByWeek, w => isoMonday(offset + w))
+      : rollingCompanyMultiplier);
+    const multiplierSource: ForecastSource = multiplierOverride !== undefined ? 'manual'
+      : snapshot ? 'snapshot' : offset < 0 ? 'reconstructed' : 'suggested';
     const estimatedReceived = lastYear !== undefined ? Math.round(lastYear * multiplier) : undefined;
 
     const utActual = utActualByWeek[weekOf];
@@ -128,9 +183,12 @@ export function GrowthDistributionPage() {
     const actualMultiplier = (actualReceived !== undefined && lastYear !== undefined && lastYear > 0) ? actualReceived / lastYear : undefined;
 
     const utPctOverride = distributionPct[weekOf]?.ut;
-    const utPct = utPctOverride ?? getSuggestedUtPct(weekOf);
+    const utPct = utPctOverride ?? snapshot?.ut_pct ?? getSuggestedUtPct(weekOf);
     const gaPct = 100 - utPct;
-    const utPctIsSuggested = utPctOverride === undefined && (distributionEstimates[weekOf]?.hasSeasonalData ?? false);
+    const utPctSource: ForecastSource | 'default' = utPctOverride !== undefined ? 'manual'
+      : snapshot ? 'snapshot'
+      : !(distributionEstimates[weekOf]?.hasSeasonalData ?? false) ? 'default'
+      : offset < 0 ? 'reconstructed' : 'suggested';
     const utEstimated = estimatedReceived !== undefined ? Math.round(estimatedReceived * utPct / 100) : undefined;
     const gaEstimated = estimatedReceived !== undefined && utEstimated !== undefined ? estimatedReceived - utEstimated : undefined;
     const utVariance = (utActual !== undefined && utEstimated !== undefined) ? utActual - utEstimated : undefined;
@@ -140,11 +198,30 @@ export function GrowthDistributionPage() {
     const actualGaPct = actualUtPct !== undefined ? 100 - actualUtPct : undefined;
 
     return {
-      weekOf, lastYear, multiplier, estimatedReceived, actualReceived, variance, actualMultiplier,
-      utPct, gaPct, utPctIsSuggested, utActual, gaActual, utEstimated, gaEstimated, utVariance, gaVariance, actualUtPct, actualGaPct,
+      weekOf, lastYear, multiplier, multiplierSource, estimatedReceived, actualReceived, variance, actualMultiplier,
+      utPct, gaPct, utPctSource, snapshotCapturedAt: snapshot?.captured_at, utActual, gaActual, utEstimated, gaEstimated, utVariance, gaVariance, actualUtPct, actualGaPct,
       isFuture: actualReceived === undefined,
     };
-  }), [weekOffsets, utActualByWeek, gaActualByWeek, companyMultipliers, distributionPct, rollingCompanyMultiplier, distributionEstimates]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [weekOffsets, utActualByWeek, gaActualByWeek, combinedActualByWeek, companyMultipliers, distributionPct, rollingCompanyMultiplier, distributionEstimates, forecastSnapshots]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Freeze this week's forecast once everything it depends on has loaded
+  // (a half-loaded intake history would snapshot a wrong rolling multiplier).
+  // Insert-once server-side, so another tab racing this is harmless.
+  const allForecastInputsLoaded = utIntakeLoaded && gaIntakeLoaded && growthSettingsLoaded && distributionEstimateLoaded && forecastSnapshots !== null;
+  useEffect(() => {
+    if (!allForecastInputsLoaded || !forecastSnapshots) return;
+    const currentWeek = isoMonday(0);
+    if (forecastSnapshots[currentWeek]) return;
+    const row = weeklyRows.find(r => r.weekOf === currentWeek);
+    if (!row) return;
+    const snap: ForecastSnapshot = { ut_pct: row.utPct, multiplier: row.multiplier, captured_at: new Date().toISOString() };
+    setForecastSnapshots(prev => ({ ...(prev ?? {}), [currentWeek]: snap }));
+    fetch('/api/growth-forecast-snapshots', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week_of: currentWeek, ut_pct: snap.ut_pct, multiplier: snap.multiplier }),
+    }).catch(() => {});
+  }, [allForecastInputsLoaded, forecastSnapshots, weeklyRows]);
 
   // ── State routing ────────────────────────────────────────────────────────
   const [states, setStates] = useState<StateRow[]>([]);
@@ -337,10 +414,10 @@ export function GrowthDistributionPage() {
                 {weeklyRows.map(r => (
                   <td key={r.weekOf} className="px-2 py-1.5 text-right">
                     <input
-                      type="number" step="0.05" min="0" value={r.multiplier}
+                      type="number" step="0.05" min="0" value={Math.round(r.multiplier * 1000) / 1000}
                       onChange={e => setMultiplier(r.weekOf, parseFloat(e.target.value) || rollingCompanyMultiplier)}
-                      className="w-14 border border-slate-200 rounded px-1 py-0.5 text-center text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300"
-                      title="Company-wide growth multiplier applied to last year's same week"
+                      className={`w-14 border rounded px-1 py-0.5 text-center bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300 ${sourceInputClass(r.multiplierSource)}`}
+                      title={sourceTitle(r.multiplierSource, r.snapshotCapturedAt, 'Company-wide growth multiplier applied to last year\'s same week')}
                     />
                   </td>
                 ))}
@@ -376,12 +453,10 @@ export function GrowthDistributionPage() {
                       <input
                         type="number" step="5" min="0" max="100" value={Math.round(r.utPct * 10) / 10}
                         onChange={e => setDistribution(r.weekOf, Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)))}
-                        className={`w-14 border rounded px-1 py-0.5 text-center bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300 ${
-                          r.utPctIsSuggested ? 'border-amber-200 text-amber-700 italic' : 'border-slate-200 text-slate-700'
-                        }`}
-                        title={r.utPctIsSuggested
+                        className={`w-14 border rounded px-1 py-0.5 text-center bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300 ${sourceInputClass(r.utPctSource)}`}
+                        title={r.utPctSource === 'suggested'
                           ? 'Suggested from historical seasonality + any planned reassignment — not manually set. Type a value to override.'
-                          : '% of estimated company total assumed to go to Utah'}
+                          : sourceTitle(r.utPctSource, r.snapshotCapturedAt, '% of estimated company total assumed to go to Utah')}
                       />
                       <span className="text-[10px] text-slate-400">%</span>
                     </div>
