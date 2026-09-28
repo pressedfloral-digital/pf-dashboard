@@ -85,6 +85,9 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
   const ripplingDept = RIPPLING_DEPT[department];
   const [localEdits, setLocalEdits] = useState<Record<string, Record<string, { hours: number; orders: number }>>>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  // Text of the hours cell being typed in. The cell shows Preservation + C&U,
+  // so while typing we hold the raw text instead of re-deriving it each key.
+  const [hoursDraft, setHoursDraft] = useState<{ key: string; text: string } | null>(null);
   const [managerHours, setManagerHours] = useState<Record<string, number>>({});
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
@@ -183,8 +186,19 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
     });
   }, [deptActuals]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The person's own dept row — never their checks_unboxing row, which
+  // deptActuals also holds for Preservation. It sorts first, so picking it
+  // up hid the person's Preservation hours and orders for that week and
+  // showed their C&U hours twice.
   function getActual(weekOf: string, name: string): EnrichedActual | undefined {
-    return deptActuals.find(r => r.week_of === weekOf && r.member_name === name);
+    return deptActuals.find(r => r.week_of === weekOf && r.member_name === name && r.department !== 'checks_unboxing');
+  }
+
+  // Checks & Unboxing hours for this person/week (Preservation only).
+  function getCUHours(weekOf: string, name: string): number {
+    return checksUnboxingActuals
+      .filter(r => r.week_of === weekOf && r.member_name === name)
+      .reduce((s, r) => s + r.actual_hours, 0);
   }
 
   // Preservation labor = Preservation + Checks & Unboxing. Payroll files C&U
@@ -324,21 +338,19 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
       map[mk].totalCost += weekTeamCost(w).cost;
       [...members, ...flexNames.map(n => ({ id: n, name: n, payType: 'hourly' as const, hourlyRate: 0, annualSalary: 0 }))].forEach(m => {
         const e = getEntry(w, m.name);
+        // Preservation hours = Preservation + Checks & Unboxing, for every
+        // hours total and ratio, same as the weekly cells.
+        const hours = e.hours + getCUHours(w, m.name);
         if (!map[mk].byMember[m.name]) map[mk].byMember[m.name] = { hours: 0, orders: 0, cost: 0, isActual: true };
-        map[mk].byMember[m.name].hours  += e.hours;
+        map[mk].byMember[m.name].hours  += hours;
         map[mk].byMember[m.name].orders += e.orders;
         map[mk].byMember[m.name].cost   += e.cost;
         if (!e.isActual && e.hours > 0) map[mk].byMember[m.name].isActual = false;
         map[mk].totalOrders += e.orders;
-        map[mk].totalHours  += e.hours;
+        map[mk].totalHours  += hours;
         if (!('isManager' in m) || !m.isManager) {
           map[mk].ratioOrders += e.orders;
-          // Checks & Unboxing hours count toward Preservation's ratio, same
-          // as the Week-total row.
-          const cuH = department === 'preservation'
-            ? checksUnboxingActuals.filter(r => r.week_of === w && r.member_name === m.name).reduce((acc, r) => acc + r.actual_hours, 0)
-            : 0;
-          map[mk].ratioHours  += e.hours + cuH;
+          map[mk].ratioHours  += hours;
         }
         if (!e.isActual && e.hours > 0) map[mk].allActual = false;
       });
@@ -358,7 +370,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
     const e = getEntry(w, name);
     if (e.hours > 0 || e.orders > 0) return true;
     if ((managerHours[`${w}:${name}`] ?? 0) > 0) return true;
-    return checksUnboxingActuals.some(r => r.week_of === w && r.member_name === name && r.actual_hours > 0);
+    return getCUHours(w, name) > 0;
   });
   const activeMembers = allDisplayMembers.filter(isActiveInRange);
   const inactiveCount = allDisplayMembers.length - activeMembers.length;
@@ -484,11 +496,14 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                     {visibleWeeks.map(w => {
                       const isPast = new Date(w + 'T12:00:00') <= today;
                       const e = getEntry(w, name);
-                      // Check if this member has checks_unboxing hours this week
-                      const cuHours = department === 'preservation'
-                        ? checksUnboxingActuals.filter(r => r.week_of === w && r.member_name === name).reduce((s, r) => s + r.actual_hours, 0)
-                        : 0;
-                      const hasData = e.hours > 0 || e.orders > 0;
+                      // Shown hours = Preservation + Checks & Unboxing; the
+                      // ratio uses the same total. Hover shows the split.
+                      const cuHours = getCUHours(w, name);
+                      const totalHours = e.hours + cuHours;
+                      const hoursTitle = cuHours > 0
+                        ? `${Math.round(e.hours * 100) / 100}h Preservation + ${Math.round(cuHours * 100) / 100}h Checks & Unboxing`
+                        : undefined;
+                      const hasData = totalHours > 0 || e.orders > 0;
                       const isMissing = isPast && !hasData;
                       const isSaving = savingKey === `${w}:${name}`;
                       const isFirst = monthStartWeeks.has(w);
@@ -515,15 +530,28 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                                   title="Auto-synced from production app — click to see the orders">synced</button>
                               )
                             )}
+                            <div className="relative group">
                             <input type="number" min="0" step="0.5"
-                              value={e.hours > 0 ? e.hours : ''}
+                              value={hoursDraft?.key === `${w}:${name}` ? hoursDraft.text : totalHours > 0 ? Math.round(totalHours * 100) / 100 : ''}
                               placeholder=""
-                              onChange={ev => handleEdit(w, name, 'hours', parseFloat(ev.target.value) || 0)}
-                              className={`hist-input w-full px-2 py-0.5 text-center text-[10px] bg-transparent border-none outline-none border-t border-t-slate-100 focus:bg-indigo-50 ${e.hours > 0 && e.isActual ? 'text-green-600 font-medium' : isMissing && !hasData ? 'text-amber-300' : 'text-slate-400'}`}
+                              // Edits change the Preservation part only; C&U
+                              // hours come from the hours upload.
+                              onChange={ev => {
+                                setHoursDraft({ key: `${w}:${name}`, text: ev.target.value });
+                                handleEdit(w, name, 'hours', Math.max(0, (parseFloat(ev.target.value) || 0) - cuHours));
+                              }}
+                              onBlur={() => setHoursDraft(null)}
+                              className={`hist-input w-full px-2 py-0.5 text-center text-[10px] bg-transparent border-none outline-none border-t border-t-slate-100 focus:bg-indigo-50 ${totalHours > 0 && (e.isActual || e.hours === 0) ? 'text-green-600 font-medium' : isMissing && !hasData ? 'text-amber-300' : 'text-slate-400'}`}
                             />
-                            {e.hours > 0 && e.orders > 0 && (
-                              <div className={`text-[9px] px-1 text-center ${(e.hours / e.orders) <= 1.0 ? 'text-green-700' : (e.hours / e.orders) <= 2.0 ? 'text-amber-700' : 'text-red-700'}`}>
-                                {(e.hours / e.orders).toFixed(2)} h/ord
+                            {hoursTitle && (
+                              <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-1 z-30 hidden group-hover:block whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[10px] font-normal text-white shadow-lg">
+                                {hoursTitle}
+                              </div>
+                            )}
+                            </div>
+                            {totalHours > 0 && e.orders > 0 && (
+                              <div className={`text-[9px] px-1 text-center ${(totalHours / e.orders) <= 1.0 ? 'text-green-700' : (totalHours / e.orders) <= 2.0 ? 'text-amber-700' : 'text-red-700'}`}>
+                                {(totalHours / e.orders).toFixed(2)} h/ord
                               </div>
                             )}
                             {cpo !== null && hasRates && (!member?.isManager || canSeeManagerCPO(name)) && (
@@ -539,11 +567,6 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                                 onChange={ev => setManagerHours(prev => ({ ...prev, [`${w}:${name}`]: parseFloat(ev.target.value) || 0 }))}
                                 className="hist-input w-full px-2 py-0.5 text-center text-[9px] bg-violet-50 border-none outline-none border-t border-t-violet-100 text-violet-500 placeholder:text-violet-300"
                               />
-                            )}
-                            {cuHours > 0 && (
-                              <div className="w-full px-2 py-0.5 text-center text-[9px] bg-teal-50 border-t border-t-teal-100 text-teal-600 font-medium" title="Checks & Unboxing hours">
-                                +{cuHours.toFixed(1)}h C&U
-                              </div>
                             )}
                           </div>
                         </td>
@@ -599,10 +622,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                     const m = members.find(m => m.name === name);
                     if (m?.isManager) return s;
                     // Include checks_unboxing hours in ratio calc for preservation
-                    const cuH = department === 'preservation'
-                      ? checksUnboxingActuals.filter(r => r.week_of === w && r.member_name === name).reduce((acc, r) => acc + r.actual_hours, 0)
-                      : 0;
-                    return s + getEntry(w, name).hours + cuH;
+                    return s + getEntry(w, name).hours + getCUHours(w, name);
                   }, 0);
                   const weekRatio = nonMgrOrders > 0 && nonMgrHours > 0 ? nonMgrHours / nonMgrOrders : null;
                   const { cost: totalCost, isActual: allActual } = weekTeamCost(w);
