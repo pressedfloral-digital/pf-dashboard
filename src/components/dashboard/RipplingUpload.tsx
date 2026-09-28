@@ -77,9 +77,12 @@ function parseHoursXLSX(file: File): Promise<HoursRow[]> {
       try {
         const wb   = XLSX.read(new Uint8Array(e.target!.result as ArrayBuffer), { type: 'array', cellDates: true });
         const rows = XLSX.utils.sheet_to_json<Record<string,unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: '' });
-        const depts = new Set(['Design','Preservation','Fulfillment','Resin','design','preservation','fulfillment','resin']);
+        // Keep Checks & Unboxing shifts — hours-upload files them as
+        // 'checks_unboxing', which counts toward Preservation everywhere.
+        const isProductionDept = (raw: string) =>
+          /design|preservation|fulfillment|resin|checks|unboxing/i.test(raw);
         const parsed = rows
-          .filter(r => r['Employee'] && r['Time entry clock in date'] && depts.has(String(r['Department (Worked)'] ?? '')))
+          .filter(r => r['Employee'] && r['Time entry clock in date'] && isProductionDept(String(r['Department (Worked)'] ?? '')))
           .map(r => ({
             employee:      String(r['Employee']).trim(),
             location:      String(r['Work location name'] ?? ''),
