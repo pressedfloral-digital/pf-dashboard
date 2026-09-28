@@ -365,6 +365,18 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
   const rowMembers = showInactive ? allDisplayMembers : activeMembers;
   const visibleMonths = [...new Set(visibleWeeks.map(getMonthKey))];
 
+  // Synced orders credited to someone who isn't on this roster and has no
+  // hours here (e.g. a lead who bulk-assigns Preservation to themselves in the
+  // app). They're rightly left out of this table and every rollup (see
+  // historicalsRows.ts), but say so — otherwise those orders just vanish.
+  const hiddenOrderRows = deptActuals
+    .filter(r =>
+      r.department === actualsDept &&
+      r.actual_orders > 0 &&
+      visibleWeeks.includes(r.week_of) &&
+      !allDisplayMembers.includes(r.member_name))
+    .sort((a, b) => b.week_of.localeCompare(a.week_of) || a.member_name.localeCompare(b.member_name));
+
 
   return (
     <div className="space-y-6">
@@ -377,6 +389,23 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
           syncedCount={syncedDetail.count}
           onClose={() => setSyncedDetail(null)}
         />
+      )}
+
+      {hiddenOrderRows.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 text-xs text-amber-800">
+          <p className="font-semibold">
+            {hiddenOrderRows.reduce((s, r) => s + r.actual_orders, 0)} synced orders aren&apos;t counted below
+          </p>
+          <p className="mt-0.5 text-amber-700">
+            The production app credits them to people who aren&apos;t on the {location} {department} roster and have no hours here.
+            Reassign them in the app to whoever did the work (then re-sync), or add the person to the roster.
+          </p>
+          <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+            {hiddenOrderRows.map(r => (
+              <li key={`${r.week_of}|${r.member_name}`}>{r.member_name} · {fmtWeek(r.week_of)} · {r.actual_orders}</li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {/* ── WEEKLY TABLE ── */}

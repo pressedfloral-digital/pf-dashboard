@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { DEPARTMENT_MANAGERS, deptMatches, STANDARD_WEEKLY_HOURS } from '@/lib/managers';
+import { samePayrollPerson } from '@/lib/payrollNames';
 
 export interface ActualRow {
   week_of:       string;
@@ -124,7 +125,7 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
   const resolveRate = useCallback((name: string, department: string, weekOf: string): { payType: 'hourly' | 'salary'; hourlyRate: number; annualSalary: number } | null => {
     const rows = rateHistory.filter(r =>
       r.department === department &&
-      r.full_name.trim().toLowerCase() === name.trim().toLowerCase() &&
+      samePayrollPerson(r.full_name, name) &&
       r.effective_date <= weekOf
     );
     if (rows.length === 0) return null;
@@ -285,7 +286,7 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
     return rows.map(row => {
       // Find weekly labor for this person+dept
       const laborRow = laborRows.find(r =>
-        r.employee === row.member_name &&
+        samePayrollPerson(r.employee, row.member_name) &&
         r.department.toLowerCase() === row.department.toLowerCase() &&
         r.week_of === row.week_of
       );
