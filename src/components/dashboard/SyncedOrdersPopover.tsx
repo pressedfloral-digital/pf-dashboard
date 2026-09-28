@@ -60,8 +60,12 @@ export function SyncedOrdersPopover({ name, department, start, end, syncedCount,
   // also holds another stage of, which the API lists if EITHER stage's date is
   // in range (see fetchAssignedOrderProducts). Comparing the count with the
   // single-stage products often settles exactly which multi-stage ones count.
-  const single = items?.filter(p => p.otherStages.length === 0) ?? [];
-  const multi = items?.filter(p => p.otherStages.length > 0) ?? [];
+  // Excluded products (e.g. Bloom Arrangement Recreation) are already taken
+  // out of the count, so set them aside before reconciling.
+  const notCountable = items?.filter(p => p.excluded) ?? [];
+  const countable = items?.filter(p => !p.excluded) ?? [];
+  const single = countable.filter(p => p.otherStages.length === 0);
+  const multi = countable.filter(p => p.otherStages.length > 0);
   const needed = syncedCount - single.length; // multi-stage products in the count
   let counted: AssignedOrderProduct[] = single;
   let possible: AssignedOrderProduct[] = [];
@@ -72,7 +76,7 @@ export function SyncedOrdersPopover({ name, department, start, end, syncedCount,
       excluded = multi;
       unexplained = needed < 0;
     } else if (needed >= multi.length) {
-      counted = items;
+      counted = countable;
       unexplained = needed > multi.length;
     } else {
       possible = multi;
@@ -119,6 +123,13 @@ export function SyncedOrdersPopover({ name, department, start, end, syncedCount,
                   title={`Not in this count (${excluded.length})`}
                   note={`${name} also did another stage of these during this ${period}; their ${department} work on them was on a different ${period}, so they're counted there instead.`}
                   products={excluded}
+                />
+              )}
+              {notCountable.length > 0 && (
+                <Section
+                  title={`Excluded product — never counted (${notCountable.length})`}
+                  note="These products don't count toward order counts, ratios or CPO."
+                  products={notCountable}
                 />
               )}
             </>
