@@ -45,12 +45,12 @@ async function getToken(): Promise<string> {
   return token;
 }
 
-export async function pfGet<T>(path: string): Promise<T> {
+export async function pfGet<T>(path: string, options?: { fresh?: boolean }): Promise<T> {
   const { url } = getApiConfig();
   const token = await getToken();
   const res = await fetch(`${url}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
-    next: { revalidate: 300 }, // 5-min cache
+    ...(options?.fresh ? { cache: "no-store" as const } : { next: { revalidate: 300 } }), // corrections must be visible immediately
   });
   if (!res.ok) throw new Error(`PF API GET ${path} → ${res.status}`);
   return res.json();
