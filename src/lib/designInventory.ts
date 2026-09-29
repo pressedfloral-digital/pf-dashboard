@@ -58,6 +58,76 @@ export interface QueueLine extends VariantParts {
   intakeDate:   string;                          // YYYY-MM-DD
   intakeSource: 'bouquetReceived' | 'eventDate'; // eventDate = no received date on record
   designableWeek: string;                        // Monday this line can first be designed
+  materials?: Materials;                         // filled in once the line is scheduled
+}
+
+// ── Backing & glass ──────────────────────────────────────────────────────────
+// Backing and glass are separate non-status add-on products on the order
+// ("Backing: Rectangle / 16x20 / Linen", "Glass: Rectangle / 16x20 / Art
+// Glass"), one per frame, identified only by shape and size — so each frame
+// is paired with an unused add-on in the same order with the same shape/size.
+// A few custom products carry them in their own variant instead.
+
+export interface OrderAddOn {
+  uuid:          string;
+  productTitle:  string;
+  variantTitle:  string | null;
+}
+
+// Products with no backing or glass at all.
+const NO_BACKING_GLASS = new Set(['Custom Ornament', 'Custom Mini Frame']);
+// Products whose own variant is "Color / Backing / Glass".
+const BACKING_GLASS_IN_VARIANT = new Set(['Custom Square Single', 'Custom Footprint Frame']);
+
+export const NOT_ON_ORDER = 'Not on order';
+
+export interface Materials {
+  sizeLabel: string;         // "16x20", or the product name when it has no size (Boutonniere, Custom Square Single…)
+  backing:   string | null;  // null = product has no backing
+  glass:     string | null;  // null = product has no glass
+}
+
+export function sizeLabel(line: Pick<QueueLine, 'product' | 'size'>): string {
+  if (line.size) return line.size;
+  if (line.product.startsWith('Boutonniere')) return 'Boutonniere';
+  return line.product === 'Pressed Frame' ? '—' : line.product;
+}
+
+function lastPart(v: string | null): string {
+  const parts = (v ?? '').split(' / ').map(p => p.trim()).filter(Boolean);
+  return parts[parts.length - 1] ?? '';
+}
+
+// Pairs every line with its backing and glass. `used` is shared across all
+// of one order's lines so two same-size frames never claim the same add-on.
+export function matchMaterials(line: QueueLine, addOns: OrderAddOn[], used: Set<string>): Materials {
+  const label = sizeLabel(line);
+  if (NO_BACKING_GLASS.has(line.product)) return { sizeLabel: label, backing: null, glass: null };
+
+  const opts = line.variant.split(' / ').map(p => p.trim());
+  if (BACKING_GLASS_IN_VARIANT.has(line.product)) {
+    return { sizeLabel: label, backing: opts[1] || NOT_ON_ORDER, glass: opts[2] || NOT_ON_ORDER };
+  }
+  if (line.product === 'Custom Paw Print Frame') {
+    return { sizeLabel: label, backing: NOT_ON_ORDER, glass: opts[1] || NOT_ON_ORDER };
+  }
+
+  const boutonniere = line.product.startsWith('Boutonniere');
+  const pick = (titles: string[]) => {
+    const match = addOns.find(a => {
+      if (used.has(a.uuid) || !titles.includes(a.productTitle)) return false;
+      const { shape, size } = parseVariant(a.variantTitle);
+      return (!line.shape || !shape || shape === line.shape) && (!line.size || !size || size === line.size);
+    });
+    if (!match) return NOT_ON_ORDER;
+    used.add(match.uuid);
+    return lastPart(match.variantTitle) || NOT_ON_ORDER;
+  };
+  return {
+    sizeLabel: label,
+    backing: pick(boutonniere ? ['Boutonniere Backing'] : ['Backing', 'Frame Backing']),
+    glass:   pick(boutonniere ? ['Boutonniere Glass']   : ['Glass', 'Frame Glass']),
+  };
 }
 
 export interface InventoryWeek {

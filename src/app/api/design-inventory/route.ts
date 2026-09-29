@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
-import { pfGetAll, fmtDate } from '@/lib/pf-api';
+import { pfGetAll, pfPost, fmtDate } from '@/lib/pf-api';
 import { supabase } from '@/lib/supabase';
 import { fetchAllRows } from '@/lib/fetchAllRows';
 import { isoMonday, getWeekMondays } from '@/lib/weekDates';
@@ -8,7 +8,7 @@ import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { projectDept, buildManagerHomeDept, type DesignRosterEntry, type HoursMap, type DailyHoursMap } from '@/lib/scheduleProjection';
 import {
   DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, NON_DESIGN_PRODUCTS, PRESERVATION_WEEKS,
-  parseVariant, mondayOf, addWeeks, scheduleLines, type QueueLine,
+  parseVariant, mondayOf, addWeeks, scheduleLines, matchMaterials, type QueueLine, type OrderAddOn,
 } from '@/lib/designInventory';
 
 export const maxDuration = 120;
@@ -16,6 +16,34 @@ export const maxDuration = 120;
 // Orders are placed around the event date, so anything still in
 // Preservation or Design was ordered within roughly this many months.
 const ORDER_LOOKBACK_MONTHS = 15;
+// PF API caps /OrderProducts/Search at 50 per page.
+const SEARCH_PAGE_SIZE = 50;
+const SEARCH_PAGE_BATCH = 10;
+// Concurrent /Orders/{uuid} requests (each cached 5 min by pfGetAll).
+const ORDER_DETAIL_BATCH = 20;
+
+// WeeklyReport has order numbers but not order UUIDs, which /Orders/{uuid}
+// (the only endpoint returning backing/glass add-ons) needs. Page through
+// every Preservation/Design line once — ~80 pages — rather than one search
+// per order.
+async function findOrderUuids(): Promise<Record<string, string>> {
+  const statuses = [...DESIGN_QUEUE_STATUSES, ...PRESERVATION_STATUSES];
+  type SearchPage = { totalPages: number; items: { orderUuid: string; shopifyOrderNumber: string | number }[] };
+  const search = (pageNumber: number) => pfPost<SearchPage>('/OrderProducts/Search', {
+    searchTerm: '', pageNumber, pageSize: SEARCH_PAGE_SIZE, orderProductStatusFilter: statuses,
+  });
+  const first = await search(1);
+  const pages = [first];
+  for (let p = 2; p <= first.totalPages; p += SEARCH_PAGE_BATCH) {
+    const batch = Array.from({ length: Math.min(SEARCH_PAGE_BATCH, first.totalPages - p + 1) }, (_, k) => search(p + k));
+    pages.push(...await Promise.all(batch));
+  }
+  const out: Record<string, string> = {};
+  pages.forEach(pg => pg.items.forEach(it => {
+    if (it.orderUuid) out[String(it.shopifyOrderNumber)] = it.orderUuid;
+  }));
+  return out;
+}
 
 interface WeeklyReportItem {
   orderNumber?: string | number;
@@ -49,6 +77,9 @@ export async function GET(req: NextRequest) {
       const last  = m === 0 ? today : new Date(today.getFullYear(), today.getMonth() - m + 1, 0);
       return `/OrderProducts/WeeklyReport?startDate=${fmtDate(first)}&endDate=${fmtDate(last)}`;
     });
+    // Started now so its ~80 search pages overlap the report pull below.
+    const orderUuidsPromise = findOrderUuids();
+    orderUuidsPromise.catch(() => {}); // awaited (and surfaced) in step 4
     const reports = await pfGetAll<WeeklyReportItem[]>(paths);
 
     const seen = new Set<string>();
@@ -142,6 +173,25 @@ export async function GET(req: NextRequest) {
 
     const { weeks, unscheduled } = scheduleLines(lines, capacityWeeks);
 
+    // ── 4. Backing & glass for every scheduled order ───────────────────────
+    const scheduledNums = new Set(weeks.flatMap(w => w.lines.map(l => l.orderNumber)));
+    const orderUuids = await orderUuidsPromise;
+    const addOnsByOrder: Record<string, OrderAddOn[]> = {};
+    const nums = [...scheduledNums].filter(n => orderUuids[n]);
+    for (let i = 0; i < nums.length; i += ORDER_DETAIL_BATCH) {
+      const batch = nums.slice(i, i + ORDER_DETAIL_BATCH);
+      const details = await pfGetAll<{ nonStatusOrderProducts?: OrderAddOn[] }>(batch.map(n => `/Orders/${orderUuids[n]}`));
+      details.forEach((d, j) => { if (d) addOnsByOrder[batch[j]] = d.nonStatusOrderProducts ?? []; });
+    }
+    const usedAddOns = new Set<string>();
+    let missingOrderDetail = 0;
+    for (const w of weeks) {
+      for (const line of w.lines) {
+        if (!addOnsByOrder[line.orderNumber]) missingOrderDetail++;
+        line.materials = matchMaterials(line, addOnsByOrder[line.orderNumber] ?? [], usedAddOns);
+      }
+    }
+
     return NextResponse.json({
       location,
       generatedAt: new Date().toISOString(),
@@ -154,6 +204,7 @@ export async function GET(req: NextRequest) {
         inPreservation: lines.filter(l => PRESERVATION_STATUSES.has(l.status)).length,
         intakeFromEventDate: lines.filter(l => l.intakeSource === 'eventDate').length,
         missingLocation,
+        missingOrderDetail,
       },
     });
   } catch (e) {
