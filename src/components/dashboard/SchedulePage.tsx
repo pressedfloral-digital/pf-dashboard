@@ -197,6 +197,11 @@ function fmtDate(iso: string): string {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+// "Dec 29" — compact form for projected completion dates in table cells.
+function fmtShortDate(iso: string): string {
+  return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 // Returns the past N week Monday ISO dates (most recent first)
 function pastWeeks(n: number): string[] {
   return Array.from({ length: n }, (_, i) => isoMonday(-(i + 1)));
@@ -6018,11 +6023,11 @@ export function SchedulePage({
                                 {totalToDesignDisplay !== null ? (
                                   <div className="space-y-0.5">
                                     <div className={`text-xs font-semibold ${schedUnclampedTotal !== null ? 'text-orange-700' : totalToDesignDisplay <= 10 ? 'text-green-700' : totalToDesignDisplay <= 18 ? 'text-amber-700' : 'text-red-700'}`}>
-                                      ~{totalToDesignDisplay} wks
+                                      ~{totalToDesignDisplay} wks <span className="font-normal text-slate-400">· {fmtShortDate(addDays(row.weekOf, totalToDesignDisplay * 7))}</span>
                                     </div>
                                     {totalToDesignPlannedDisplay !== null && totalToDesignPlannedDisplay !== totalToDesignDisplay && (
                                       <div className={`text-[10px] font-medium ${planUnclampedTotal !== null ? 'text-orange-600' : totalToDesignPlannedDisplay <= 10 ? 'text-emerald-600' : totalToDesignPlannedDisplay <= 18 ? 'text-amber-600' : 'text-red-600'}`}>
-                                        planned ~{totalToDesignPlannedDisplay} wks
+                                        planned ~{totalToDesignPlannedDisplay} wks · {fmtShortDate(addDays(row.weekOf, totalToDesignPlannedDisplay * 7))}
                                       </div>
                                     )}
                                   </div>
@@ -6032,7 +6037,7 @@ export function SchedulePage({
                               <td className="px-3 py-2 text-center">
                                 {totalWithFulfillment !== null ? (
                                   <span className={`text-xs font-semibold ${totalWithFulfillment <= 12 ? 'text-green-700' : totalWithFulfillment <= 20 ? 'text-amber-700' : 'text-red-700'}`}>
-                                    ~{totalWithFulfillment} wks
+                                    ~{totalWithFulfillment} wks <span className="font-normal text-slate-400">· {fmtShortDate(addDays(row.weekOf, totalWithFulfillment * 7))}</span>
                                   </span>
                                 ) : done ? <span className="text-xs text-slate-300">—</span>
                                          : <span className="text-xs text-slate-400">TBD</span>}
