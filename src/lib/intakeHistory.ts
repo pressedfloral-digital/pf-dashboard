@@ -222,3 +222,47 @@ export function computeRollingMultiplier(actualIntakeByWeek: Record<string, numb
   }
   return ratios.length > 0 ? ratios.reduce((s, r) => s + r, 0) / ratios.length : DEFAULT_INTAKE_MULTIPLIER;
 }
+
+// Inputs for one location's projected "bouquets received" — the company-wide
+// growth multiplier + UT/GA % split from the Growth & Distribution tab
+// (schedule_settings location='Global'), applied to company intake for the
+// same week last year.
+export interface IntakeProjectionInputs {
+  companyActualIntakeByWeek: Record<string, number>;
+  companyMultipliers:        Record<string, number>;
+  rollingCompanyMultiplier:  number;
+  distributionPct:           Record<string, { ut: number; ga: number }>;
+  // Seasonal + planned-move-aware default Utah % for weeks with no manual
+  // split (see /api/distribution-estimate), 50 when there's no signal.
+  suggestedUtPct:            (weekOf: string) => number;
+}
+
+// (company last year × company multiplier) × this location's % — undefined
+// when there's no company intake for the same week last year.
+export function projectLocationIntake(location: 'Utah' | 'Georgia', weekOf: string, inputs: IntakeProjectionInputs): number | undefined {
+  const companyLastYear = inputs.companyActualIntakeByWeek[addDays(weekOf, -364)];
+  if (companyLastYear === undefined) return undefined;
+  const multiplier = inputs.companyMultipliers[weekOf] ?? inputs.rollingCompanyMultiplier;
+  // Manual override (Growth & Distribution tab) wins; otherwise the
+  // seasonal + planned-reassignment-aware suggestion.
+  const utPct = inputs.distributionPct[weekOf]?.ut ?? inputs.suggestedUtPct(weekOf);
+  const pct = location === 'Utah' ? utPct : 100 - utPct;
+  return Math.round(companyLastYear * multiplier * pct / 100);
+}
+
+// The "Bouquets received" estimate for one location and week, exactly as
+// Queue & Turnaround shows it: the location's manual weeklyEstimates
+// override, else the last-year × multiplier projection, else its avgIntake.
+// Shared with /api/labor-forecast so Preservation's labor cost is staffed
+// to the same volume the Scheduling page expects.
+export function estimateLocationBouquets(
+  location:        'Utah' | 'Georgia',
+  weekOf:          string,
+  weeklyEstimates: Record<string, { ut: number; ga: number }>,
+  avgIntake:       number,
+  inputs:          IntakeProjectionInputs,
+): number {
+  const manual = weeklyEstimates[weekOf];
+  if (manual !== undefined) return location === 'Utah' ? manual.ut : manual.ga;
+  return projectLocationIntake(location, weekOf, inputs) ?? avgIntake;
+}

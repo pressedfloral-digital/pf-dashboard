@@ -5,8 +5,8 @@
 
 import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks } from '@/lib/managers';
 import { RATIO_TARGETS, type RatioTier } from '@/lib/ratioTargets';
-import type { WageDept } from '@/lib/wageTargets';
-import { resolveWeekHours, resolveWeekPayHours } from '@/lib/scheduleResolution';
+import { WAGE_TARGETS, type WageDept, type WageLocation } from '@/lib/wageTargets';
+import { resolveWeekHours, resolveWeekPayHours, isWithinEmployment } from '@/lib/scheduleResolution';
 
 
 const VALID_ROLES = new Set<string>(['specialist', 'senior', 'master']);
@@ -123,8 +123,11 @@ export interface MemberCostLine {
   payHours:  number;   // hours paid for (hourly only; 0 for salary)
   rate:      number;   // hourly rate, or weekly salary for 'salary'/'fixed-salary'
   cost:      number;
-  basis:     'hourly' | 'salary' | 'fixed-salary' | 'elsewhere' | 'none';
+  // 'specialist-fill' = the hypothetical specialist hours projectPreservation-
+  // FromBouquets adds for bouquets the managers' minimum week can't cover.
+  basis:     'hourly' | 'salary' | 'fixed-salary' | 'elsewhere' | 'none' | 'specialist-fill';
   isManager: boolean;
+  bouquets?: number;   // bouquets assigned (bouquet-based Preservation only)
 }
 
 export function projectDept(
@@ -271,4 +274,116 @@ export function projectDept(
   }
 
   return { hours: totalHours, production: totalProduction, laborCost: totalCost, ratioHours, ratioProduction };
+}
+
+// ── Preservation staffed to bouquets received ─────────────────────────────────
+// The admin Labor Cost forecast staffs Preservation to the bouquets expected
+// in (see estimateLocationBouquets in intakeHistory.ts) instead of to the
+// saved schedule, i.e. it assumes the schedule gets filled out, or cut back,
+// to match that volume:
+//   1. Each Preservation manager is paid a guaranteed MANAGER_MIN_WEEKLY_HOURS
+//      a week at their roster rate (or their salary), every week they're
+//      employed, whatever the volume. Those hours are filled first, at their
+//      own roster ratio, and they cover the first bouquets of the week.
+//   2. Every remaining bouquet is done by a hypothetical specialist at the
+//      Preservation specialist target ratio and the location's specialist
+//      wage (RATIO_TARGETS / WAGE_TARGETS).
+// Managers are the roster's isManager members whose home department (per
+// Rippling) is Preservation, the same test projectDept uses to decide whose
+// pay belongs here. The specialist ratio is hours per bouquet, so it already
+// covers checks & unboxing time the same way actual Preservation ratios do.
+export const MANAGER_MIN_WEEKLY_HOURS = 35;
+
+export function projectPreservationFromBouquets(
+  roster:          Record<string, PresRosterEntry>,
+  weekOfs:         string[],
+  bouquetsByWeek:  Record<string, number>,
+  location:        WageLocation,
+  managerHomeDept: Map<string, Set<string>>,
+  breakdown?:      MemberCostLine[],
+): {
+  bouquets: number; hours: number; laborCost: number;
+  // Same bouquets, but hourly managers paid only for the hours those
+  // bouquets need (capped at the minimum) — the low end of what
+  // Preservation could cost if their hours were fully flexible.
+  flexibleCost: number;
+  managerIdleHours: number;   // hourly managers' paid minimum not needed for bouquets
+} {
+  const specialistRatio = RATIO_TARGETS.Preservation.specialist;
+  const specialistRate  = WAGE_TARGETS[location].Preservation.specialist;
+
+  const managers = Object.values(roster ?? {}).filter(m => {
+    if (!m?.name || !m.isManager || (m as { _removed?: boolean })._removed) return false;
+    const homeDepts = managerHomeDept.get(`${location}|${m.name.trim().toLowerCase()}`);
+    return homeDepts === undefined || homeDepts.has('Preservation');
+  });
+  const lines = new Map<PresRosterEntry, MemberCostLine>(managers.map(m => [m, {
+    name: m.name, hours: 0, payHours: 0, rate: 0, cost: 0, basis: 'none', isManager: true, bouquets: 0,
+  }]));
+  const fill: MemberCostLine = {
+    name: 'Specialist fill', hours: 0, payHours: 0, rate: specialistRate, cost: 0, basis: 'specialist-fill', isManager: false, bouquets: 0,
+  };
+
+  let totalBouquets = 0, totalHours = 0, totalCost = 0, flexibleCost = 0, managerIdleHours = 0;
+  for (const w of weekOfs) {
+    const weekBouquets = Math.max(0, bouquetsByWeek[w] ?? 0);
+    totalBouquets += weekBouquets;
+    let remaining = weekBouquets;
+
+    for (const m of managers) {
+      // Prorated for a week they start or leave mid-week (Mon–Fri days employed).
+      const employment = { weekIso: w, startDate: m.startDate, endDate: m.endDate };
+      const daysEmployed = [0, 1, 2, 3, 4].filter(d => isWithinEmployment(d, employment)).length;
+      if (daysEmployed === 0) continue;
+      const minHours = MANAGER_MIN_WEEKLY_HOURS * daysEmployed / 5;
+      const ratio = m.ratio > 0 ? m.ratio : RATIO_TARGETS.Preservation[normalizeRole(m.role)];
+      const handled = Math.min(remaining, minHours / ratio);
+      remaining -= handled;
+
+      const line = lines.get(m)!;
+      line.bouquets! += handled;
+      line.hours     += handled * ratio;
+      if (m.payType === 'salary' && (m.annualSalary ?? 0) > 0) {
+        const weekly = m.annualSalary! / 52;
+        Object.assign(line, { basis: 'salary', rate: weekly, cost: line.cost + weekly * daysEmployed / 5 });
+        totalCost += weekly * daysEmployed / 5;
+        flexibleCost += weekly * daysEmployed / 5;   // a salary doesn't flex
+        totalHours += minHours;
+      } else if ((m.rate ?? 0) > 0) {
+        Object.assign(line, { basis: 'hourly', rate: m.rate, payHours: line.payHours + minHours, cost: line.cost + minHours * m.rate! });
+        totalCost += minHours * m.rate!;
+        flexibleCost += handled * ratio * m.rate!;
+        managerIdleHours += minHours - handled * ratio;
+        totalHours += minHours;
+      }
+    }
+
+    const specialistHours = remaining * specialistRatio;
+    fill.bouquets! += remaining;
+    fill.hours     += specialistHours;
+    fill.payHours  += specialistHours;
+    fill.cost      += specialistHours * specialistRate;
+    totalHours     += specialistHours;
+    totalCost      += specialistHours * specialistRate;
+    flexibleCost   += specialistHours * specialistRate;
+  }
+
+  // Salaried managers kept only in managers.ts (never on the roster) —
+  // fixed pay, same fallback as projectDept, but no bouquet capacity since
+  // there's no roster ratio for them.
+  const onRoster = new Set(managers.map(m => m.name.trim().toLowerCase()));
+  const offRoster = DEPARTMENT_MANAGERS.filter(mgr => !onRoster.has(mgr.name.trim().toLowerCase()));
+  const offRosterCost = getSalaryMgrCostForWeeks(offRoster, location, 'Preservation', weekOfs);
+  totalCost    += offRosterCost;
+  flexibleCost += offRosterCost;
+
+  if (breakdown) {
+    for (const line of lines.values()) if (line.cost > 0 || line.hours > 0) breakdown.push(line);
+    for (const mgr of offRoster) {
+      const cost = getSalaryMgrCostForWeeks([mgr], location, 'Preservation', weekOfs);
+      if (cost > 0) breakdown.push({ name: mgr.name, hours: 0, payHours: 0, rate: (mgr.annualSalary / 52) / mgr.departments.length, cost, basis: 'fixed-salary', isManager: true });
+    }
+    if (fill.cost > 0) breakdown.push(fill);
+  }
+  return { bouquets: totalBouquets, hours: totalHours, laborCost: totalCost, flexibleCost, managerIdleHours };
 }
