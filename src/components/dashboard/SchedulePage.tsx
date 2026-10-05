@@ -23,6 +23,7 @@ import { useVisibleManagerCPO } from '@/hooks/useVisibleManagerCPO';
 import {
   addDays, UTAH_HISTORICAL_INTAKE, GEORGIA_HISTORICAL_INTAKE,
   computeActualIntakeByWeek, computeCombinedIntakeByWeek, computeRollingMultiplier,
+  projectLocationIntake, estimateLocationBouquets, type IntakeProjectionInputs,
   type TeamActualRow,
 } from '@/lib/intakeHistory';
 import { useGrowthSettings } from '@/hooks/useGrowthSettings';
@@ -4523,11 +4524,13 @@ export function SchedulePage({
     const utPct = distributionPct[weekOf]?.ut ?? getSuggestedUtPct(weekOf);
     return location === 'Utah' ? utPct : 100 - utPct;
   }
+  // Shared with /api/labor-forecast (Preservation's labor cost is staffed to
+  // this same volume) — see projectLocationIntake/estimateLocationBouquets.
+  const intakeProjectionInputs: IntakeProjectionInputs = {
+    companyActualIntakeByWeek, companyMultipliers, rollingCompanyMultiplier, distributionPct, suggestedUtPct: getSuggestedUtPct,
+  };
   function getProjectedIntake(weekOf: string): number | undefined {
-    const companyLastYear = companyActualIntakeByWeek[addDays(weekOf, -364)];
-    if (companyLastYear === undefined) return undefined;
-    const companyEstimate = companyLastYear * getCompanyMultiplier(weekOf);
-    return Math.round(companyEstimate * getLocationPct(weekOf) / 100);
+    return projectLocationIntake(location, weekOf, intakeProjectionInputs);
   }
 
   // The exact "Bouquets received" estimate shown per week on Design's Queue &
@@ -4536,12 +4539,7 @@ export function SchedulePage({
   // stream, so both tabs can never disagree about how many bouquets are
   // expected in a given week.
   const bouquetsReceivedByWeek = useMemo(() => Array.from({ length: WEEKS }, (_, w) => {
-    const weekIso = isoMonday(w);
-    const weVal = weeklyEstimates[weekIso];
-    if (weVal !== undefined) return location === 'Utah' ? weVal.ut : weVal.ga;
-    const projected = getProjectedIntake(weekIso);
-    if (projected !== undefined) return projected;
-    return avgIntake;
+    return estimateLocationBouquets(location, isoMonday(w), weeklyEstimates, avgIntake, intakeProjectionInputs);
   }), [weeklyEstimates, location, companyActualIntakeByWeek, companyMultipliers, distributionPct, distributionEstimates, avgIntake]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Graduating cohorts (preservation → designable, per week) ────────────────

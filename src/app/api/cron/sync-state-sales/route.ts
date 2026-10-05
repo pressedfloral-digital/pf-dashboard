@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { revalidateTag } from 'next/cache';
 import { supabase } from '@/lib/supabase';
-import { STATE_SALES_CACHE_TAG } from '@/app/api/distribution-estimate/route';
+import { STATE_SALES_CACHE_TAG } from '@/lib/distributionEstimate';
 
 export const maxDuration = 300;
 

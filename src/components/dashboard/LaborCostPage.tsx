@@ -6,7 +6,9 @@ import type { MemberCostLine } from '@/lib/scheduleProjection';
 
 // Admin-only: monthly labor cost per department (see /api/labor-forecast).
 //  - Forecast: projected from the Scheduling rosters/schedules and each
-//    person's pay, for this month and ahead.
+//    person's pay, for this month and ahead — except Preservation, which is
+//    staffed to the bouquets expected in (managers' 35h minimum first, then
+//    specialist hours for the rest).
 //  - Planned vs actual: past months' projection next to what payroll
 //    actually paid, with the variance, per department and per person.
 
@@ -31,7 +33,22 @@ const BASIS_NOTE: Record<MemberCostLine['basis'], string> = {
   'fixed-salary': 'salaried manager (fixed)',
   elsewhere:      'manager — paid in home dept',
   none:           'no pay rate on roster',
+  'specialist-fill': 'hypothetical specialist hours for bouquets beyond the managers\' minimum',
 };
+
+const fmtN = (n: number) => Math.round(n).toLocaleString('en-US');
+
+// Per-person tooltip in the Forecast table.
+function memberTitle(c: MemberCostLine): string {
+  if (c.basis === 'specialist-fill') {
+    return `${fmtN(c.bouquets ?? 0)} bouquets → ${fmtH(c.payHours)} × $${c.rate.toFixed(2)}/h (specialist ratio & wage)`;
+  }
+  if (c.bouquets !== undefined) {
+    const pay = c.basis === 'hourly' ? ` · ${fmtH(c.payHours)} minimum paid × $${c.rate.toFixed(2)}/h` : c.basis === 'salary' ? ' · salary' : '';
+    return `Preservation manager${pay} · covers ${fmtN(c.bouquets)} bouquets (${fmtH(c.hours)} at their roster ratio)`;
+  }
+  return `${BASIS_NOTE[c.basis]}${c.basis === 'hourly' ? ` · ${fmtH(c.payHours)} paid × $${c.rate.toFixed(2)}/h` : ''}${c.hours > 0 ? ` · ${fmtH(c.hours)} production` : ''}`;
+}
 
 function locationsFor(filter: LocFilter): ('Utah' | 'Georgia')[] {
   return filter === 'All' ? ['Utah', 'Georgia'] : [filter];
@@ -46,6 +63,7 @@ function deptFor(month: MonthForecast, dept: typeof DEPTS[number], filter: LocFi
     const d = month.locations[loc].depts[dept];
     out.cost  += d.cost;
     out.hours += d.hours;
+    if (d.bouquets !== undefined) out.bouquets = (out.bouquets ?? 0) + d.bouquets;
     for (const m of d.members) {
       out.members.push(filter === 'All' ? { ...m, name: `${m.name} (${loc === 'Utah' ? 'UT' : 'GA'})` } : m);
     }
@@ -66,7 +84,7 @@ export default function LaborCostPage() {
   const [inferredDates, setInferredDates] = useState<InferredDate[]>([]);
   const [error, setError]     = useState<string | null>(null);
   const [view, setView]       = useState<'forecast' | 'history'>('forecast');
-  const [horizon, setHorizon] = useState<6 | 12>(6);
+  const [horizon, setHorizon] = useState<8 | 12>(8);
   const [range, setRange]     = useState<3 | 6 | 12>(6);
   const [loc, setLoc]         = useState<LocFilter>('All');
   const [includeGm, setIncludeGm] = useState(true);
@@ -98,6 +116,7 @@ export default function LaborCostPage() {
         key: dept as RowKey,
         perMonth: perMonth.map(p => p.cost),
         hours: perMonth.map(p => p.hours),
+        bouquets: perMonth.map(p => p.bouquets),
         total: perMonth.reduce((s, p) => s + p.cost, 0),
         members,
       };
@@ -160,7 +179,7 @@ export default function LaborCostPage() {
         </div>
         <div className="flex gap-1.5">
           {view === 'forecast'
-            ? ([6, 12] as const).map(h => (
+            ? ([8, 12] as const).map(h => (
               <button key={h} onClick={() => setHorizon(h)}
                 className={`px-3 py-1 text-xs rounded-full font-medium transition-colors ${
                   horizon === h ? 'bg-slate-800 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
@@ -207,6 +226,8 @@ export default function LaborCostPage() {
         </div>
       )}
 
+      <PreservationRangeChart months={visible} loc={loc} />
+
       {/* ── Department × month table ─────────────────────────────────────── */}
       <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
@@ -236,13 +257,20 @@ export default function LaborCostPage() {
                         <span className="inline-block w-3 text-slate-400">{isOpen ? '▾' : '▸'}</span>
                         <span className={`inline-block w-2 h-2 rounded-full mr-2 ${DEPT_BAR[row.key]}`} />
                         {row.key}
-                        <span className="ml-1.5 text-[10px] text-slate-400">{row.members.length} people</span>
+                        <span className="ml-1.5 text-[10px] text-slate-400">
+                          {row.bouquets.some(b => b !== undefined) ? 'staffed to bouquets' : `${row.members.length} people`}
+                        </span>
                       </td>
-                      {row.perMonth.map((v, i) => (
-                        <td key={i} className="px-3 py-2.5 text-right tabular-nums text-slate-700" title={`${fmtH(row.hours[i])} scheduled production`}>
-                          {v > 0 ? fmt$(v) : <span className="text-slate-300">—</span>}
-                        </td>
-                      ))}
+                      {row.perMonth.map((v, i) => {
+                        const b = row.bouquets[i];
+                        return (
+                          <td key={i} className="px-3 py-2.5 text-right tabular-nums text-slate-700"
+                            title={b !== undefined ? `${fmtN(b)} bouquets expected · ${fmtH(row.hours[i])} staffed` : `${fmtH(row.hours[i])} scheduled production`}>
+                            {v > 0 ? fmt$(v) : <span className="text-slate-300">—</span>}
+                            {b !== undefined && <div className="text-[10px] text-slate-400 whitespace-nowrap">{fmtN(b)} bouquets</div>}
+                          </td>
+                        );
+                      })}
                       <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-slate-800 bg-slate-50">{fmt$(row.total)}</td>
                     </tr>
                     {isOpen && row.members.map(mem => (
@@ -250,7 +278,7 @@ export default function LaborCostPage() {
                         <td className="sticky left-0 z-10 bg-slate-50 pl-11 pr-4 py-1.5 text-slate-600 whitespace-nowrap">{mem.name}</td>
                         {mem.cells.map((c, i) => (
                           <td key={i} className="px-3 py-1.5 text-right tabular-nums"
-                            title={c ? `${BASIS_NOTE[c.basis]}${c.basis === 'hourly' ? ` · ${fmtH(c.payHours)} paid × $${c.rate.toFixed(2)}/h` : ''}${c.hours > 0 ? ` · ${fmtH(c.hours)} production` : ''}` : ''}>
+                            title={c ? memberTitle(c) : ''}>
                             {!c ? <span className="text-slate-200">—</span>
                               : c.basis === 'none' ? <span className="text-amber-600">no rate</span>
                               : c.basis === 'elsewhere' ? <span className="text-slate-400 italic">home dept</span>
@@ -304,7 +332,10 @@ export default function LaborCostPage() {
       </div>
 
       <p className="text-[11px] text-slate-400 leading-relaxed">
-        Same math as the Est. months in All KPIs; Preservation includes check/unboxing hours. Hours come from each person&apos;s Scheduling standard weekly template plus any This Week
+        <span className="font-medium text-slate-500">Preservation</span> is staffed to the bouquets expected in each week (the same estimate as Queue &amp; Turnaround;
+        actual bouquets received for weeks already over), not to its schedule: each Preservation manager is paid at least 35 hours a week at their roster rate, and
+        those hours cover the first bouquets at their roster ratio. Every bouquet after that is a specialist at the specialist ratio and wage (1.0 h per bouquet).
+        Design, Fulfillment and Resin use the same math as the Est. months in All KPIs: hours come from each person&apos;s Scheduling standard weekly template plus any This Week
         overrides, limited to their employment dates. Hourly pay = paid hours × roster rate, where paid holidays are still paid and hourly managers are
         paid for their total schedule. Salaried pay = annual ÷ 52 per week. A week counts toward the month its Monday falls in, so 5-Monday months cost more.
         Excludes G&amp;A, bonuses, payroll taxes, and benefits. Click a department to see each person.
@@ -590,6 +621,166 @@ function PlannedVsActual({ months, loc, range, includeGm, inferredDates }: {
         shows up in the plan too. A month still waiting on payroll is compared only for the weeks already paid.
         <span className="text-rose-600"> Red</span> = paid more than scheduled; <span className="text-emerald-600">green</span> = paid less. Click a department to see each person, sorted by largest difference.
       </p>
+    </div>
+  );
+}
+
+// ─── Preservation cost range ──────────────────────────────────────────────────
+// Per month, the range Preservation could cost for the bouquets expected:
+// low = managers paid only the hours those bouquets need (fully flexible),
+// high = the forecast above (managers' guaranteed 35h/week), with what the
+// saved Preservation schedule costs marked for reference.
+
+const RANGE_LOW  = '#22c55e';   // validated pair (dataviz validate_palette.js)
+const RANGE_HIGH = '#166534';
+const RANGE_REF  = '#475569';   // neutral reference marker, distinct shape
+
+interface RangePoint { label: string; flexible: number; minimum: number; schedule: number; bouquets: number; idle: number }
+
+function niceCeil(v: number): { max: number; step: number } {
+  const raw = Math.max(1, v) / 4;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw)!;
+  return { max: Math.ceil(v / step) * step, step };
+}
+
+function PreservationRangeChart({ months, loc }: { months: MonthForecast[]; loc: LocFilter }) {
+  const [hover, setHover] = useState<number | null>(null);
+
+  const points: RangePoint[] = useMemo(() => months.map(m => {
+    const p: RangePoint = { label: m.label, flexible: 0, minimum: 0, schedule: 0, bouquets: 0, idle: 0 };
+    for (const l of locationsFor(loc)) {
+      const d = m.locations[l].depts.Preservation;
+      if (!d.range) continue;
+      p.flexible += d.range.flexible;
+      p.minimum  += d.range.minimum;
+      p.schedule += d.range.schedule;
+      p.idle     += d.range.managerIdleHours;
+      p.bouquets += d.bouquets ?? 0;
+    }
+    return p;
+  }), [months, loc]);
+
+  if (points.length === 0 || points.every(p => p.minimum === 0 && p.schedule === 0)) return null;
+
+  const { max, step } = niceCeil(Math.max(...points.flatMap(p => [p.flexible, p.minimum, p.schedule])));
+  const ticks = Array.from({ length: Math.round(max / step) + 1 }, (_, i) => i * step);
+  const pct = (v: number) => `${(v / max) * 100}%`;
+  const totals = points.reduce((t, p) => ({
+    flexible: t.flexible + p.flexible, minimum: t.minimum + p.minimum, schedule: t.schedule + p.schedule, idle: t.idle + p.idle, bouquets: t.bouquets + p.bouquets,
+  }), { flexible: 0, minimum: 0, schedule: 0, idle: 0, bouquets: 0 });
+  const fmtK = (n: number) => n >= 1000 ? `$${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : fmt$(n);
+
+  return (
+    <div className="bg-white border border-slate-100 rounded-xl px-4 py-4">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <div className="text-sm font-semibold text-slate-700">Preservation cost range</div>
+          <div className="text-xs text-slate-500 mt-0.5">
+            {fmt$(totals.flexible)} – {fmt$(totals.minimum)} over {points.length} months for {fmtN(totals.bouquets)} bouquets
+            {totals.idle > 0 && <> · up to {fmtN(totals.idle)} paid manager hours not needed for bouquets</>}
+          </div>
+        </div>
+        <div className="flex items-center gap-4 text-[11px] text-slate-600 flex-wrap">
+          <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ background: RANGE_LOW }} />Flexible managers (low)</span>
+          <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ background: RANGE_HIGH }} />35h manager minimum (forecast)</span>
+          <span className="flex items-center gap-1.5"><span className="w-3.5 h-[3px] rounded-full" style={{ background: RANGE_REF }} />Current schedule</span>
+        </div>
+      </div>
+
+      <div className="mt-4 flex">
+        {/* y-axis labels */}
+        <div className="relative w-12 h-48 shrink-0 text-[10px] text-slate-400 tabular-nums">
+          {ticks.map(t => (
+            <div key={t} className="absolute right-2 -translate-y-1/2" style={{ bottom: pct(t) }}>{fmtK(t)}</div>
+          ))}
+        </div>
+        <div className="relative flex-1 h-48" onMouseLeave={() => setHover(null)}>
+          {ticks.map(t => (
+            <div key={t} className="absolute inset-x-0 h-px bg-slate-100" style={{ bottom: pct(t) }} />
+          ))}
+          <div className="absolute inset-0 flex">
+            {points.map((p, i) => {
+              const lo = Math.min(p.flexible, p.minimum), hi = Math.max(p.flexible, p.minimum);
+              return (
+                <div key={p.label} className="relative flex-1 cursor-default" onMouseEnter={() => setHover(i)}>
+                  {hover === i && <div className="absolute inset-y-0 inset-x-1 bg-slate-50 rounded" />}
+                  {/* range band */}
+                  <div className="absolute left-1/2 -translate-x-1/2 w-5 rounded"
+                    style={{ bottom: pct(lo), height: `max(2px, ${pct(hi - lo)})`, background: `${RANGE_LOW}33` }} />
+                  {/* end dots (2px surface ring) */}
+                  <div className="absolute left-1/2 -translate-x-1/2 translate-y-1/2 w-3 h-3 rounded-full ring-2 ring-white"
+                    style={{ bottom: pct(p.flexible), background: RANGE_LOW }} />
+                  <div className="absolute left-1/2 -translate-x-1/2 translate-y-1/2 w-3 h-3 rounded-full ring-2 ring-white"
+                    style={{ bottom: pct(p.minimum), background: RANGE_HIGH }} />
+                  {/* current schedule marker */}
+                  {p.schedule > 0 && (
+                    <div className="absolute left-1/2 -translate-x-1/2 translate-y-1/2 w-8 h-[3px] rounded-full ring-2 ring-white"
+                      style={{ bottom: pct(p.schedule), background: RANGE_REF }} />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {hover !== null && (() => {
+            const p = points[hover];
+            const align = hover === 0 ? 'left-0' : hover === points.length - 1 ? 'right-0' : '-translate-x-1/2';
+            const left  = hover === 0 || hover === points.length - 1 ? undefined : `${((hover + 0.5) / points.length) * 100}%`;
+            return (
+              <div className={`absolute bottom-full mb-2 z-20 pointer-events-none bg-white border border-slate-200 rounded-lg shadow-lg px-3 py-2 text-[11px] text-slate-600 whitespace-nowrap ${align}`}
+                style={left ? { left } : undefined}>
+                <div className="font-semibold text-slate-700 mb-1">{p.label} · {fmtN(p.bouquets)} bouquets</div>
+                <div className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: RANGE_HIGH }} />35h minimum <span className="ml-auto pl-4 tabular-nums text-slate-800">{fmt$(p.minimum)}</span></div>
+                <div className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: RANGE_LOW }} />Flexible managers <span className="ml-auto pl-4 tabular-nums text-slate-800">{fmt$(p.flexible)}</span></div>
+                <div className="flex items-center gap-1.5"><span className="w-2.5 h-[3px] rounded-full" style={{ background: RANGE_REF }} />Current schedule <span className="ml-auto pl-4 tabular-nums text-slate-800">{fmt$(p.schedule)}</span></div>
+                {p.idle > 0.5 && <div className="mt-1 text-slate-400">{fmtN(p.idle)} paid manager hours not needed ({fmt$(p.minimum - p.flexible)})</div>}
+              </div>
+            );
+          })()}
+        </div>
+      </div>
+      {/* month labels */}
+      <div className="flex pl-12 mt-1.5">
+        {points.map(p => <div key={p.label} className="flex-1 text-center text-[10px] text-slate-500">{p.label}</div>)}
+      </div>
+
+      {/* table view of the same numbers */}
+      <details className="mt-3 text-xs">
+        <summary className="cursor-pointer text-slate-500 hover:text-slate-700">Show the numbers</summary>
+        <div className="overflow-x-auto mt-2">
+          <table className="w-full tabular-nums">
+            <thead>
+              <tr className="text-slate-500 border-b border-slate-100">
+                <th className="text-left font-medium py-1.5 pr-3"></th>
+                {points.map(p => <th key={p.label} className="text-right font-medium py-1.5 px-2 whitespace-nowrap">{p.label}</th>)}
+                <th className="text-right font-semibold py-1.5 pl-3 text-slate-700">Total</th>
+              </tr>
+            </thead>
+            <tbody className="text-slate-600">
+              {([
+                ['Bouquets expected',            (p: RangePoint) => fmtN(p.bouquets), fmtN(totals.bouquets)],
+                ['35h manager minimum (forecast)', (p: RangePoint) => fmt$(p.minimum), fmt$(totals.minimum)],
+                ['Flexible managers (low)',      (p: RangePoint) => fmt$(p.flexible), fmt$(totals.flexible)],
+                ['Difference',                   (p: RangePoint) => fmt$(p.minimum - p.flexible), fmt$(totals.minimum - totals.flexible)],
+                ['Paid manager hours not needed', (p: RangePoint) => fmtH(p.idle), fmtH(totals.idle)],
+                ['Current schedule',             (p: RangePoint) => fmt$(p.schedule), fmt$(totals.schedule)],
+              ] as const).map(([label, f, total]) => (
+                <tr key={label} className="border-b border-slate-50">
+                  <td className="py-1.5 pr-3 text-slate-500 whitespace-nowrap">{label}</td>
+                  {points.map(p => <td key={p.label} className="text-right py-1.5 px-2">{f(p)}</td>)}
+                  <td className="text-right py-1.5 pl-3 font-semibold text-slate-700">{total}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-[11px] text-slate-400 leading-relaxed">
+          Both ends staff the same bouquets: managers&apos; hours go first at their roster ratio, then specialists at 1.0 h per bouquet and the specialist wage.
+          The low end pays hourly managers only for the hours those bouquets need (salaries don&apos;t flex); the forecast pays their 35-hour minimum every week.
+          Current schedule is what the saved Preservation schedule would cost, for comparison.
+        </p>
+      </details>
     </div>
   );
 }

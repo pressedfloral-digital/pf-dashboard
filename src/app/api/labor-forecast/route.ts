@@ -2,11 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
 import { DEPARTMENT_MANAGERS, GENERAL_MANAGERS, getGmCostForWeeks, getSalaryMgrCostSplitForWeeks, isActiveGm } from '@/lib/managers';
-import { getWeekMondays } from '@/lib/weekDates';
+import { getWeekMondays, isoMonday } from '@/lib/weekDates';
 import { fetchAllRows } from '@/lib/fetchAllRows';
 import { filterToHistoricalsRows } from '@/lib/historicalsRows';
+import { isNonProductionStaff } from '@/lib/nonProductionStaff';
+import { getDistributionEstimates, type WeekDistributionEstimate } from '@/lib/distributionEstimate';
 import {
-  projectDept, buildManagerHomeDept,
+  computeActualIntakeByWeek, computeCombinedIntakeByWeek, computeRollingMultiplier, estimateLocationBouquets,
+  type IntakeProjectionInputs, type TeamActualRow,
+} from '@/lib/intakeHistory';
+import {
+  projectDept, projectPreservationFromBouquets, buildManagerHomeDept,
   type DesignRosterEntry, type PresRosterEntry, type HoursMap, type DailyHoursMap, type MemberCostLine,
 } from '@/lib/scheduleProjection';
 
@@ -15,6 +21,12 @@ import {
 //    (schedule_settings) and each person's pay on the roster — the same
 //    projectDept math as All KPIs' "Est." months, including Preservation's
 //    check/unboxing hours (see payOnlyDailyHours in scheduleProjection.ts).
+//    Exception — Forecast months staff Preservation to the bouquets expected
+//    in rather than to its schedule (see projectPreservationFromBouquets):
+//    managers' guaranteed 35h first, then specialist hours for the rest.
+//    Bouquets are the same per-location estimate Queue & Turnaround shows
+//    (estimateLocationBouquets), or what actually came in for a week that's
+//    already over.
 //  - Actual (past + current months): what payroll actually paid, from
 //    weekly_labor_cost, plus salaried managers (never in that upload).
 //
@@ -46,6 +58,15 @@ export interface DeptForecast {
   cost:    number;
   hours:   number;
   members: MemberCostLine[];
+  // Set when Preservation was staffed to bouquets instead of the schedule:
+  // bouquets expected that month (hours are then staffed hours, not
+  // scheduled production).
+  bouquets?: number;
+  // Also only when staffed to bouquets — the range Preservation could cost
+  // for those bouquets: `flexible` pays hourly managers only the hours the
+  // bouquets need, `minimum` is `cost` (their guaranteed 35h/week), and
+  // `schedule` is what the saved Preservation schedule costs, for reference.
+  range?: { flexible: number; minimum: number; schedule: number; managerIdleHours: number };
 }
 
 export interface LocationMonthForecast {
@@ -143,6 +164,9 @@ function projectLocationMonth(
   // from payroll — see the header comment.
   payrollSpan?: PayrollSpan,
   inferred?: Map<string, InferredDate>,
+  // Forecast months only: bouquets expected per week — Preservation is then
+  // staffed to these instead of projected from its schedule.
+  presBouquetsByWeek?: Record<string, number>,
 ): LocationMonthForecast {
   const get = (key: string) => settings.find(r => r.location === location && r.key === key)?.value ?? {};
 
@@ -163,6 +187,16 @@ function projectLocationMonth(
   const depts = {} as Record<Dept, DeptForecast>;
   for (const dept of DEPTS) {
     const [rawRoster, hours, daily, payOnly] = inputs[dept];
+    if (dept === 'Preservation' && presBouquetsByWeek) {
+      const members: MemberCostLine[] = [];
+      const r = projectPreservationFromBouquets(rawRoster as Record<string, PresRosterEntry>, weekOfs, presBouquetsByWeek, location as Loc, managerHomeDept, members);
+      const scheduled = projectDept(rawRoster, hours, daily, weekOfs, location, dept, holidaySet, 'estimate', mgrTotalHours, managerHomeDept, undefined, undefined, payOnly);
+      depts[dept] = {
+        cost: r.laborCost, hours: r.hours, members, bouquets: r.bouquets,
+        range: { flexible: r.flexibleCost, minimum: r.laborCost, schedule: scheduled.laborCost, managerIdleHours: r.managerIdleHours },
+      };
+      continue;
+    }
     let roster = rawRoster;
     if (payrollSpan && weekOfs.length > 0) {
       const monthStart = weekOfs[0], monthEnd = addDays(weekOfs[weekOfs.length - 1], 6);
@@ -279,7 +313,11 @@ export async function GET(req: NextRequest) {
     const [y, m] = businessMonthStart.split('-').map(Number);
     const rangeStart = isoDate(new Date(y, m - 1 - back, 1, 12));
 
-    const [settingsRes, empRes, snapRes, laborRows, actualRowsRaw] = await Promise.all([
+    // Furthest week any forecast month reaches, for the distribution estimate.
+    const lastForecastDay = isoDate(new Date(y, m - 1 + months, 0, 12));
+    const weeksAhead = Math.ceil((new Date(lastForecastDay + 'T12:00:00').getTime() - thisMonday.getTime()) / (7 * 86400000)) + 2;
+
+    const [settingsRes, empRes, snapRes, laborRows, actualRowsRaw, presIntakeRows, presTeamRows, distribution] = await Promise.all([
       supabase.from('schedule_settings').select('location,key,value'),
       supabase.from('rippling_employees').select('full_name,location,department,title').eq('active', true),
       // Current month only: prefer its locked month-end snapshot, same as
@@ -295,6 +333,14 @@ export async function GET(req: NextRequest) {
         ? fetchAllRows<ActualRow>((from, to) => supabase.from('team_member_week_actuals')
             .select('week_of,member_name,department,location,actual_hours,actual_orders').gte('week_of', rangeStart).range(from, to))
         : Promise.resolve([] as ActualRow[]),
+      // Bouquets received history, for Preservation's bouquet-based forecast —
+      // the same two sources /api/actuals gives Queue & Turnaround.
+      fetchAllRows<{ location: string; week_of: string; received: number }>((from, to) => supabase.from('preservation_week_actuals')
+        .select('location,week_of,received').range(from, to)),
+      fetchAllRows<TeamActualRow & { location: string }>((from, to) => supabase.from('team_member_week_actuals')
+        .select('location,department,week_of,member_name,actual_hours,actual_orders').eq('department', 'preservation').range(from, to)),
+      // Same fallback as useDistributionEstimate: no estimate -> 50/50.
+      getDistributionEstimates(weeksAhead, 6).catch(() => ({ estimates: {} as Record<string, WeekDistributionEstimate>, yearsOfHistory: 0 })),
     ]);
     if (settingsRes.error) throw settingsRes.error;
 
@@ -322,6 +368,37 @@ export async function GET(req: NextRequest) {
     }
     const inferred = new Map<string, InferredDate>();
 
+    // Bouquets expected per location per week (see the header comment).
+    const globalSetting = <T,>(key: string, dflt: T): T => (liveSettings.find(r => r.location === 'Global' && r.key === key)?.value as T) ?? dflt;
+    const intakeByLoc = {} as Record<Loc, Record<string, number>>;
+    for (const loc of ['Utah', 'Georgia'] as const) {
+      const pres: Record<string, number> = {};
+      for (const r of presIntakeRows) if (r.location === loc) pres[r.week_of] = r.received;
+      const team = presTeamRows.filter(r => r.location === loc && !isNonProductionStaff(r.member_name));
+      intakeByLoc[loc] = computeActualIntakeByWeek(loc, team, pres);
+    }
+    const companyActualIntakeByWeek = computeCombinedIntakeByWeek(intakeByLoc.Utah, intakeByLoc.Georgia);
+    const intakeInputs: IntakeProjectionInputs = {
+      companyActualIntakeByWeek,
+      companyMultipliers:       globalSetting<Record<string, number>>('companyMultipliers', {}),
+      rollingCompanyMultiplier: computeRollingMultiplier(companyActualIntakeByWeek, isoMonday),
+      distributionPct:          globalSetting<Record<string, { ut: number; ga: number }>>('distributionPct', {}),
+      suggestedUtPct:           w => distribution.estimates[w]?.utPct ?? 50,
+    };
+    const thisMondayIso = isoDate(thisMonday);
+    function bouquetsFor(loc: Loc, weekOfs: string[]): Record<string, number> {
+      const locSetting = <T,>(key: string, dflt: T): T => (liveSettings.find(r => r.location === loc && r.key === key)?.value as T) ?? dflt;
+      // Older rows stored a flat number (Utah's); see useScheduleSettings.
+      const rawEstimates = locSetting<Record<string, number | { ut: number; ga: number }>>('weeklyEstimates', {});
+      const weeklyEstimates = Object.fromEntries(Object.entries(rawEstimates).map(([w, v]) => [w, typeof v === 'number' ? { ut: v, ga: 0 } : v]));
+      const avgIntake = locSetting<number>('avgIntake', 45);
+      return Object.fromEntries(weekOfs.map(w => [w,
+        w < thisMondayIso && intakeByLoc[loc][w] !== undefined
+          ? intakeByLoc[loc][w]
+          : estimateLocationBouquets(loc, w, weeklyEstimates, avgIntake, intakeInputs),
+      ]));
+    }
+
     const result: MonthForecast[] = [];
     for (let i = -back; i < months; i++) {
       const first = new Date(y, m - 1 + i, 1, 12);
@@ -332,9 +409,12 @@ export async function GET(req: NextRequest) {
       const settings = isSnapshot ? snapSettings : liveSettings;
       const when: MonthForecast['when'] = i < 0 ? 'past' : i === 0 ? 'current' : 'future';
 
+      // Forecast months staff Preservation to bouquets; past months stay
+      // schedule-based (only Planned vs actual shows them).
+      const bouquets = (loc: Loc) => when === 'past' ? undefined : bouquetsFor(loc, weekOfs);
       const planned = {
-        Utah:    projectLocationMonth(settings, 'Utah',    weekOfs, holidaySet, managerHomeDept),
-        Georgia: projectLocationMonth(settings, 'Georgia', weekOfs, holidaySet, managerHomeDept),
+        Utah:    projectLocationMonth(settings, 'Utah',    weekOfs, holidaySet, managerHomeDept, undefined, undefined, bouquets('Utah')),
+        Georgia: projectLocationMonth(settings, 'Georgia', weekOfs, holidaySet, managerHomeDept, undefined, undefined, bouquets('Georgia')),
       };
 
       let actual: MonthForecast['actual'];
