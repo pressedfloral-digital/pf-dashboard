@@ -13,7 +13,7 @@ import {
   type KpiDept, type KpiLocation, type KpiState,
 } from '@/hooks/useKpiMetrics';
 import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
-import { getMondayDate, isoMonday, getWeekLabel, getMonthKey, getISOWeekNumber } from '@/lib/weekDates';
+import { getMondayDate, isoMonday, isoMondayFromDate, getWeekLabel, getMonthKey, getISOWeekNumber } from '@/lib/weekDates';
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
 import { distributeHours, resolveDayHours, resolveWeekHours, resolveWeekHoursBoth, isWithinEmployment, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
 import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './BloomUpdateModal';
@@ -98,7 +98,12 @@ const PRES_OVERSTAFF_PCT = 0.10;
 // the May 25 intake week — Utah has 10 orders left in it, Georgia has 42):
 // solved directly against live Supabase actuals for the baseline that leaves
 // exactly that many remaining in the May 25 cohort. Utah +20, Georgia +96.
-const DESIGNED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: 2286.5, Georgia: 2642 };
+// Utah recalibrated Oct 5, 2026 (design team confirmed working 7/1 orders, i.e.
+// mid Jun 29 intake week; ~110 of its 155 assumed left): −191. Logged design
+// output had run ~25–30/wk ahead of real FIFO progress since Aug 17, pushing
+// the modeled front to Jul 13. Superseded per-location by the
+// designQueueFront schedule setting whenever one is set from the Queue tab.
+const DESIGNED_BASELINE: Record<'Utah' | 'Georgia', number> = { Utah: 2095.5, Georgia: 2642 };
 
 // Same idea as DESIGNED_BASELINE, one stage downstream: an offset added to
 // actual logged Fulfillment output so the cumulative total lands on the
@@ -4643,14 +4648,34 @@ export function SchedulePage({
     });
     const totalFromHistory = designableCohorts.reduce((s, c) => s + c.count, 0);
     // Designed-to-date = baseline + sum of actual frames from design historicals
-    const designedActualsTotal = teamActuals
-      .filter(r => r.department === 'design')
-      .reduce((s, r) => s + (r.actual_orders ?? 0), 0);
-    const alreadyDesigned = Math.max(0, Math.min(totalFromHistory,
-      (DESIGNED_BASELINE[location] ?? 0) + designedActualsTotal));
+    const designedByWeek: Record<string, number> = {};
+    teamActuals.filter(r => r.department === 'design').forEach(r => {
+      designedByWeek[r.week_of] = (designedByWeek[r.week_of] ?? 0) + (r.actual_orders ?? 0);
+    });
+    const designedActualsTotal = Object.values(designedByWeek).reduce((s, n) => s + n, 0);
+    // A manager-confirmed queue front (set below the Queue & turnaround table)
+    // replaces the hardcoded baseline: solve for the baseline that leaves
+    // exactly `remaining` in the front week as of when it was set, then let
+    // design output logged since then advance it. Only output logged before
+    // the set moment is netted out — weeks before setWeek in full, plus
+    // whatever setWeek itself already had — so later edits to older
+    // Historicals weeks can't shift the anchored front, and intake edits are
+    // picked up live instead of being baked into a stored number.
+    const front = settings.designQueueFront;
+    let designedBaseline = DESIGNED_BASELINE[location] ?? 0;
+    if (front) {
+      const intakeThroughFront = designableCohorts
+        .filter(c => c.weekOf <= front.weekOf)
+        .reduce((s, c) => s + c.count, 0);
+      const loggedAtSet = Object.entries(designedByWeek)
+        .filter(([w]) => w < front.setWeek)
+        .reduce((s, [, n]) => s + n, 0) + front.setWeekLogged;
+      designedBaseline = intakeThroughFront - front.remaining - loggedAtSet;
+    }
+    const alreadyDesigned = Math.max(0, Math.min(totalFromHistory, designedBaseline + designedActualsTotal));
     const remainingQueue = Math.max(0, totalFromHistory - alreadyDesigned);
-    return { designableCohorts, inPreservationCohorts, totalFromHistory, alreadyDesigned, remainingQueue };
-  }, [location, presActuals, teamActuals]);
+    return { designableCohorts, inPreservationCohorts, totalFromHistory, alreadyDesigned, remainingQueue, designedBaseline, designedByWeek };
+  }, [location, presActuals, teamActuals, settings.designQueueFront]);
 
   // ── Designed cohorts (orders that have left Design, waiting on Fulfillment) ──
   // Complement of cohortIntake's own trim: whichever cohorts (or partial
@@ -4987,7 +5012,7 @@ export function SchedulePage({
       byWeek[r.week_of] = (byWeek[r.week_of] ?? 0) + (r.actual_orders ?? 0);
     });
     const weeksSorted = Object.keys(byWeek).sort();
-    let cumulative = DESIGNED_BASELINE[location] ?? 0;
+    let cumulative = cohortIntake.designedBaseline;
     const cumulativeAtWeek: { weekOf: string; cumulative: number }[] = [];
     for (const w of weeksSorted) {
       cumulative += byWeek[w];
@@ -5002,7 +5027,7 @@ export function SchedulePage({
       cumBefore += c.count;
     }
     return result;
-  }, [teamActuals, ffCohortIntake, location]);
+  }, [teamActuals, ffCohortIntake, cohortIntake.designedBaseline]);
 
   // Single shared source for "how long, start to finish, will/did this
   // cohort spend in Fulfillment" — used by both Design's "Total w/
@@ -5785,6 +5810,64 @@ export function SchedulePage({
                       weeks — the underlying math is the same either way. Based on {location} design backlog of{' '}
                       {cohortIntake.remainingQueue.toLocaleString()} orders (from actual bouquets received) and scheduled capacity.
                     </p>
+                    {(() => {
+                      // Where the FIFO trim currently lands — shown so a drifted
+                      // model is obvious at a glance, and as the starting value
+                      // when someone corrects it.
+                      let trim = cohortIntake.alreadyDesigned;
+                      let modeled: { weekOf: string; remaining: number } | null = null;
+                      for (const c of cohortIntake.designableCohorts) {
+                        if (trim >= c.count) { trim -= c.count; continue; }
+                        modeled = { weekOf: c.weekOf, remaining: Math.round(c.count - trim) };
+                        break;
+                      }
+                      const front = settings.designQueueFront;
+                      const setFront = (weekOf: string, remaining: number) => update('designQueueFront', {
+                        weekOf, remaining: Math.max(0, remaining),
+                        setWeek: isoMonday(0),
+                        setWeekLogged: cohortIntake.designedByWeek[isoMonday(0)] ?? 0,
+                      });
+                      return (
+                        <div className="flex items-center gap-1.5 flex-wrap mt-2 text-xs text-slate-500">
+                          <span>Currently designing intake week of</span>
+                          <input
+                            type="date"
+                            value={front?.weekOf ?? modeled?.weekOf ?? ''}
+                            onChange={e => {
+                              if (!e.target.value) return;
+                              setFront(isoMondayFromDate(new Date(e.target.value + 'T12:00:00')), front?.remaining ?? modeled?.remaining ?? 0);
+                            }}
+                            title="Any date in the intake week Design is actually working — rounded to that week's Monday"
+                            className="border border-slate-200 rounded px-2 py-0.5 text-xs text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300"
+                          />
+                          <span>with</span>
+                          <input
+                            type="number" min={0} step={1}
+                            value={front?.remaining ?? modeled?.remaining ?? ''}
+                            onChange={e => {
+                              const weekOf = front?.weekOf ?? modeled?.weekOf;
+                              if (weekOf) setFront(weekOf, parseInt(e.target.value) || 0);
+                            }}
+                            title="How many of that week's bouquets are still undesigned right now"
+                            className="w-16 border border-slate-200 rounded px-1 py-0.5 text-center text-xs text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300"
+                          />
+                          <span>left</span>
+                          {front ? (
+                            <>
+                              <span className="text-[10px] text-slate-400">
+                                · confirmed wk of {fmtDate(front.setWeek)}, advancing with logged design output since
+                              </span>
+                              <button onClick={() => update('designQueueFront', null)}
+                                className="text-[10px] text-slate-400 underline hover:text-slate-600">
+                                use calibrated estimate
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-[10px] text-slate-400">· estimated from logged design output — correct it if Design is elsewhere</span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     {(() => {
