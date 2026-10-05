@@ -111,6 +111,13 @@ export interface ScheduleSettings {
   // are excluded from the turnaround math and surfaced separately for
   // investigation instead.
   resinQueueFrontWeek: string | null;
+  // Manually-confirmed front of the Design queue — replaces the hardcoded
+  // DESIGNED_BASELINE calibration in SchedulePage. weekOf is the ISO Monday
+  // of the intake week being worked and remaining how many of its bouquets
+  // are still undesigned, as of setWeek (ISO Monday of the week it was set);
+  // setWeekLogged is how much design output setWeek had already logged at
+  // that moment, so only output logged afterward advances the front.
+  designQueueFront: { weekOf: string; remaining: number; setWeek: string; setWeekLogged: number } | null;
 }
 
 const DEFAULTS: ScheduleSettings = {
@@ -135,13 +142,14 @@ const DEFAULTS: ScheduleSettings = {
   resinHours: {},
   resinDailyHours: {},
   resinQueueFrontWeek: null,
+  designQueueFront: null,
 };
 
 const KEYS: (keyof ScheduleSettings)[] = [
   'designHours','designRoster','presHours','presRoster','presSettings',
   'ffHours','ffRoster','masterAvailability','avgIntake','newHireHours','ffNewHireHours','presNewHireHours','weeklyEstimates','weeklyMultipliers',
   'mgrTotalHours','mgrTotalDailyHours','designDailyHours','ffDailyHours','presDailyHours','presCheckHours',
-  'resinRoster','resinHours','resinDailyHours','resinQueueFrontWeek',
+  'resinRoster','resinHours','resinDailyHours','resinQueueFrontWeek','designQueueFront',
 ];
 
 export function useScheduleSettings(location: 'Utah' | 'Georgia') {
