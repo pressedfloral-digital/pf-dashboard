@@ -99,64 +99,9 @@ function parseHoursXLSX(file: File): Promise<HoursRow[]> {
   });
 }
 
-// ─── Payroll CPO Upload ────────────────────────────────────────────────────────
-
-interface PayrollRow { employee: string; department: string; location: string; title: string; hourlyRate: number|null; salary: number|null; grossPay: number; periodStart: string; periodEnd: string; checkDateWeek: string; payRunStatus: string; }
-
-function parsePayrollXLSX(file: File): Promise<PayrollRow[]> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      try {
-        const wb   = XLSX.read(new Uint8Array(e.target!.result as ArrayBuffer), { type: 'array', cellDates: true });
-        const rows = XLSX.utils.sheet_to_json<Record<string,unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: '' });
-        const parsed = rows
-          .filter(r => {
-            const emp  = String(r['Employee'] ?? '');
-            const dept = String(r['Department - Most Specific'] ?? '');
-            const loc  = String(r['Work location'] ?? '');
-            return emp !== 'All' && emp !== '' && dept !== 'All' && loc !== 'All';
-          })
-          .map(r => ({
-            employee:      String(r['Employee']).trim(),
-            department:    String(r['Department - Most Specific'] ?? ''),
-            location:      String(r['Work location'] ?? ''),
-            title:         String(r['Title'] ?? '').trim(),
-            hourlyRate:    parseFloat(String(r['Hourly Rate'] ?? '0')) || null,
-            salary:        parseFloat(String(r['Salary'] ?? '0')) || null,
-            grossPay:      parseFloat(String(r['Employee gross pay'] ?? '0')) || 0,
-            periodStart:   excelDate(r['Start date']),
-            periodEnd:     excelDate(r['End date']),
-            checkDateWeek: String(r['Pay run check date (Year and Week)'] ?? ''),
-            payRunStatus:  String(r['Pay run status'] ?? ''),
-          }))
-          .map(r => {
-            // Some rows have no start/end date (e.g. bonus-only rows)
-            // Infer a 2-week period from the check date week string if available
-            if (!r.periodStart && r.checkDateWeek) {
-              // checkDateWeek looks like "Jan 26 2026 - Feb 01 2026"
-              // Use it as both start and end as a fallback
-              const parts = r.checkDateWeek.split(' - ');
-              if (parts.length === 2) {
-                const tryParse = (s: string) => { const d = new Date(s); return isNaN(d.getTime()) ? '' : d.toISOString().split('T')[0]; };
-                r.periodStart = tryParse(parts[0]) || r.periodStart;
-                r.periodEnd   = tryParse(parts[1]) || r.periodEnd;
-              }
-            }
-            return r;
-          })
-          .filter(r => r.grossPay > 0 && r.periodStart && r.periodEnd);
-        resolve(parsed);
-      } catch (err) { reject(err); }
-    };
-    reader.onerror = reject;
-    reader.readAsArrayBuffer(file);
-  });
-}
-
 // ─── Upload Card ───────────────────────────────────────────────────────────────
 
-type UploadType = 'employees' | 'hours' | 'payroll' | 'weeklylabor' | 'bonus';
+type UploadType = 'employees' | 'hours' | 'weeklylabor' | 'bonus';
 
 interface UploadCardProps {
   type:        UploadType;
@@ -179,7 +124,6 @@ function UploadCard({ type, title, description, frequency, accentColor }: Upload
       let rows: unknown[] = [];
       if (type === 'employees')    rows = await parseEmployeesXLSX(file);
       if (type === 'hours')          rows = await parseHoursXLSX(file);
-      if (type === 'payroll')        rows = await parsePayrollXLSX(file);
       if (type === 'weeklylabor')   rows = await parseWeeklyLaborXLSX(file);
       if (type === 'bonus')          rows = await parseMonthlyBonusXLSX(file);
       setPreview(rows);
@@ -194,8 +138,7 @@ function UploadCard({ type, title, description, frequency, accentColor }: Upload
       const endpoint = type === 'employees'  ? '/api/admin/employees-upload'
                      : type === 'hours'      ? '/api/admin/hours-upload'
                      : type === 'weeklylabor' ? '/api/admin/weekly-labor-upload'
-                     : type === 'bonus'       ? '/api/admin/monthly-bonus-upload'
-                     : '/api/admin/payroll-upload';
+                     : '/api/admin/monthly-bonus-upload';
       const bodyKey  = type === 'employees' ? 'employees' : 'rows';
       const res  = await fetch(endpoint, {
         method: 'POST',
@@ -243,7 +186,6 @@ function UploadCard({ type, title, description, frequency, accentColor }: Upload
               <span className="font-semibold">{previewCount}</span> rows ready to upload
               {type === 'employees' && ` (${new Set((preview as EmployeeRow[]).map(r => r.fullName)).size} people)`}
               {type === 'hours'     && ` (${new Set((preview as HoursRow[]).map(r => r.employee)).size} people, ${new Set((preview as HoursRow[]).map(r => r.date.slice(0,7))).size} months)`}
-              {type === 'payroll'   && ` (${new Set((preview as PayrollRow[]).map(r => r.employee)).size} people — ${fmt$((preview as PayrollRow[]).reduce((s,r) => s + r.grossPay, 0))} total gross)`}
               {type === 'weeklylabor' && ` (${new Set((preview as WeeklyLaborRow[]).map(r => r.employee)).size} people, ${new Set((preview as WeeklyLaborRow[]).map(r => r.weekOf)).size} weeks — ${fmt$((preview as WeeklyLaborRow[]).reduce((s,r) => s + r.grossPay, 0))} total)`}
               {type === 'bonus' && (() => {
                 const rows = preview as MonthlyBonusRow[];
@@ -278,11 +220,6 @@ function UploadCard({ type, title, description, frequency, accentColor }: Upload
                 <p><span className="font-medium">{String(result.people)}</span> people · <span className="font-medium">{String(result.upserted)}</span> week entries updated</p>
                 {result.weeks && <p>Weeks: {fmtDate(String((result.weeks as {from:string}).from))} – {fmtDate(String((result.weeks as {to:string}).to))}</p>}
                 <p>Total hours: <span className="font-medium">{String(result.totalHours)}</span></p>
-              </>}
-              {type === 'payroll' && <>
-                <p><span className="font-medium">{String(result.people)}</span> people · <span className="font-medium">{String(result.inserted)}</span> pay records</p>
-                {result.dateRange && <p>Period: {fmtDate(String((result.dateRange as {from:string}).from))} – {fmtDate(String((result.dateRange as {to:string}).to))}</p>}
-                <p>Total gross: <span className="font-medium">{fmt$(Number(result.totalGross))}</span></p>
               </>}
               {type === 'bonus' && <>
                 <p><span className="font-medium">{String(result.inserted)}</span> bonus records saved
@@ -337,13 +274,6 @@ export function PayrollUploadPanel() {
         accentColor="bg-blue-50 text-blue-600"
       />
 
-      <UploadCard
-        type="payroll"
-        title="Payroll CPO Upload"
-        description='Upload "App dashboard upload for CPO" from Rippling. Actual gross pay per person per pay period — used for green CPO in historicals.'
-        frequency="bi-weekly"
-        accentColor="bg-green-50 text-green-700"
-      />
       <UploadCard
         type="weeklylabor"
         title="Weekly Labor Cost by Location & Department"
