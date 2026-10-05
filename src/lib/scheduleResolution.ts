@@ -117,7 +117,7 @@ export interface ResolveWeekHoursParams {
 // them on a holiday. The two public exports below are thin views onto this,
 // so most callers (capacity/turnaround math, which only ever wanted
 // production hours) don't need to change at all beyond passing `holidays`.
-function resolveWeekHoursBoth(params: ResolveWeekHoursParams): { hours: number; payHours: number } {
+export function resolveWeekHoursBoth(params: ResolveWeekHoursParams): { hours: number; payHours: number } {
   const { dailyMap, weekKey, legacyWeeklyValue, standardWeeklyHours, hardcodedDefault, employment, holidays } = params;
   const daily = dailyMap[weekKey];
   if (daily !== undefined) {
