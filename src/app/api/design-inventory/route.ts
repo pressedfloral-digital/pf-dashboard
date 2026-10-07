@@ -7,9 +7,12 @@ import { isoMonday, getWeekMondays } from '@/lib/weekDates';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { projectDept, buildManagerHomeDept, type DesignRosterEntry, type HoursMap, type DailyHoursMap } from '@/lib/scheduleProjection';
 import {
-  DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, NON_DESIGN_PRODUCTS, PRESERVATION_WEEKS,
+  DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, isNonDesignProduct, PRESERVATION_WEEKS,
   parseVariant, mondayOf, addWeeks, scheduleLines, matchMaterials, type QueueLine, type OrderAddOn,
 } from '@/lib/designInventory';
+import { loadKatana } from '@/lib/katana';
+import { buildOrderPlan, type OrderPlan } from '@/lib/katanaPlan';
+import { MAX_LEAD_WEEKS } from '@/lib/supplierLeadTimes';
 
 export const maxDuration = 120;
 
@@ -59,7 +62,9 @@ interface WeeklyReportItem {
 
 // ── GET /api/design-inventory?location=Utah&through=2026-12-31 ───────────────
 // Every order line Design is scheduled to work on each week from this week
-// through `through` (default: Dec 31 of this year), filled oldest-intake-first
+// through `through` (default: Dec 31 of this year, or the longest supplier
+// lead time from now if that's later, so it reaches into next year from about
+// November on), filled oldest-intake-first
 // against the saved Design schedule's capacity.
 export async function GET(req: NextRequest) {
   const { userId } = await auth();
@@ -67,7 +72,9 @@ export async function GET(req: NextRequest) {
 
   const location = req.nextUrl.searchParams.get('location') === 'Georgia' ? 'Georgia' : 'Utah';
   const thisWeek = isoMonday(0);
-  const through  = req.nextUrl.searchParams.get('through') ?? `${thisWeek.slice(0, 4)}-12-31`;
+  const leadHorizon = addWeeks(thisWeek, MAX_LEAD_WEEKS);
+  const yearEnd = `${thisWeek.slice(0, 4)}-12-31`;
+  const through  = req.nextUrl.searchParams.get('through') ?? (leadHorizon > yearEnd ? leadHorizon : yearEnd);
 
   try {
     // ── 1. Order lines in Preservation or Design ───────────────────────────
@@ -80,6 +87,10 @@ export async function GET(req: NextRequest) {
     // Started now so its ~80 search pages overlap the report pull below.
     const orderUuidsPromise = findOrderUuids();
     orderUuidsPromise.catch(() => {}); // awaited (and surfaced) in step 4
+    // Katana recipes + stock load alongside; a Katana failure only drops the
+    // order list, not the schedule.
+    const katanaPromise = loadKatana(location);
+    katanaPromise.catch(() => {}); // awaited in step 5
     const reports = await pfGetAll<WeeklyReportItem[]>(paths);
 
     const seen = new Set<string>();
@@ -89,7 +100,7 @@ export async function GET(req: NextRequest) {
       for (const item of items ?? []) {
         const status = item.status ?? '';
         if (!DESIGN_QUEUE_STATUSES.has(status) && !PRESERVATION_STATUSES.has(status)) continue;
-        if (NON_DESIGN_PRODUCTS.has(item.productTitle ?? '')) continue;
+        if (isNonDesignProduct(item.productTitle ?? '')) continue;
         const num = String(item.orderNumber ?? item.shopifyOrderNumber ?? '');
         if (!num) continue;
         const key = `${num}|${item.variantTitle ?? ''}`;
@@ -192,8 +203,19 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // ── 5. What to order: recipes × schedule vs Katana stock ───────────────
+    let orderPlan: OrderPlan | null = null;
+    let katanaError: string | null = null;
+    try {
+      orderPlan = buildOrderPlan(await katanaPromise, location, weeks, thisWeek);
+    } catch (e) {
+      katanaError = String(e);
+    }
+
     return NextResponse.json({
       location,
+      orderPlan,
+      katanaError,
       generatedAt: new Date().toISOString(),
       designedThisWeek,
       weeks: weeks.map((w, i) => ({ ...w, scheduled: Math.round(capacityWeeks[i].scheduled) })),

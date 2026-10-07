@@ -20,6 +20,12 @@ export const PRESERVATION_STATUSES = new Set(['bouquetReceived', 'checkedOn', 'p
 // counting them would eat design capacity and pad the inventory list.
 export const NON_DESIGN_PRODUCTS = new Set(['Floral Preservation Deposit', 'Pre-paid Overnight Shipping Label']);
 
+// Gift cards (digital or physical) sometimes ride on an order in a Design
+// status, but there's nothing to build.
+export function isNonDesignProduct(productTitle: string): boolean {
+  return NON_DESIGN_PRODUCTS.has(productTitle) || /gift ?card/i.test(productTitle);
+}
+
 const SHAPES = new Set(['Rectangle', 'Oval', 'Square', 'Round', 'Circle', 'Heart', 'Arch']);
 const SIZE_RE = /^\d+(\.\d+)?x\d+(\.\d+)?$/;
 
@@ -85,6 +91,9 @@ export interface Materials {
   sizeLabel: string;         // "16x20", or the product name when it has no size (Boutonniere, Custom Square Single…)
   backing:   string | null;  // null = product has no backing
   glass:     string | null;  // null = product has no glass
+  // The matched add-on products themselves, for looking up their Katana recipes.
+  backingAddOn?: OrderAddOn;
+  glassAddOn?:   OrderAddOn;
 }
 
 export function sizeLabel(line: Pick<QueueLine, 'product' | 'size'>): string {
@@ -119,14 +128,17 @@ export function matchMaterials(line: QueueLine, addOns: OrderAddOn[], used: Set<
       const { shape, size } = parseVariant(a.variantTitle);
       return (!line.shape || !shape || shape === line.shape) && (!line.size || !size || size === line.size);
     });
-    if (!match) return NOT_ON_ORDER;
-    used.add(match.uuid);
-    return lastPart(match.variantTitle) || NOT_ON_ORDER;
+    if (match) used.add(match.uuid);
+    return match;
   };
+  const backingAddOn = pick(boutonniere ? ['Boutonniere Backing'] : ['Backing', 'Frame Backing']);
+  const glassAddOn   = pick(boutonniere ? ['Boutonniere Glass']   : ['Glass', 'Frame Glass']);
   return {
     sizeLabel: label,
-    backing: pick(boutonniere ? ['Boutonniere Backing'] : ['Backing', 'Frame Backing']),
-    glass:   pick(boutonniere ? ['Boutonniere Glass']   : ['Glass', 'Frame Glass']),
+    backing: (backingAddOn && lastPart(backingAddOn.variantTitle)) || NOT_ON_ORDER,
+    glass:   (glassAddOn && lastPart(glassAddOn.variantTitle)) || NOT_ON_ORDER,
+    backingAddOn,
+    glassAddOn,
   };
 }
 
