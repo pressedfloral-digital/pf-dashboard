@@ -11,7 +11,7 @@ import {
   parseVariant, mondayOf, addWeeks, scheduleLines, matchMaterials, type QueueLine, type OrderAddOn,
 } from '@/lib/designInventory';
 import { loadKatana } from '@/lib/katana';
-import { buildOrderPlan, type OrderPlan } from '@/lib/katanaPlan';
+import { buildOrderPlan, type OrderPlan, type OrderAdjustment } from '@/lib/katanaPlan';
 import { MAX_LEAD_WEEKS } from '@/lib/supplierLeadTimes';
 
 export const maxDuration = 120;
@@ -206,6 +206,14 @@ export async function GET(req: NextRequest) {
     // ── 5. What to order: recipes × schedule vs Katana stock ───────────────
     let orderPlan: OrderPlan | null = null;
     let katanaError: string | null = null;
+    // Manual adds/removes are applied in the browser on top of orderPlan, so
+    // they can change without rebuilding the schedule.
+    const { data: adjustmentRows, error: adjustmentsError } = await supabase
+      .from('inventory_order_adjustments')
+      .select('*')
+      .eq('location', location)
+      .order('created_at');
+    const orderAdjustments = (adjustmentRows ?? []) as OrderAdjustment[];
     try {
       orderPlan = buildOrderPlan(await katanaPromise, location, weeks, thisWeek);
     } catch (e) {
@@ -216,6 +224,9 @@ export async function GET(req: NextRequest) {
       location,
       orderPlan,
       katanaError,
+      orderAdjustments,
+      // Table missing until the migration is run — the page still works, just without manual changes.
+      adjustmentsReady: !adjustmentsError,
       generatedAt: new Date().toISOString(),
       designedThisWeek,
       weeks: weeks.map((w, i) => ({ ...w, scheduled: Math.round(capacityWeeks[i].scheduled) })),

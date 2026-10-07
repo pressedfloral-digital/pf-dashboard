@@ -1,9 +1,10 @@
 'use client';
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import type { OrderPlan, PlanRow } from '@/lib/katanaPlan';
+import { applyAdjustments, type OrderAdjustment, type OrderPlan, type PlanRow } from '@/lib/katanaPlan';
 import { mondayOf, addWeeks as addWeeksIso } from '@/lib/designInventory';
 import SupplierPoCard, { OrderByBadge, fmtWeek, label, urgency } from './SupplierPoCard';
+import ManualChanges from './ManualChanges';
 
 function fmtQty(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -42,7 +43,33 @@ function downloadCsv(plan: OrderPlan, weeks: string[], generatedAt: string) {
   URL.revokeObjectURL(a.href);
 }
 
-export default function OrderPlanView({ plan, generatedAt }: { plan: OrderPlan; generatedAt: string }) {
+export default function OrderPlanView({ plan: basePlan, generatedAt, adjustments: savedAdjustments, adjustmentsReady }: {
+  plan:              OrderPlan;
+  generatedAt:       string;
+  adjustments:       OrderAdjustment[];
+  adjustmentsReady:  boolean;
+}) {
+  const thisWeek = mondayOf(new Date().toISOString());
+  // Manual adds/removes, applied on top of the computed list so a change
+  // shows immediately without rebuilding the schedule.
+  const [adjustments, setAdjustments] = useState(savedAdjustments);
+  const plan = useMemo(() => applyAdjustments(basePlan, adjustments, thisWeek), [basePlan, adjustments, thisWeek]);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+
+  async function removeItem(r: PlanRow) {
+    const note = window.prompt(`Take ${label(r)} off ${basePlan.location}'s order list?\n\nOptional note (why):`, '');
+    if (note === null) return;
+    setRemoveError(null);
+    const res = await fetch('/api/inventory-adjustments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ location: basePlan.location, kind: 'remove', variantId: r.variantId, note }),
+    });
+    const json = await res.json().catch(() => ({ error: `Server returned ${res.status}` }));
+    if (res.ok) setAdjustments(a => [...a, json]);
+    else setRemoveError(json.error ?? `Couldn’t remove (${res.status})`);
+  }
+
   // Design weeks that have scheduled work, this week through year end — or a
   // little into next year once the longest lead time reaches past Dec 31.
   const weeks = plan.weeks;
@@ -58,7 +85,6 @@ export default function OrderPlanView({ plan, generatedAt }: { plan: OrderPlan; 
   const [groupBy, setGroupBy] = useState<'week' | 'supplier'>('supplier');
   const [canOrder, setCanOrder] = useState(false);
   const week = picked ?? firstShort;
-  const thisWeek = mondayOf(new Date().toISOString());
 
   useEffect(() => {
     let cancelled = false;
@@ -161,6 +187,18 @@ export default function OrderPlanView({ plan, generatedAt }: { plan: OrderPlan; 
         </div>
       )}
 
+      <ManualChanges
+        location={plan.location}
+        catalog={plan.catalog}
+        adjustments={adjustments}
+        thisWeek={thisWeek}
+        canEdit={canOrder}
+        ready={adjustmentsReady}
+        onAdded={a => setAdjustments(list => [...list, a])}
+        onUndo={id => setAdjustments(list => list.filter(a => a.id !== id))}
+      />
+      {removeError && <div className="text-xs text-rose-600">{removeError}</div>}
+
       {showSubs && (
         <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-xs text-sky-900">
           <div className="font-semibold mb-1">Counted with a stand-in Katana recipe</div>
@@ -219,7 +257,7 @@ export default function OrderPlanView({ plan, generatedAt }: { plan: OrderPlan; 
             <div className="grid gap-3 xl:grid-cols-2">
               {allBySupplier.map(([supplier, rows]) => (
                 <SupplierPoCard
-                  key={`${generatedAt}|${supplier}`}
+                  key={`${generatedAt}|${supplier}|${adjustments.map(a => a.id).join(',')}`}
                   supplier={supplier}
                   supplierId={rows[0].supplierId}
                   rows={rows}
@@ -229,6 +267,7 @@ export default function OrderPlanView({ plan, generatedAt }: { plan: OrderPlan; 
                   canOrder={canOrder}
                   thruText={thruText}
                   thruShort={thruShort}
+                  onRemove={adjustmentsReady ? removeItem : undefined}
                 />
               ))}
             </div>

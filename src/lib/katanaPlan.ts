@@ -188,6 +188,24 @@ export interface PlanRow {
   totalNeeded: number;
   totalToOrder: number;
   firstShortWeek: string | null;
+  manualQty?:  number;               // part of totalToOrder added by hand
+  removedId?:  string;               // adjustment id when taken off the list by hand
+}
+
+// A Katana component that can be added to the order list by hand.
+export type CatalogItem = Omit<PlanRow, 'needed' | 'toOrder' | 'totalNeeded' | 'totalToOrder' | 'firstShortWeek' | 'orderBy' | 'orderNowQty'>;
+
+// A manual change to the order list (inventory_order_adjustments row).
+export interface OrderAdjustment {
+  id:         string;
+  location:   string;
+  kind:       'add' | 'remove';
+  variant_id: number;
+  quantity:   number | null;   // stock units, for 'add'
+  need_by:    string | null;   // Monday, for 'add'
+  note:       string | null;
+  created_by: string | null;
+  created_at: string;
 }
 
 export interface Unmatched {
@@ -209,6 +227,7 @@ export interface OrderPlan {
   weeks:      string[];   // design weeks with scheduled work
   through:    string;     // last Monday the plan covers (Dec 31's week, or later near year end)
   rows:       PlanRow[];
+  catalog:    CatalogItem[];  // components that can be added by hand
   unmatched:  Unmatched[];
   substitutions: Substitution[];
   matchedLines: number;
@@ -271,20 +290,43 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
     }
   }
 
-  const rows: PlanRow[] = [];
-  demand.forEach((needed, variantId) => {
+  // Everything about a component that doesn't depend on demand.
+  const describe = (variantId: number): CatalogItem | null => {
     const v = idx.variants.get(variantId);
     const item = v ? idx.items.get((v.product_id ?? v.material_id)!) : undefined;
+    const supplier = item?.default_supplier_id ? suppliers.get(item.default_supplier_id) ?? null : null;
+    if (isExcludedSupplier(supplier)) return null;
     const s = stock.get(variantId);
     // Negative stock is a Katana bookkeeping gap (used before it was
     // received), not a real deficit — treat the shelf as empty.
     const rawStock = Number(s?.quantity_in_stock ?? 0);
-    const inStock = Math.max(0, rawStock);
-    const onOrder = Number(s?.quantity_expected ?? 0);
+    const conversion = Number(item?.purchase_uom_conversion_rate);
+    return {
+      variantId,
+      sku: v?.sku ?? null,
+      ...(v ? variantLabel(idx, v) : { name: `Variant ${variantId}`, options: '' }),
+      category: item?.category_name ?? 'Uncategorized',
+      uom: item?.uom ?? '',
+      purchaseUom: item?.purchase_uom ?? null,
+      purchaseConversion: item?.purchase_uom && conversion > 0 ? conversion : null,
+      supplier,
+      supplierId: item?.default_supplier_id ?? null,
+      leadWeeks: leadWeeksFor(supplier),
+      purchasePrice: Number(v?.purchase_price ?? 0),
+      inStock: Math.max(0, rawStock),
+      negativeStock: rawStock < 0 ? rawStock : null,
+      onOrder: Number(s?.quantity_expected ?? 0),
+    };
+  };
+
+  const rows: PlanRow[] = [];
+  demand.forEach((needed, variantId) => {
+    const base = describe(variantId);
+    if (!base) return;
 
     // Draw each week's use down from stock + incoming; any week that pushes
     // the balance further below zero needs that much more ordered.
-    let balance = inStock + onOrder;
+    let balance = base.inStock + base.onOrder;
     let short = 0;
     let firstShortWeek: string | null = null;
     const toOrder: Record<string, number> = {};
@@ -301,38 +343,22 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
     }
     Object.keys(needed).forEach(wk => { needed[wk] = round(needed[wk]); });
 
-    const label = v ? variantLabel(idx, v) : { name: `Variant ${variantId}`, options: '' };
-    const conversion = Number(item?.purchase_uom_conversion_rate);
-    const supplier = item?.default_supplier_id ? suppliers.get(item.default_supplier_id) ?? null : null;
-    if (isExcludedSupplier(supplier)) return;
-    const leadWeeks = leadWeeksFor(supplier);
-    const orderNowQty = Object.entries(toOrder)
-      .filter(([wk]) => addWeeks(wk, -leadWeeks) <= thisWeek)
-      .reduce((sum, [, q]) => sum + q, 0);
-    rows.push({
-      variantId,
-      sku: v?.sku ?? null,
-      ...label,
-      category: item?.category_name ?? 'Uncategorized',
-      uom: item?.uom ?? '',
-      purchaseUom: item?.purchase_uom ?? null,
-      purchaseConversion: item?.purchase_uom && conversion > 0 ? conversion : null,
-      supplier,
-      supplierId: item?.default_supplier_id ?? null,
-      leadWeeks,
-      orderBy: firstShortWeek ? addWeeks(firstShortWeek, -leadWeeks) : null,
-      orderNowQty: round(orderNowQty),
-      purchasePrice: Number(v?.purchase_price ?? 0),
-      inStock,
-      negativeStock: rawStock < 0 ? rawStock : null,
-      onOrder,
+    rows.push(withOrderBy({
+      ...base,
       needed,
       toOrder,
       totalNeeded: round(Object.values(needed).reduce((a, b) => a + b, 0)),
       totalToOrder: round(short),
       firstShortWeek,
-    });
+    }, thisWeek));
   });
+
+  // Purchasable components (not blooms or finished products) for adding by hand.
+  const catalog = k.materials
+    .filter(m => !m.deleted_at && !m.archived_at && m.category_name !== 'Bloom')
+    .flatMap(m => m.variants.map(v => describe(v.id)))
+    .filter((c): c is CatalogItem => !!c)
+    .sort((a, b) => a.name.localeCompare(b.name) || a.options.localeCompare(b.options, undefined, { numeric: true }));
 
   rows.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name) || a.options.localeCompare(b.options, undefined, { numeric: true }));
   return {
@@ -340,9 +366,61 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
     weeks: weeks.filter(w => w.lines.length > 0).map(w => w.weekOf),
     through: weeks[weeks.length - 1]?.weekOf ?? '',
     rows,
+    catalog,
     unmatched: [...unmatched.values()].sort((a, b) => b.count - a.count),
     substitutions: [...substitutions.values()].sort((a, b) => b.count - a.count),
     matchedLines,
     totalLines,
   };
+}
+
+// Order-by date and due-now quantity from a row's toOrder and lead time.
+function withOrderBy(r: Omit<PlanRow, 'orderBy' | 'orderNowQty'>, thisWeek: string): PlanRow {
+  const orderNowQty = Object.entries(r.toOrder)
+    .filter(([wk]) => addWeeks(wk, -r.leadWeeks) <= thisWeek)
+    .reduce((sum, [, q]) => sum + q, 0);
+  return {
+    ...r,
+    orderBy: r.firstShortWeek ? addWeeks(r.firstShortWeek, -r.leadWeeks) : null,
+    orderNowQty: round(orderNowQty),
+  };
+}
+
+// Applies manual changes on top of the computed list. Removals clear an
+// item's computed shortfall; additions then go straight onto the order list
+// (not netted against stock — they're for things the recipes don't cover).
+// Runs in the browser too, so changes show without reloading the schedule.
+export function applyAdjustments(plan: OrderPlan, adjustments: OrderAdjustment[], thisWeek: string): OrderPlan {
+  if (!adjustments.length) return plan;
+  const rows = new Map(plan.rows.map(r => [r.variantId, { ...r, toOrder: { ...r.toOrder } }]));
+  const catalog = new Map(plan.catalog.map(c => [c.variantId, c]));
+  const weeks = new Set(plan.weeks);
+
+  for (const a of adjustments) {
+    if (a.kind !== 'remove') continue;
+    const r = rows.get(a.variant_id);
+    if (!r) continue;
+    rows.set(a.variant_id, { ...r, removedId: a.id, toOrder: {}, totalToOrder: 0, firstShortWeek: null });
+  }
+  for (const a of adjustments) {
+    if (a.kind !== 'add' || !a.quantity || !a.need_by) continue;
+    const base = rows.get(a.variant_id) ?? (catalog.get(a.variant_id) && {
+      ...catalog.get(a.variant_id)!, needed: {}, toOrder: {}, totalNeeded: 0, totalToOrder: 0, firstShortWeek: null,
+      orderBy: null, orderNowQty: 0,
+    });
+    if (!base) continue;
+    const toOrder = { ...base.toOrder, [a.need_by]: round((base.toOrder[a.need_by] ?? 0) + Number(a.quantity)) };
+    weeks.add(a.need_by);
+    rows.set(a.variant_id, {
+      ...base,
+      toOrder,
+      totalToOrder: round(base.totalToOrder + Number(a.quantity)),
+      manualQty: round((base.manualQty ?? 0) + Number(a.quantity)),
+      firstShortWeek: [base.firstShortWeek, a.need_by].filter((w): w is string => !!w).sort()[0],
+    });
+  }
+
+  const out = [...rows.values()].map(r => withOrderBy(r, thisWeek));
+  out.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name) || a.options.localeCompare(b.options, undefined, { numeric: true }));
+  return { ...plan, rows: out, weeks: [...weeks].sort() };
 }

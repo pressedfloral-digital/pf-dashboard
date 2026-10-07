@@ -11,7 +11,7 @@ function fmtQty(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-export function label(r: PlanRow): string {
+export function label(r: { name: string; options: string }): string {
   return r.options ? `${r.name} — ${r.options}` : r.name;
 }
 
@@ -55,7 +55,7 @@ function toPoQty(r: PlanRow, stockQty: number): number {
 
 interface Created { orderNo: string; total: number }
 
-export default function SupplierPoCard({ supplier, supplierId, rows: allRows, location, weeks, thisWeek, canOrder, thruText, thruShort }: {
+export default function SupplierPoCard({ supplier, supplierId, rows: allRows, location, weeks, thisWeek, canOrder, thruText, thruShort, onRemove }: {
   supplier:   string;
   supplierId: number | null;
   rows:       PlanRow[];        // every item from this supplier the schedule uses
@@ -65,6 +65,7 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
   canOrder:   boolean;
   thruText:   string;   // "through year end" / "through the week of Jan 4"
   thruShort:  string;   // "YE" / "Jan 4"
+  onRemove?:  (r: PlanRow) => void;  // take an item off the order list by hand
 }) {
   const rows = allRows.filter(r => r.totalToOrder > 0);
   const covered = allRows.filter(r => r.totalToOrder <= 0);
@@ -153,6 +154,11 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
               <td className="px-2 py-1.5 text-slate-700">
                 {label(r)}
                 {r.sku && <span className="text-slate-400"> · {r.sku}</span>}
+                {!!r.manualQty && (
+                  <span className="ml-1 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-800">
+                    {r.manualQty === r.totalToOrder ? 'Added by hand' : `+${fmtQty(r.manualQty)} by hand`}
+                  </span>
+                )}
                 <div className="text-[11px] text-slate-400">
                   Needed: {weeks.filter(w => r.toOrder[w]).map(w => `${fmtWeek(w)} ${fmtQty(r.toOrder[w])}`).join(' · ')}
                   {r.orderNowQty > 0 && r.orderNowQty < r.totalToOrder && <> · {fmtQty(r.orderNowQty)} due now, {fmtQty(r.totalToOrder)} total</>}
@@ -173,6 +179,16 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
                   className="w-16 rounded border border-slate-200 px-1.5 py-0.5 text-right text-slate-800"
                 />
                 <span className="ml-1 text-slate-400">{poUnit(r)}</span>
+                {onRemove && canOrder && !created && !r.removedId && (
+                  <button
+                    onClick={() => onRemove(r)}
+                    title="Take off the order list"
+                    aria-label={`Take ${label(r)} off the order list`}
+                    className="ml-2 text-slate-300 hover:text-rose-600"
+                  >
+                    ×
+                  </button>
+                )}
               </td>
             </tr>
           ))}
@@ -198,7 +214,10 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
               <tbody className="divide-y divide-slate-50">
                 {covered.map(r => (
                   <tr key={r.variantId}>
-                    <td className="py-1 text-slate-700">{label(r)}</td>
+                    <td className="py-1 text-slate-700">
+                      {label(r)}
+                      {r.removedId && <span className="ml-1 text-[10px] font-semibold text-slate-500">(removed by hand)</span>}
+                    </td>
                     <td className="px-2 py-1 text-right text-slate-600">{fmtQty(r.inStock)}</td>
                     <td className="px-2 py-1 text-right text-slate-500">{r.onOrder ? fmtQty(r.onOrder) : ''}</td>
                     <td className="px-2 py-1 text-right text-slate-600">{fmtQty(r.totalNeeded)}</td>
