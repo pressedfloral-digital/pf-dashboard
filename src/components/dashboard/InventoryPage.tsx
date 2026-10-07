@@ -2,6 +2,8 @@
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { PRESERVATION_WEEKS, NOT_ON_ORDER, sizeLabel, type QueueLine } from '@/lib/designInventory';
+import type { OrderPlan } from '@/lib/katanaPlan';
+import OrderPlanView from './OrderPlanView';
 
 interface InventoryWeek {
   weekOf:    string;
@@ -16,6 +18,8 @@ interface InventoryResponse {
   designedThisWeek: number;
   weeks:            InventoryWeek[];
   unscheduledCount: number;
+  orderPlan:        OrderPlan | null;
+  katanaError:      string | null;
   totals: {
     lines: number; inDesignQueue: number; inPreservation: number;
     intakeFromEventDate: number; missingLocation: number; missingOrderDetail: number;
@@ -105,6 +109,7 @@ export default function InventoryPage() {
   const [loaded, setLoaded] = useState<{ location: string; data: InventoryResponse } | null>(null);
   const [selectedWeek, setSelectedWeek] = useState<string | null>(null);
   const [material, setMaterial] = useState<Material>('frame');
+  const [view, setView] = useState<'order' | 'schedule'>('order');
   const data = loaded?.location === location ? loaded.data : null;
   const loading = !data;
 
@@ -154,7 +159,18 @@ export default function InventoryPage() {
             </button>
           ))}
         </div>
-        {data && !data.error && (
+        <div className="flex rounded-lg border border-slate-200 overflow-hidden">
+          {([['order', 'What to order'], ['schedule', 'Frames, backing & glass']] as const).map(([id, name]) => (
+            <button
+              key={id}
+              onClick={() => setView(id)}
+              className={`px-4 py-1.5 text-sm font-medium ${view === id ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+        {data && !data.error && view === 'schedule' && (
           <button
             onClick={() => downloadCsv(data)}
             className="ml-auto px-3 py-1.5 text-sm rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
@@ -164,6 +180,16 @@ export default function InventoryPage() {
         )}
       </div>
 
+      {loading && <div className="py-12 text-center text-sm text-slate-500">Loading orders from the production app and stock from Katana… this can take up to a minute.</div>}
+      {data?.error && <div className="py-12 text-center text-sm text-rose-600">Couldn&apos;t load inventory: {data.error}</div>}
+
+      {view === 'order' && data && !data.error && (
+        data.orderPlan
+          ? <OrderPlanView key={data.location} plan={data.orderPlan} generatedAt={data.generatedAt} />
+          : <div className="py-12 text-center text-sm text-rose-600">Couldn&apos;t load Katana: {data.katanaError ?? 'unknown error'}</div>
+      )}
+
+      {view === 'schedule' && <>
       <div>
         <h2 className="text-sm font-semibold text-slate-700">Design inventory — frames, backing &amp; glass needed each week</h2>
         <p className="text-xs text-slate-500 mt-1 max-w-3xl">
@@ -174,9 +200,6 @@ export default function InventoryPage() {
         </p>
       </div>
 
-      {loading && <div className="py-12 text-center text-sm text-slate-500">Loading orders from the production app… this can take up to a minute.</div>}
-      {data?.error && <div className="py-12 text-center text-sm text-rose-600">Couldn&apos;t load inventory: {data.error}</div>}
-
       {data && !data.error && (
         <>
           <div className="text-xs text-slate-500">
@@ -186,77 +209,6 @@ export default function InventoryPage() {
             {data.totals.missingLocation > 0 && <> · {data.totals.missingLocation} lines with no location skipped</>}
             {data.totals.missingOrderDetail > 0 && <> · {data.totals.missingOrderDetail} lines whose order details couldn&apos;t be loaded (backing/glass show as {NOT_ON_ORDER})</>}
             {data.unscheduledCount > 0 && <> · {data.unscheduledCount} not scheduled before year end</>}
-          </div>
-
-          {/* ── Materials × week ── */}
-          <div className="space-y-2">
-            <div className="flex gap-1.5">
-              {MATERIALS.map(m => (
-                <button
-                  key={m.id}
-                  onClick={() => setMaterial(m.id)}
-                  className={`px-3 py-1 text-xs rounded-full font-medium ${
-                    material === m.id ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-            <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
-              <table className="min-w-full text-xs">
-                <thead className="bg-slate-50 text-slate-500">
-                  <tr>
-                    <th className="sticky left-0 bg-slate-50 px-3 py-2 text-left font-medium">Size</th>
-                    <th className="px-3 py-2 text-left font-medium">Shape</th>
-                    <th className="px-3 py-2 text-left font-medium">{typeLabel}</th>
-                    {weeks.map(w => (
-                      <th key={w.weekOf} className="px-2 py-2 text-center font-medium whitespace-nowrap">{fmtWeek(w.weekOf)}</th>
-                    ))}
-                    <th className="px-3 py-2 text-center font-medium">Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sizes.map(size => {
-                    const sizeRows = rows.filter(r => r.size === size);
-                    return (
-                      <Fragment key={size}>
-                        {sizeRows.map(r => (
-                          <tr key={`${r.size}|${r.shape}|${r.type}`} className="border-t border-slate-100 hover:bg-slate-50">
-                            <td className="sticky left-0 bg-white px-3 py-1.5 text-slate-700 whitespace-nowrap">{r.size}</td>
-                            <td className="px-3 py-1.5 text-slate-600">{r.shape}</td>
-                            <td className={`px-3 py-1.5 whitespace-nowrap ${r.type === NOT_ON_ORDER ? 'text-amber-600' : 'text-slate-700'}`}>{r.type}</td>
-                            {weeks.map(w => (
-                              <td key={w.weekOf} className="px-2 py-1.5 text-center text-slate-700">{r.byWeek[w.weekOf] ?? ''}</td>
-                            ))}
-                            <td className="px-3 py-1.5 text-center font-semibold text-slate-800">{r.total}</td>
-                          </tr>
-                        ))}
-                        <tr className="bg-slate-50 text-slate-600 font-medium">
-                          <td className="sticky left-0 bg-slate-50 px-3 py-1" colSpan={3}>{size} subtotal</td>
-                          {weeks.map(w => (
-                            <td key={w.weekOf} className="px-2 py-1 text-center">{sizeRows.reduce((s, r) => s + (r.byWeek[w.weekOf] ?? 0), 0) || ''}</td>
-                          ))}
-                          <td className="px-3 py-1 text-center">{sizeRows.reduce((s, r) => s + r.total, 0)}</td>
-                        </tr>
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
-                <tfoot className="bg-slate-100 font-semibold text-slate-700">
-                  <tr>
-                    <td className="sticky left-0 bg-slate-100 px-3 py-2" colSpan={3}>Total {MATERIALS.find(m => m.id === material)!.label.toLowerCase()}</td>
-                    {weeks.map(w => (
-                      <td key={w.weekOf} className="px-2 py-2 text-center">
-                        {rows.reduce((s, r) => s + (r.byWeek[w.weekOf] ?? 0), 0)}
-                        {material === 'frame' && <div className="font-normal text-[10px] text-slate-400">of {w.capacity}</div>}
-                      </td>
-                    ))}
-                    <td className="px-3 py-2 text-center">{rows.reduce((s, r) => s + r.total, 0)}</td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
           </div>
 
           {/* ── One week: totals + orders ── */}
@@ -348,8 +300,80 @@ export default function InventoryPage() {
               </>
             )}
           </div>
+
+          {/* ── Materials × week ── */}
+          <div className="space-y-2">
+            <div className="flex gap-1.5">
+              {MATERIALS.map(m => (
+                <button
+                  key={m.id}
+                  onClick={() => setMaterial(m.id)}
+                  className={`px-3 py-1 text-xs rounded-full font-medium ${
+                    material === m.id ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
+              <table className="min-w-full text-xs">
+                <thead className="bg-slate-50 text-slate-500">
+                  <tr>
+                    <th className="sticky left-0 bg-slate-50 px-3 py-2 text-left font-medium">Size</th>
+                    <th className="px-3 py-2 text-left font-medium">Shape</th>
+                    <th className="px-3 py-2 text-left font-medium">{typeLabel}</th>
+                    {weeks.map(w => (
+                      <th key={w.weekOf} className="px-2 py-2 text-center font-medium whitespace-nowrap">{fmtWeek(w.weekOf)}</th>
+                    ))}
+                    <th className="px-3 py-2 text-center font-medium">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sizes.map(size => {
+                    const sizeRows = rows.filter(r => r.size === size);
+                    return (
+                      <Fragment key={size}>
+                        {sizeRows.map(r => (
+                          <tr key={`${r.size}|${r.shape}|${r.type}`} className="border-t border-slate-100 hover:bg-slate-50">
+                            <td className="sticky left-0 bg-white px-3 py-1.5 text-slate-700 whitespace-nowrap">{r.size}</td>
+                            <td className="px-3 py-1.5 text-slate-600">{r.shape}</td>
+                            <td className={`px-3 py-1.5 whitespace-nowrap ${r.type === NOT_ON_ORDER ? 'text-amber-600' : 'text-slate-700'}`}>{r.type}</td>
+                            {weeks.map(w => (
+                              <td key={w.weekOf} className="px-2 py-1.5 text-center text-slate-700">{r.byWeek[w.weekOf] ?? ''}</td>
+                            ))}
+                            <td className="px-3 py-1.5 text-center font-semibold text-slate-800">{r.total}</td>
+                          </tr>
+                        ))}
+                        <tr className="bg-slate-50 text-slate-600 font-medium">
+                          <td className="sticky left-0 bg-slate-50 px-3 py-1" colSpan={3}>{size} subtotal</td>
+                          {weeks.map(w => (
+                            <td key={w.weekOf} className="px-2 py-1 text-center">{sizeRows.reduce((s, r) => s + (r.byWeek[w.weekOf] ?? 0), 0) || ''}</td>
+                          ))}
+                          <td className="px-3 py-1 text-center">{sizeRows.reduce((s, r) => s + r.total, 0)}</td>
+                        </tr>
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+                <tfoot className="bg-slate-100 font-semibold text-slate-700">
+                  <tr>
+                    <td className="sticky left-0 bg-slate-100 px-3 py-2" colSpan={3}>Total {MATERIALS.find(m => m.id === material)!.label.toLowerCase()}</td>
+                    {weeks.map(w => (
+                      <td key={w.weekOf} className="px-2 py-2 text-center">
+                        {rows.reduce((s, r) => s + (r.byWeek[w.weekOf] ?? 0), 0)}
+                        {material === 'frame' && <div className="font-normal text-[10px] text-slate-400">of {w.capacity}</div>}
+                      </td>
+                    ))}
+                    <td className="px-3 py-2 text-center">{rows.reduce((s, r) => s + r.total, 0)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
         </>
       )}
+      </>}
     </div>
   );
 }
