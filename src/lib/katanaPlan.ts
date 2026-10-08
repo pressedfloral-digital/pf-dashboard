@@ -188,7 +188,23 @@ export interface PlanRow {
   totalNeeded: number;
   totalToOrder: number;
   firstShortWeek: string | null;
+  computedToOrder?: number;          // set when the quantity was edited by hand — what the recipes said
+  removed?:    boolean;              // taken off the order list by hand
+  edit?:       OrderEdit;            // who edited it and when
 }
+
+// Hand edits to the order list, saved per location in schedule_settings
+// (key ORDER_EDITS_KEY) as { [variantId]: OrderEdit }.
+export const ORDER_EDITS_KEY = 'inventoryOrderEdits';
+
+export interface OrderEdit {
+  qty?:     number;    // total to order, in the component's Katana stock unit
+  removed?: boolean;
+  by:       string;
+  at:       string;    // ISO timestamp
+}
+
+export type OrderEdits = Record<string, OrderEdit>;
 
 export interface Unmatched {
   product:  string;
@@ -306,9 +322,7 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
     const supplier = item?.default_supplier_id ? suppliers.get(item.default_supplier_id) ?? null : null;
     if (isExcludedSupplier(supplier)) return;
     const leadWeeks = leadWeeksFor(supplier);
-    const orderNowQty = Object.entries(toOrder)
-      .filter(([wk]) => addWeeks(wk, -leadWeeks) <= thisWeek)
-      .reduce((sum, [, q]) => sum + q, 0);
+    const orderNowQty = dueNow(toOrder, leadWeeks, thisWeek);
     rows.push({
       variantId,
       sku: v?.sku ?? null,
@@ -345,4 +359,56 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
     matchedLines,
     totalLines,
   };
+}
+
+// Shortfall whose order-by date (need-by week minus lead time) is this week or past.
+function dueNow(toOrder: Record<string, number>, leadWeeks: number, thisWeek: string): number {
+  return Object.entries(toOrder)
+    .filter(([wk]) => addWeeks(wk, -leadWeeks) <= thisWeek)
+    .reduce((sum, [, q]) => sum + q, 0);
+}
+
+// Applies hand edits on top of the computed list. Runs in the browser too,
+// so an edit shows immediately without rebuilding the schedule.
+//  - removed: the item drops off the order list.
+//  - qty: replaces the total to order. Lowering it trims the latest weeks
+//    first; raising it adds the extra to the earliest week it's needed (or
+//    this week), so order-by dates stay meaningful.
+export function applyEdits(plan: OrderPlan, edits: OrderEdits, thisWeek: string): OrderPlan {
+  if (!Object.keys(edits).length) return plan;
+  const rows = plan.rows.map(r => {
+    const edit = edits[String(r.variantId)];
+    if (!edit) return r;
+    if (edit.removed) {
+      return { ...r, edit, removed: true, toOrder: {}, totalToOrder: 0, orderNowQty: 0, orderBy: null, firstShortWeek: null };
+    }
+    if (edit.qty === undefined) return r;
+
+    const target = round(Math.max(0, edit.qty));
+    const toOrder: Record<string, number> = {};
+    const weeksAsc = Object.keys(r.toOrder).sort();
+    let left = target;
+    for (const wk of weeksAsc) {
+      const q = Math.min(r.toOrder[wk], left);
+      if (q > 0) toOrder[wk] = round(q);
+      left = round(left - q);
+    }
+    if (left > 0) {
+      const wk = weeksAsc[0] ?? r.firstShortWeek ?? thisWeek;
+      toOrder[wk] = round((toOrder[wk] ?? 0) + left);
+    }
+    const firstShortWeek = Object.keys(toOrder).sort()[0] ?? null;
+    return {
+      ...r,
+      edit,
+      computedToOrder: r.totalToOrder,
+      toOrder,
+      totalToOrder: target,
+      firstShortWeek,
+      orderBy: firstShortWeek ? addWeeks(firstShortWeek, -r.leadWeeks) : null,
+      orderNowQty: round(dueNow(toOrder, r.leadWeeks, thisWeek)),
+    };
+  });
+  const weeks = [...new Set([...plan.weeks, ...rows.flatMap(r => Object.keys(r.toOrder))])].sort();
+  return { ...plan, rows, weeks };
 }
