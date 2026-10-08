@@ -251,7 +251,7 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
                   weeks={weeks}
                   thisWeek={thisWeek}
                   canOrder={canOrder}
-                  thruText={thruText}
+                  through={plan.through}
                   thruShort={thruShort}
                   onEdit={saveEdit}
                 />

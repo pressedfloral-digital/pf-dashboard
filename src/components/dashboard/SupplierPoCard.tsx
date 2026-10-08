@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { PlanRow } from '@/lib/katanaPlan';
+import { addWeeks } from '@/lib/designInventory';
 
 export function fmtWeek(iso: string): string {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -69,6 +70,39 @@ export function OrderByBadge({ orderBy, needBy, thisWeek }: { orderBy: string | 
 
 // Katana POs are in the purchase unit (rolls of thread), stock is in the
 // stock unit (yards) — round up to whole purchase units.
+// ── Coverage beyond the schedule ─────────────────────────────────────────────
+// Items stock covers through the end of the schedule have no shortfall to
+// date an order from, so project forward at their average weekly use over
+// the schedule: how long the leftover lasts, and when to reorder given the
+// supplier's lead time. These are estimates (shown with ~).
+
+const FAR_OFF_WEEKS = 104;
+
+export interface Coverage {
+  weeklyUse:    number;          // average per schedule week
+  coveredUntil: string | null;   // last Monday stock lasts (null = not used by the schedule)
+  orderBy:      string | null;   // Monday to order by so it arrives before it runs out
+  farOff:       boolean;         // lasts more than two years at this rate
+}
+
+export function projectCoverage(r: PlanRow, through: string, scheduleWeeks: number): Coverage {
+  const weeklyUse = scheduleWeeks > 0 ? r.totalNeeded / scheduleWeeks : 0;
+  if (weeklyUse <= 0) return { weeklyUse: 0, coveredUntil: null, orderBy: null, farOff: false };
+  const leftover = Math.max(0, r.inStock + r.onOrder - r.totalNeeded);
+  const extraWeeks = Math.floor(leftover / weeklyUse);
+  if (extraWeeks > FAR_OFF_WEEKS) return { weeklyUse, coveredUntil: null, orderBy: null, farOff: true };
+  const coveredUntil = addWeeks(through, extraWeeks);
+  return { weeklyUse, coveredUntil, orderBy: addWeeks(coveredUntil, 1 - r.leadWeeks), farOff: false };
+}
+
+function NextOrderBadge({ orderBy, thisWeek }: { orderBy: string | null; thisWeek: string }) {
+  if (!orderBy) return <span className="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-100 text-emerald-800">Covered well ahead</span>;
+  const u = urgency(orderBy, thisWeek);
+  const style = u === 'late' || u === 'now' ? 'bg-amber-500 text-white' : u === 'soon' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800';
+  const text = u === 'late' || u === 'now' ? 'Next order: this week (est.)' : `Next order by ~${fmtWeek(orderBy)}`;
+  return <span title="Estimated from average weekly use in the current schedule" className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap ${style}`}>{text}</span>;
+}
+
 // First week the schedule's cumulative use outruns `available`, or null if it lasts through the plan.
 function runsOutWeek(r: PlanRow, available: number): string | null {
   let used = 0;
@@ -98,7 +132,7 @@ export type EditAction = 'setQty' | 'remove' | 'reset';
 
 interface Created { orderNo: string; total: number }
 
-export default function SupplierPoCard({ supplier, supplierId, rows: allRows, location, weeks, thisWeek, canOrder, thruText, thruShort, onEdit }: {
+export default function SupplierPoCard({ supplier, supplierId, rows: allRows, location, weeks, thisWeek, canOrder, through, thruShort, onEdit }: {
   supplier:   string;
   supplierId: number | null;
   rows:       PlanRow[];        // every item from this supplier the schedule uses
@@ -106,7 +140,7 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
   weeks:      string[];
   thisWeek:   string;
   canOrder:   boolean;
-  thruText:   string;   // "through year end" / "through the week of Jan 4"
+  through:    string;   // last Monday of the schedule
   thruShort:  string;   // "YE" / "Jan 4"
   // Saves a hand edit (qty in stock units); omitted when edits can't be saved.
   onEdit?:    (variantId: number, action: EditAction, qty?: number) => Promise<void>;
@@ -114,7 +148,13 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
   // Items edited by hand stay in the list even at 0, so the edit can be seen and reset.
   const rows = allRows.filter(r => !r.removed && (r.totalToOrder > 0 || r.computedToOrder !== undefined));
   const removed = allRows.filter(r => r.removed);
-  const covered = allRows.filter(r => !r.removed && !rows.includes(r));
+  // Covered items with their projected reorder dates, soonest first.
+  const scheduleWeeks = Math.max(1, weeksUntilShort(through, thisWeek) + 1);
+  const covered = allRows
+    .filter(r => !r.removed && !rows.includes(r))
+    .map(r => ({ r, c: projectCoverage(r, through, scheduleWeeks) }))
+    .sort((a, b) => (a.c.orderBy ?? '~') < (b.c.orderBy ?? '~') ? -1 : (a.c.orderBy ?? '~') > (b.c.orderBy ?? '~') ? 1 : 0);
+  const nextCovered = covered.find(x => x.c.orderBy) ?? null;
   const [showCovered, setShowCovered] = useState(false);
   const [showRemoved, setShowRemoved] = useState(false);
   const [editing, setEditing] = useState<Record<number, string>>({});   // variantId → draft qty (purchase units)
@@ -189,11 +229,12 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
             {leadWeeks}-week lead time · {rows.length ? `${rows.length} to order` : 'nothing to order'}
             {covered.length > 0 && <> · {covered.length} covered by stock</>}
             {removed.length > 0 && <> · {removed.length} deleted</>}
+            {!rows.length && nextCovered?.c.coveredUntil && <> · covered until ~{fmtWeek(nextCovered.c.coveredUntil)}</>}
           </div>
         </div>
         {rows.length
           ? <OrderByBadge orderBy={earliest} needBy={soonest?.firstShortWeek} thisWeek={thisWeek} />
-          : <span className="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-100 text-emerald-800">Covered {thruText}</span>}
+          : <NextOrderBadge orderBy={nextCovered?.c.orderBy ?? null} thisWeek={thisWeek} />}
       </div>
 
       {rows.length > 0 && <table className="min-w-full text-xs">
@@ -331,30 +372,46 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
         <div className="px-4 py-2 border-t border-slate-100 text-xs">
           <button onClick={() => setShowCovered(s => !s)} className="text-slate-500 hover:text-slate-700">
             {showCovered ? '▾' : '▸'} {covered.length} item{covered.length === 1 ? '' : 's'} covered by stock
+            {nextCovered?.c.orderBy && <span className="text-slate-400"> · next order by ~{fmtWeek(nextCovered.c.orderBy)}</span>}
           </button>
           {showCovered && (
-            <table className="mt-1 min-w-full">
-              <thead className="text-slate-400">
-                <tr>
-                  <th className="py-1 text-left font-medium">Component</th>
-                  <th className="px-2 py-1 text-right font-medium">In stock</th>
-                  <th className="px-2 py-1 text-right font-medium">On order</th>
-                  <th className="px-2 py-1 text-right font-medium">Needed thru {thruShort}</th>
-                  <th className="pl-2 py-1 text-right font-medium">Left over</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {covered.map(r => (
-                  <tr key={r.variantId}>
-                    <td className="py-1 text-slate-700">{label(r)}</td>
-                    <td className="px-2 py-1 text-right text-slate-600">{fmtQty(r.inStock)}</td>
-                    <td className="px-2 py-1 text-right text-slate-500">{r.onOrder ? fmtQty(r.onOrder) : ''}</td>
-                    <td className="px-2 py-1 text-right text-slate-600">{fmtQty(r.totalNeeded)}</td>
-                    <td className="pl-2 py-1 text-right font-medium text-emerald-700">{fmtQty(r.inStock + r.onOrder - r.totalNeeded)}</td>
+            <>
+              <table className="mt-1 min-w-full">
+                <thead className="text-slate-400">
+                  <tr>
+                    <th className="py-1 text-left font-medium">Component</th>
+                    <th className="px-2 py-1 text-right font-medium">In stock</th>
+                    <th className="px-2 py-1 text-right font-medium">On order</th>
+                    <th className="px-2 py-1 text-right font-medium">Use / wk</th>
+                    <th className="px-2 py-1 text-right font-medium">Covered until</th>
+                    <th className="pl-2 py-1 text-right font-medium">Order by</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {covered.map(({ r, c }) => (
+                    <tr key={r.variantId}>
+                      <td className="py-1 text-slate-700">{label(r)}</td>
+                      <td className="px-2 py-1 text-right text-slate-600">{fmtQty(r.inStock)}{unitSuffix(r)}</td>
+                      <td className="px-2 py-1 text-right text-slate-500">{r.onOrder ? fmtQty(r.onOrder) : ''}</td>
+                      <td className="px-2 py-1 text-right text-slate-500">{c.weeklyUse ? fmtQty(Math.round(c.weeklyUse * 10) / 10) : '—'}</td>
+                      <td className="px-2 py-1 text-right text-slate-600 whitespace-nowrap">
+                        {c.coveredUntil ? `~${fmtWeek(c.coveredUntil)}` : c.farOff ? '2+ yrs' : 'not used'}
+                      </td>
+                      <td className="pl-2 py-1 text-right whitespace-nowrap">
+                        {c.orderBy
+                          ? <span className={`font-medium ${urgency(c.orderBy, thisWeek) === 'later' ? 'text-emerald-700' : 'text-amber-700'}`}>
+                              {c.orderBy <= thisWeek ? 'this week' : `~${fmtWeek(c.orderBy)}`}
+                            </span>
+                          : <span className="text-slate-400">—</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="mt-1 text-[10px] text-slate-400">
+                Estimated from each item&apos;s average use per week in the schedule (through {thruShort}), using {supplier}&apos;s lead time.
+              </p>
+            </>
           )}
         </div>
       )}
