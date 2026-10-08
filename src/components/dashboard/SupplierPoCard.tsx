@@ -35,10 +35,33 @@ const URGENCY_STYLE: Record<Urgency, string> = {
   later: 'bg-slate-100 text-slate-600',
 };
 
-export function OrderByBadge({ orderBy, thisWeek }: { orderBy: string | null; thisWeek: string }) {
+// Whole weeks from this week to the week stock runs short (0 or less = this week).
+export function weeksUntilShort(needBy: string, thisWeek: string): number {
+  return Math.round((Date.parse(needBy + 'T12:00:00Z') - Date.parse(thisWeek + 'T12:00:00Z')) / (7 * 864e5));
+}
+
+// Late means the order-by date has passed — an order placed now arrives after
+// stock runs short. needBy (the week it runs short) says how soon: "short now"
+// means stock already doesn't cover this week; "short in 4 wks" means there's
+// still stock on hand, just not enough to last until a new order arrives.
+export function OrderByBadge({ orderBy, needBy, thisWeek }: { orderBy: string | null; needBy?: string | null; thisWeek: string }) {
   if (!orderBy) return null;
   const u = urgency(orderBy, thisWeek);
-  const text = u === 'late' ? `Late: was due ${fmtWeek(orderBy)}` : u === 'now' ? 'Order this week' : `Order by ${fmtWeek(orderBy)}`;
+  if (u === 'late') {
+    const wks = needBy ? weeksUntilShort(needBy, thisWeek) : null;
+    const shortNow = wks !== null && wks <= 0;
+    const text = wks === null ? `Late: was due ${fmtWeek(orderBy)}`
+      : shortNow ? 'Late · short now'
+      : `Late · short in ${wks} wk${wks === 1 ? '' : 's'}`;
+    const title = `Should have been ordered by ${fmtWeek(orderBy)}`
+      + (needBy ? (shortNow ? ' — stock doesn’t cover this week' : ` — stock runs short the week of ${fmtWeek(needBy)}`) : '');
+    return (
+      <span title={title} className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap ${shortNow ? 'bg-rose-800 text-white' : URGENCY_STYLE.late}`}>
+        {text}
+      </span>
+    );
+  }
+  const text = u === 'now' ? 'Order this week' : `Order by ${fmtWeek(orderBy)}`;
   return <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap ${URGENCY_STYLE[u]}`}>{text}</span>;
 }
 
@@ -108,7 +131,8 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
   const [created, setCreated] = useState<Created | null>(null);
 
   const chosen = rows.filter(r => selected[r.variantId] && Number(qty[r.variantId]) > 0);
-  const earliest = rows.map(r => r.orderBy).filter(Boolean).sort()[0] ?? null;
+  const soonest = rows.filter(r => r.orderBy).sort((a, b) => (a.orderBy! < b.orderBy! ? -1 : a.orderBy! > b.orderBy! ? 1 : 0))[0];
+  const earliest = soonest?.orderBy ?? null;
   const leadWeeks = allRows[0]?.leadWeeks;
 
   async function createPo() {
@@ -153,7 +177,7 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
           </div>
         </div>
         {rows.length
-          ? <OrderByBadge orderBy={earliest} thisWeek={thisWeek} />
+          ? <OrderByBadge orderBy={earliest} needBy={soonest?.firstShortWeek} thisWeek={thisWeek} />
           : <span className="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-100 text-emerald-800">Covered {thruText}</span>}
       </div>
 
@@ -232,7 +256,7 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
                 </div>
               </td>
               <td className="px-2 py-1.5 whitespace-nowrap">
-                <OrderByBadge orderBy={r.orderBy} thisWeek={thisWeek} />
+                <OrderByBadge orderBy={r.orderBy} needBy={r.firstShortWeek} thisWeek={thisWeek} />
                 {r.firstShortWeek && <div className="text-[10px] text-slate-400 mt-0.5">need by {fmtWeek(r.firstShortWeek)}</div>}
               </td>
               <td className="px-4 py-1.5 text-right whitespace-nowrap">
