@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { applyEdits, type OrderEdits, type OrderPlan, type PlanRow } from '@/lib/katanaPlan';
 import { mondayOf, addWeeks as addWeeksIso } from '@/lib/designInventory';
-import SupplierPoCard, { OrderByBadge, fmtWeek, label, urgency, type EditAction } from './SupplierPoCard';
+import SupplierPoCard, { OrderByBadge, fmtWeek, label, urgency, weeksUntilShort, type EditAction } from './SupplierPoCard';
 
 function fmtQty(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -92,6 +92,7 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
 
   const dueNow = short.filter(r => r.orderNowQty > 0);
   const lateCount = dueNow.filter(r => urgency(r.orderBy, thisWeek) === 'late').length;
+  const shortNowCount = dueNow.filter(r => r.firstShortWeek && weeksUntilShort(r.firstShortWeek, thisWeek) <= 0).length;
   const dueSuppliers = [...new Set(dueNow.map(r => r.supplier ?? NO_SUPPLIER))];
 
   // Selected week's order list, grouped by supplier.
@@ -172,7 +173,7 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
         }`}>
           <span className="font-semibold">
             Order now: {dueNow.length} item{dueNow.length === 1 ? '' : 's'}
-            {lateCount > 0 && <> ({lateCount} already past their order-by date)</>}
+            {lateCount > 0 && <> ({lateCount} already past their order-by date{shortNowCount > 0 ? `, ${shortNowCount} short now` : ''})</>}
           </span>
           <span className="text-xs">from {dueSuppliers.join(', ')}</span>
           <span className="text-xs opacity-75">
@@ -306,7 +307,7 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
                           <td className="px-4 py-1.5 text-slate-700">
                             {label(r)}
                             {r.sku && <span className="text-slate-400"> · {r.sku}</span>}
-                            <div className="mt-0.5"><OrderByBadge orderBy={addWeeksIso(week, -r.leadWeeks)} thisWeek={thisWeek} /></div>
+                            <div className="mt-0.5"><OrderByBadge orderBy={addWeeksIso(week, -r.leadWeeks)} needBy={week} thisWeek={thisWeek} /></div>
                           </td>
                           <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtQty(r.needed[week] ?? 0)}</td>
                           <td className="px-4 py-1.5 text-right font-semibold text-rose-700 whitespace-nowrap">{withPurchaseUnit(r, r.toOrder[week])}</td>
@@ -360,7 +361,7 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
                         {r.uom && r.uom !== 'each' && r.uom !== 'pcs' && <span className="text-slate-400"> ({r.uom})</span>}
                       </td>
                       <td className="px-3 py-1.5 text-slate-500 whitespace-nowrap">{r.supplier ?? '—'}</td>
-                      <td className="px-2 py-1.5"><OrderByBadge orderBy={r.totalToOrder ? r.orderBy : null} thisWeek={thisWeek} /></td>
+                      <td className="px-2 py-1.5"><OrderByBadge orderBy={r.totalToOrder ? r.orderBy : null} needBy={r.firstShortWeek} thisWeek={thisWeek} /></td>
                       <td
                         className={`px-2 py-1.5 text-right ${r.negativeStock !== null ? 'text-amber-600' : 'text-slate-700'}`}
                         title={r.negativeStock !== null ? `Katana shows ${fmtQty(r.negativeStock)}, counted as 0` : undefined}
