@@ -4,8 +4,11 @@ import { useState } from 'react';
 import type { PlanRow } from '@/lib/katanaPlan';
 import { addWeeks } from '@/lib/designInventory';
 
+// "Oct 26", or "Feb 1, 2027" when the date isn't in the current year.
 export function fmtWeek(iso: string): string {
-  return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const d = new Date(iso + 'T12:00:00');
+  const otherYear = d.getFullYear() !== new Date().getFullYear();
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(otherYear ? { year: 'numeric' } : {}) });
 }
 
 function fmtQty(n: number): string {
