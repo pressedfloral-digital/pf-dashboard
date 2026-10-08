@@ -52,10 +52,15 @@ function poUnit(r: PlanRow): string {
 function toPoQty(r: PlanRow, stockQty: number): number {
   return Math.ceil(r.purchaseUom && r.purchaseConversion ? stockQty / r.purchaseConversion : stockQty);
 }
+function fromPoQty(r: PlanRow, poQty: number): number {
+  return r.purchaseUom && r.purchaseConversion ? poQty * r.purchaseConversion : poQty;
+}
+
+export type EditAction = 'setQty' | 'remove' | 'reset';
 
 interface Created { orderNo: string; total: number }
 
-export default function SupplierPoCard({ supplier, supplierId, rows: allRows, location, weeks, thisWeek, canOrder, thruText, thruShort }: {
+export default function SupplierPoCard({ supplier, supplierId, rows: allRows, location, weeks, thisWeek, canOrder, thruText, thruShort, onEdit }: {
   supplier:   string;
   supplierId: number | null;
   rows:       PlanRow[];        // every item from this supplier the schedule uses
@@ -65,10 +70,32 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
   canOrder:   boolean;
   thruText:   string;   // "through year end" / "through the week of Jan 4"
   thruShort:  string;   // "YE" / "Jan 4"
+  // Saves a hand edit (qty in stock units); omitted when edits can't be saved.
+  onEdit?:    (variantId: number, action: EditAction, qty?: number) => Promise<void>;
 }) {
-  const rows = allRows.filter(r => r.totalToOrder > 0);
-  const covered = allRows.filter(r => r.totalToOrder <= 0);
+  // Items edited by hand stay in the list even at 0, so the edit can be seen and reset.
+  const rows = allRows.filter(r => !r.removed && (r.totalToOrder > 0 || r.computedToOrder !== undefined));
+  const removed = allRows.filter(r => r.removed);
+  const covered = allRows.filter(r => !r.removed && !rows.includes(r));
   const [showCovered, setShowCovered] = useState(false);
+  const [showRemoved, setShowRemoved] = useState(false);
+  const [editing, setEditing] = useState<Record<number, string>>({});   // variantId → draft qty (purchase units)
+  const [saving, setSaving] = useState<number | null>(null);
+  const canEdit = !!onEdit && canOrder;
+
+  async function save(r: PlanRow, action: EditAction, qty?: number) {
+    if (!onEdit) return;
+    setSaving(r.variantId);
+    setError(null);
+    try {
+      await onEdit(r.variantId, action, qty);
+      setEditing(e => { const { [r.variantId]: _, ...rest } = e; return rest; });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(null);
+    }
+  }
 
   // Pre-select what's due now (order-by this week or past) at the due-now
   // quantity; later items start unticked at their full year-end quantity.
@@ -122,6 +149,7 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
           <div className="text-[11px] text-slate-400">
             {leadWeeks}-week lead time · {rows.length ? `${rows.length} to order` : 'nothing to order'}
             {covered.length > 0 && <> · {covered.length} covered by stock</>}
+            {removed.length > 0 && <> · {removed.length} deleted</>}
           </div>
         </div>
         {rows.length
@@ -154,8 +182,53 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
                 {label(r)}
                 {r.sku && <span className="text-slate-400"> · {r.sku}</span>}
                 <div className="text-[11px] text-slate-400">
-                  Needed: {weeks.filter(w => r.toOrder[w]).map(w => `${fmtWeek(w)} ${fmtQty(r.toOrder[w])}`).join(' · ')}
-                  {r.orderNowQty > 0 && r.orderNowQty < r.totalToOrder && <> · {fmtQty(r.orderNowQty)} due now, {fmtQty(r.totalToOrder)} total</>}
+                  Needed: {weeks.filter(w => r.toOrder[w]).map(w => `${fmtWeek(w)} ${fmtQty(r.toOrder[w])}`).join(' · ') || 'nothing'}
+                  {r.orderNowQty > 0 && r.orderNowQty < r.totalToOrder && <> · {fmtQty(r.orderNowQty)} due now</>}
+                </div>
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+                  {editing[r.variantId] !== undefined ? (
+                    <>
+                      <span className="text-slate-500">To order:</span>
+                      <input
+                        type="number" min={0} step="any" autoFocus
+                        value={editing[r.variantId]}
+                        onChange={e => setEditing(d => ({ ...d, [r.variantId]: e.target.value }))}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && editing[r.variantId] !== '') save(r, 'setQty', fromPoQty(r, Number(editing[r.variantId])));
+                          if (e.key === 'Escape') setEditing(({ [r.variantId]: _, ...rest }) => rest);
+                        }}
+                        className="w-16 rounded border border-indigo-300 px-1.5 py-0.5 text-right text-slate-800"
+                      />
+                      <span className="text-slate-400">{poUnit(r)}</span>
+                      <button
+                        onClick={() => save(r, 'setQty', fromPoQty(r, Number(editing[r.variantId])))}
+                        disabled={saving === r.variantId || editing[r.variantId] === '' || Number(editing[r.variantId]) < 0}
+                        className="rounded bg-indigo-600 px-2 py-0.5 font-medium text-white disabled:bg-slate-200"
+                      >
+                        {saving === r.variantId ? 'Saving…' : 'Save'}
+                      </button>
+                      <button onClick={() => setEditing(({ [r.variantId]: _, ...rest }) => rest)} className="text-slate-500 underline">Cancel</button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-slate-600">
+                        To order: <span className="font-semibold">{fmtQty(toPoQty(r, r.totalToOrder))} {poUnit(r)}</span>
+                      </span>
+                      {r.computedToOrder !== undefined && (
+                        <span className="rounded-full bg-indigo-100 px-1.5 py-0.5 font-semibold text-indigo-800" title={r.edit ? `Edited by ${r.edit.by}, ${new Date(r.edit.at).toLocaleDateString()}` : undefined}>
+                          edited (was {fmtQty(toPoQty(r, r.computedToOrder))})
+                        </span>
+                      )}
+                      {canEdit && !created && (
+                        <button onClick={() => setEditing(d => ({ ...d, [r.variantId]: String(toPoQty(r, r.totalToOrder)) }))} className="text-indigo-600 underline">
+                          Edit
+                        </button>
+                      )}
+                      {canEdit && !created && r.computedToOrder !== undefined && (
+                        <button onClick={() => save(r, 'reset')} disabled={saving === r.variantId} className="text-slate-500 underline">Reset</button>
+                      )}
+                    </>
+                  )}
                 </div>
               </td>
               <td className="px-2 py-1.5 whitespace-nowrap">
@@ -173,11 +246,46 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
                   className="w-16 rounded border border-slate-200 px-1.5 py-0.5 text-right text-slate-800"
                 />
                 <span className="ml-1 text-slate-400">{poUnit(r)}</span>
+                {canEdit && !created && (
+                  <button
+                    onClick={() => save(r, 'remove')}
+                    disabled={saving === r.variantId}
+                    title="Delete from the order list"
+                    aria-label={`Delete ${label(r)} from the order list`}
+                    className="ml-2 px-1 text-base leading-none text-slate-300 hover:text-rose-600"
+                  >
+                    ×
+                  </button>
+                )}
               </td>
             </tr>
           ))}
         </tbody>
       </table>}
+
+      {removed.length > 0 && (
+        <div className="px-4 py-2 border-t border-slate-100 text-xs">
+          <button onClick={() => setShowRemoved(s => !s)} className="text-slate-500 hover:text-slate-700">
+            {showRemoved ? '▾' : '▸'} {removed.length} item{removed.length === 1 ? '' : 's'} deleted from the list
+          </button>
+          {error && !rows.length && <div className="mt-1 text-rose-600">{error}</div>}
+          {showRemoved && (
+            <ul className="mt-1 divide-y divide-slate-50">
+              {removed.map(r => (
+                <li key={r.variantId} className="flex flex-wrap items-center gap-x-2 py-1">
+                  <span className="text-slate-500 line-through">{label(r)}</span>
+                  {r.edit && <span className="text-slate-400">· {r.edit.by}, {new Date(r.edit.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>}
+                  {canEdit && (
+                    <button onClick={() => save(r, 'reset')} disabled={saving === r.variantId} className="ml-auto text-indigo-600 underline">
+                      {saving === r.variantId ? 'Restoring…' : 'Restore'}
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {covered.length > 0 && (
         <div className="px-4 py-2 border-t border-slate-100 text-xs">

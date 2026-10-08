@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { PRESERVATION_WEEKS, NOT_ON_ORDER, sizeLabel, type QueueLine } from '@/lib/designInventory';
-import type { OrderPlan } from '@/lib/katanaPlan';
+import type { OrderEdits, OrderPlan } from '@/lib/katanaPlan';
 import OrderPlanView from './OrderPlanView';
 
 interface InventoryWeek {
@@ -20,6 +20,7 @@ interface InventoryResponse {
   unscheduledCount: number;
   orderPlan:        OrderPlan | null;
   katanaError:      string | null;
+  orderEdits:       OrderEdits;
   totals: {
     lines: number; inDesignQueue: number; inPreservation: number;
     intakeFromEventDate: number; missingLocation: number; missingOrderDetail: number;
@@ -185,7 +186,7 @@ export default function InventoryPage() {
 
       {view === 'order' && data && !data.error && (
         data.orderPlan
-          ? <OrderPlanView key={data.location} plan={data.orderPlan} generatedAt={data.generatedAt} />
+          ? <OrderPlanView key={data.location} plan={data.orderPlan} generatedAt={data.generatedAt} edits={data.orderEdits ?? {}} />
           : <div className="py-12 text-center text-sm text-rose-600">Couldn&apos;t load Katana: {data.katanaError ?? 'unknown error'}</div>
       )}
 

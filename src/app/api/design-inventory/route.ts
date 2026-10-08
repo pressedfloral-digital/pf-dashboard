@@ -11,7 +11,7 @@ import {
   parseVariant, mondayOf, addWeeks, scheduleLines, matchMaterials, type QueueLine, type OrderAddOn,
 } from '@/lib/designInventory';
 import { loadKatana } from '@/lib/katana';
-import { buildOrderPlan, type OrderPlan } from '@/lib/katanaPlan';
+import { buildOrderPlan, ORDER_EDITS_KEY, type OrderPlan, type OrderEdits } from '@/lib/katanaPlan';
 import { MAX_LEAD_WEEKS } from '@/lib/supplierLeadTimes';
 
 export const maxDuration = 120;
@@ -216,6 +216,9 @@ export async function GET(req: NextRequest) {
       location,
       orderPlan,
       katanaError,
+      // Hand edits are applied in the browser on top of orderPlan, so they can
+      // change without rebuilding the schedule.
+      orderEdits: (get(ORDER_EDITS_KEY) ?? {}) as OrderEdits,
       generatedAt: new Date().toISOString(),
       designedThisWeek,
       weeks: weeks.map((w, i) => ({ ...w, scheduled: Math.round(capacityWeeks[i].scheduled) })),

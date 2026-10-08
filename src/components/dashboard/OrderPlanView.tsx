@@ -1,9 +1,9 @@
 'use client';
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import type { OrderPlan, PlanRow } from '@/lib/katanaPlan';
+import { applyEdits, type OrderEdits, type OrderPlan, type PlanRow } from '@/lib/katanaPlan';
 import { mondayOf, addWeeks as addWeeksIso } from '@/lib/designInventory';
-import SupplierPoCard, { OrderByBadge, fmtWeek, label, urgency } from './SupplierPoCard';
+import SupplierPoCard, { OrderByBadge, fmtWeek, label, urgency, type EditAction } from './SupplierPoCard';
 
 function fmtQty(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -42,7 +42,29 @@ function downloadCsv(plan: OrderPlan, weeks: string[], generatedAt: string) {
   URL.revokeObjectURL(a.href);
 }
 
-export default function OrderPlanView({ plan, generatedAt }: { plan: OrderPlan; generatedAt: string }) {
+export default function OrderPlanView({ plan: basePlan, generatedAt, edits: savedEdits }: {
+  plan:        OrderPlan;
+  generatedAt: string;
+  edits:       OrderEdits;
+}) {
+  const thisWeek = mondayOf(new Date().toISOString());
+  // Hand edits (quantities, deletions), applied on top of the computed list
+  // so a change shows immediately without rebuilding the schedule.
+  const [edits, setEdits] = useState<OrderEdits>(savedEdits);
+  const plan = useMemo(() => applyEdits(basePlan, edits, thisWeek), [basePlan, edits, thisWeek]);
+  const editCount = Object.keys(edits).length;
+
+  async function saveEdit(variantId: number, action: EditAction, qty?: number) {
+    const res = await fetch('/api/inventory-order-edits', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ location: basePlan.location, variantId, action, qty }),
+    });
+    const json = await res.json().catch(() => ({ error: `Server returned ${res.status}` }));
+    if (!res.ok) throw new Error(json.error ?? `Server returned ${res.status}`);
+    setEdits(json as OrderEdits);
+  }
+
   // Design weeks that have scheduled work, this week through year end — or a
   // little into next year once the longest lead time reaches past Dec 31.
   const weeks = plan.weeks;
@@ -58,7 +80,6 @@ export default function OrderPlanView({ plan, generatedAt }: { plan: OrderPlan; 
   const [groupBy, setGroupBy] = useState<'week' | 'supplier'>('supplier');
   const [canOrder, setCanOrder] = useState(false);
   const week = picked ?? firstShort;
-  const thisWeek = mondayOf(new Date().toISOString());
 
   useEffect(() => {
     let cancelled = false;
@@ -114,7 +135,8 @@ export default function OrderPlanView({ plan, generatedAt }: { plan: OrderPlan; 
             Each scheduled order (frame, backing and glass) is broken into its Katana recipe. Each week&apos;s components are
             taken out of {plan.location}&apos;s Katana stock plus what&apos;s already on order, in schedule order. The number shown
             for a week is how much more you need to order so it&apos;s on hand by that Monday. Katana&apos;s &ldquo;committed&rdquo;
-            figure isn&apos;t subtracted, because these orders are the demand.
+            figure isn&apos;t subtracted, because these orders are the demand. Managers can edit any quantity
+            or delete an item from the list; edits are shared and stay until someone resets them.
           </p>
         </div>
         <button
@@ -130,6 +152,7 @@ export default function OrderPlanView({ plan, generatedAt }: { plan: OrderPlan; 
           ? <span className="text-emerald-700 font-medium">Stock plus open orders covers every scheduled order {thruText}.</span>
           : <><span className="font-semibold text-slate-700">{short.length} components</span> need ordering {thruText}
               {firstShort && <> · first shortfall week of {fmtWeek(firstShort)}</>}</>}
+        {editCount > 0 && <> · <span className="text-indigo-700">{editCount} item{editCount === 1 ? '' : 's'} edited or deleted by hand</span></>}
         {' · '}{plan.matchedLines.toLocaleString()} of {plan.totalLines.toLocaleString()} scheduled lines matched to a Katana recipe
         {unmatchedLines > 0 && (
           <> · <button onClick={() => setShowUnmatched(s => !s)} className="text-amber-700 underline">
@@ -219,7 +242,7 @@ export default function OrderPlanView({ plan, generatedAt }: { plan: OrderPlan; 
             <div className="grid gap-3 xl:grid-cols-2">
               {allBySupplier.map(([supplier, rows]) => (
                 <SupplierPoCard
-                  key={`${generatedAt}|${supplier}`}
+                  key={`${generatedAt}|${supplier}|${rows.map(r => r.edit?.at ?? '').join(',')}`}
                   supplier={supplier}
                   supplierId={rows[0].supplierId}
                   rows={rows}
@@ -229,6 +252,7 @@ export default function OrderPlanView({ plan, generatedAt }: { plan: OrderPlan; 
                   canOrder={canOrder}
                   thruText={thruText}
                   thruShort={thruShort}
+                  onEdit={saveEdit}
                 />
               ))}
             </div>
