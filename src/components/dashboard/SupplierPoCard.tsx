@@ -69,6 +69,21 @@ export function OrderByBadge({ orderBy, needBy, thisWeek }: { orderBy: string | 
 
 // Katana POs are in the purchase unit (rolls of thread), stock is in the
 // stock unit (yards) — round up to whole purchase units.
+// First week the schedule's cumulative use outruns `available`, or null if it lasts through the plan.
+function runsOutWeek(r: PlanRow, available: number): string | null {
+  let used = 0;
+  for (const wk of Object.keys(r.needed).sort()) {
+    used += r.needed[wk];
+    if (used > available + 1e-9) return wk;
+  }
+  return null;
+}
+
+// Stock unit label for the context line ("" for each/pcs).
+function unitSuffix(r: PlanRow): string {
+  return r.uom && r.uom !== 'each' && r.uom !== 'pcs' ? ` ${r.uom}` : '';
+}
+
 function poUnit(r: PlanRow): string {
   return r.purchaseUom && r.purchaseConversion ? r.purchaseUom : (r.uom || 'each');
 }
@@ -205,8 +220,9 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
               <td className="px-2 py-1.5 text-slate-700">
                 {label(r)}
                 {r.sku && <span className="text-slate-400"> · {r.sku}</span>}
+                <StockContext r={r} thruShort={thruShort} />
                 <div className="text-[11px] text-slate-400">
-                  Needed: {weeks.filter(w => r.toOrder[w]).map(w => `${fmtWeek(w)} ${fmtQty(r.toOrder[w])}`).join(' · ') || 'nothing'}
+                  Short by week: {weeks.filter(w => r.toOrder[w]).map(w => `${fmtWeek(w)} ${fmtQty(r.toOrder[w])}`).join(' · ') || 'nothing'}
                   {r.orderNowQty > 0 && r.orderNowQty < r.totalToOrder && <> · {fmtQty(r.orderNowQty)} due now</>}
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
@@ -364,6 +380,33 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
           </>
         )}
       </div>}
+    </div>
+  );
+}
+
+// What we have vs. what the schedule uses, for context next to a PO line:
+// stock, on order, total need, how far short, and when it runs out — on
+// stock alone, and with open orders counted (their arrival dates aren't known).
+function StockContext({ r, thruShort }: { r: PlanRow; thruShort: string }) {
+  const u = unitSuffix(r);
+  const shortBy = Math.max(0, r.totalNeeded - r.inStock - r.onOrder);
+  const outOnHand = runsOutWeek(r, r.inStock);
+  const outWithOrders = r.onOrder > 0 ? runsOutWeek(r, r.inStock + r.onOrder) : outOnHand;
+  const when = (wk: string | null) => wk ? `wk of ${fmtWeek(wk)}` : `lasts thru ${thruShort}`;
+  return (
+    <div className="mt-0.5 rounded bg-slate-50 px-2 py-1 text-[11px] text-slate-600">
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+        <span title={r.negativeStock !== null ? `Katana shows ${fmtQty(r.negativeStock)}, counted as 0` : undefined}>
+          In stock <span className={`font-semibold ${r.negativeStock !== null ? 'text-amber-600' : 'text-slate-800'}`}>{fmtQty(r.inStock)}{r.negativeStock !== null ? '*' : ''}</span>{u}
+        </span>
+        <span>On order <span className="font-semibold text-slate-800">{fmtQty(r.onOrder)}</span>{u}</span>
+        <span>Needed thru {thruShort} <span className="font-semibold text-slate-800">{fmtQty(r.totalNeeded)}</span>{u}</span>
+        <span>Short <span className="font-semibold text-rose-700">{fmtQty(shortBy)}</span>{u}</span>
+      </div>
+      <div className="mt-0.5">
+        Runs out: <span className="font-semibold text-slate-800">{when(outOnHand)}</span> on stock alone
+        {r.onOrder > 0 && <>, <span className="font-semibold text-slate-800">{when(outWithOrders)}</span> once the {fmtQty(r.onOrder)}{u} on order arrives</>}
+      </div>
     </div>
   );
 }
