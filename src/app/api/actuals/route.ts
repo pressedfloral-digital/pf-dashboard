@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
     if (type === 'team' || type === 'all') {
       const { data, error } = await supabase
         .from('team_member_week_actuals')
-        .select('department, week_of, member_name, actual_hours, actual_orders, hours_source, orders_source')
+        .select('department, week_of, member_name, actual_hours, actual_orders, synced_orders, hours_source, orders_source')
         .eq('location', location)
         .gte('week_of', sinceIso)
         .order('week_of', { ascending: true });
