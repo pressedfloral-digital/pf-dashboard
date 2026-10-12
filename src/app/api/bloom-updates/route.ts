@@ -63,3 +63,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
+
+// ── DELETE /api/bloom-updates?id=123 ──────────────────────────────────────────────
+// Removes an update from the sent history (e.g. a test send). Only the history
+// record goes — locked-in design_delivery_promises are left as they are.
+export async function DELETE(req: NextRequest) {
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!isAdmin(userId)) return NextResponse.json({ error: 'Admin only' }, { status: 403 });
+
+  const id = Number(req.nextUrl.searchParams.get('id'));
+  if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+
+  try {
+    const { error } = await supabase.from('biweekly_bloom_updates').delete().eq('id', id);
+    if (error) throw error;
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
+  }
+}
