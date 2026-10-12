@@ -199,8 +199,16 @@ ${rowsHtml}
 }
 
 // ─── Panel that builds the copy-paste email HTML (buffer + live preview) ────────
-function BloomEmailExportPanel({ rows }: { rows: BloomUpdateRow[] }) {
-  const [buffers, setBuffers] = useState<Record<string, number>>({});
+function BloomEmailExportPanel({ rows, buffers: liftedBuffers, setBuffers: setLiftedBuffers }: {
+  rows: BloomUpdateRow[];
+  buffers?: Record<string, number>;
+  setBuffers?: React.Dispatch<React.SetStateAction<Record<string, number>>>;
+}) {
+  // Controlled by the parent when it needs the buffers (the send modal);
+  // otherwise local, e.g. when re-exporting from history.
+  const [localBuffers, setLocalBuffers] = useState<Record<string, number>>({});
+  const buffers = liftedBuffers ?? localBuffers;
+  const setBuffers = setLiftedBuffers ?? setLocalBuffers;
   const [copied, setCopied] = useState(false);
   const [previewHeight, setPreviewHeight] = useState(200);
   // Regenerated whenever the buffer controls change, but freely hand-editable
@@ -231,7 +239,7 @@ function BloomEmailExportPanel({ rows }: { rows: BloomUpdateRow[] }) {
     <div className="border border-slate-200 rounded-lg p-3 space-y-3 bg-slate-50">
       <div>
         <label className="text-[11px] font-medium text-slate-500">
-          Buffer per week <span className="text-slate-400 font-normal">— only changes what the client email shows; the ops dashboard&apos;s production goals stay set to the real promise</span>
+          Buffer per week <span className="text-slate-400 font-normal">— changes what clients see (email, image, and sent history); the ops dashboard&apos;s production goals stay set to the real promise</span>
         </label>
         <div className="mt-1 max-h-40 overflow-y-auto border border-slate-200 rounded divide-y divide-slate-100 bg-white">
           {rows.map(row => (
@@ -333,6 +341,12 @@ export function BloomUpdateModal({ rows, location, onClose, onConfirmed }: {
   const [sentAt, setSentAt] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [showEmailExport, setShowEmailExport] = useState(false);
+  // Lives here (not in the email panel) so buffers survive toggling the panel
+  // closed to go back and confirm.
+  const [buffers, setBuffers] = useState<Record<string, number>>({});
+  // What clients see: the review table, PNG, and saved history record.
+  // The design promise itself is still locked in from the real `rows`.
+  const clientRows = rows.map(r => ({ ...r, weeksUntilDesigned: r.weeksUntilDesigned + (buffers[r.weekOf] ?? 0) }));
 
   async function handleConfirm() {
     setStage('locking');
@@ -347,7 +361,7 @@ export function BloomUpdateModal({ rows, location, onClose, onConfirmed }: {
       const updateRes = await fetch('/api/bloom-updates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ location, rows }),
+        body: JSON.stringify({ location, rows: clientRows }),
       });
       if (!updateRes.ok) throw new Error('Failed to save the update record');
       const { update } = await updateRes.json() as { update: { id: number; sent_at: string } };
@@ -371,7 +385,7 @@ export function BloomUpdateModal({ rows, location, onClose, onConfirmed }: {
             {stage === 'locked' ? 'Biweekly bloom update sent' : 'Send biweekly bloom update'}
           </h3>
           <p className="text-xs text-slate-400 mt-0.5">
-            {stage === 'preview' && `This is exactly what will be locked in as the client-facing promise for ${location}.`}
+            {stage === 'preview' && `This is exactly what clients in ${location} will see${Object.values(buffers).some(Boolean) ? ' (buffers included — ops goals stay at the real promise)' : ''}.`}
             {stage === 'locking' && 'Locking in…'}
             {stage === 'locked' && 'Locked in and saved to history — download the image to send to clients.'}
             {stage === 'error' && errorMsg}
@@ -379,7 +393,7 @@ export function BloomUpdateModal({ rows, location, onClose, onConfirmed }: {
         </div>
         {!showEmailExport && (
           <div className="border-y border-slate-100 my-3">
-            <BloomTablePreview sentAt={displaySentAt} rows={rows} />
+            <BloomTablePreview sentAt={displaySentAt} rows={clientRows} />
           </div>
         )}
         {(stage === 'preview' || stage === 'locked') && (
@@ -392,7 +406,7 @@ export function BloomUpdateModal({ rows, location, onClose, onConfirmed }: {
             </button>
             {showEmailExport && (
               <div className="mt-2">
-                <BloomEmailExportPanel rows={rows} />
+                <BloomEmailExportPanel rows={rows} buffers={buffers} setBuffers={setBuffers} />
               </div>
             )}
           </div>
@@ -418,7 +432,7 @@ export function BloomUpdateModal({ rows, location, onClose, onConfirmed }: {
           {stage === 'locked' && (
             <>
               <button onClick={onClose} className="text-xs px-3 py-1.5 border border-slate-200 rounded text-slate-600 hover:bg-slate-50">Close</button>
-              <button onClick={() => downloadBloomUpdatePNG(displaySentAt, rows, location)} className="text-xs px-3 py-1.5 bg-indigo-600 rounded text-white hover:bg-indigo-700">Download PNG</button>
+              <button onClick={() => downloadBloomUpdatePNG(displaySentAt, clientRows, location)} className="text-xs px-3 py-1.5 bg-indigo-600 rounded text-white hover:bg-indigo-700">Download PNG</button>
             </>
           )}
           {stage === 'error' && (
