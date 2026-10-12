@@ -11,6 +11,8 @@ export interface ActualRow {
   location:      string;
   actual_hours:  number;
   actual_orders: number;
+  /** Raw production-app count, before order-number adjustments (auto rows). */
+  synced_orders?: number | null;
   hours_source?: string;
   orders_source?: string;
 }

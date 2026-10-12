@@ -8,6 +8,7 @@ import { isActiveGm, activeGmNames } from '@/lib/managers';
 import { MemberTierBadges } from './MemberTierBadge';
 import { SyncedOrdersPopover } from './SyncedOrdersPopover';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { netAdjustment, type OrderAdjustment } from '@/lib/orderAdjustments';
 
 interface TeamMember {
   id:           string;
@@ -78,6 +79,27 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
   // /api/actuals); everyone else can open the drill-down to see its orders.
   const { user } = useCurrentUser();
   const isAdmin = user?.profile.role === 'admin';
+  // Admins, and managers/GMs of this location, can add or remove order
+  // numbers from a synced count (enforced again in /api/order-adjustments).
+  // Non-admins are held to the same 31-day window as other Historicals edits.
+  const canAdjustLocation = isAdmin || (
+    (user?.profile.role === 'manager' || user?.profile.role === 'general_manager') &&
+    user?.profile.location === location
+  );
+  const [loadedAt] = useState(() => Date.now());
+  const canAdjustWeek = (weekOf: string) =>
+    canAdjustLocation && (isAdmin || (loadedAt - new Date(weekOf + 'T12:00:00').getTime()) / 86_400_000 <= 31);
+  const [adjustments, setAdjustments] = useState<OrderAdjustment[]>([]);
+  const loadAdjustments = () => {
+    if (department === 'resin') return;
+    fetch(`/api/order-adjustments?location=${location}`)
+      .then(res => res.ok ? res.json() : { adjustments: [] })
+      .then(json => setAdjustments(json.adjustments ?? []))
+      .catch(() => {});
+  };
+  useEffect(loadAdjustments, [location, department]);
+  const adjustmentsFor = (weekOf: string, name: string) =>
+    adjustments.filter(a => a.department === actualsDept && a.week_of === weekOf && a.member_name === name);
   // team_member_week_actuals stores resin rows as 'Resin' (capitalized) — the
   // other three departments store lowercase. This is the one place that
   // casing difference needs to be bridged.
@@ -125,7 +147,8 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
 
   const [range, setRange] = useState<number | 'all'>(12);
   const [showInactive, setShowInactive] = useState(false);
-  const [syncedDetail, setSyncedDetail] = useState<{ name: string; weekOf: string; count: number } | null>(null);
+  const [syncedDetail, setSyncedDetail] = useState<{ name: string; weekOf: string } | null>(null);
+  const [addOrderPick, setAddOrderPick] = useState<{ name: string; weekOf: string } | null>(null);
   // Oldest → newest, trimmed to the most recent `range` weeks.
   const visibleWeeks = useMemo(
     () => (range === 'all' ? allWeeks : allWeeks.slice(-range)),
@@ -392,15 +415,76 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
 
   return (
     <div className="space-y-6">
-      {syncedDetail && department !== 'resin' && (
-        <SyncedOrdersPopover
-          name={syncedDetail.name}
-          department={department}
-          start={syncedDetail.weekOf}
-          end={(() => { const d = new Date(syncedDetail.weekOf + 'T12:00:00'); d.setDate(d.getDate() + 6); return isoDate(d); })()}
-          syncedCount={syncedDetail.count}
-          onClose={() => setSyncedDetail(null)}
-        />
+      {syncedDetail && department !== 'resin' && (() => {
+        const row = getActual(syncedDetail.weekOf, syncedDetail.name);
+        const rowAdjustments = adjustmentsFor(syncedDetail.weekOf, syncedDetail.name);
+        const adjustedCount = row?.actual_orders ?? 0;
+        // Rows synced before synced_orders existed: back the adjustments out.
+        const syncedCount = row?.synced_orders ?? Math.max(0, adjustedCount - netAdjustment(rowAdjustments));
+        return (
+          <SyncedOrdersPopover
+            name={syncedDetail.name}
+            department={department}
+            start={syncedDetail.weekOf}
+            end={(() => { const d = new Date(syncedDetail.weekOf + 'T12:00:00'); d.setDate(d.getDate() + 6); return isoDate(d); })()}
+            syncedCount={syncedCount}
+            adjust={{
+              location,
+              weekOf: syncedDetail.weekOf,
+              adjustments: rowAdjustments,
+              adjustedCount,
+              canAdjust: canAdjustWeek(syncedDetail.weekOf),
+              onChanged: () => {
+                loadAdjustments();
+                refresh();
+                // The refreshed row is authoritative; drop any stale typed value.
+                setLocalEdits(prev => {
+                  const week = { ...(prev[syncedDetail.weekOf] ?? {}) };
+                  delete week[syncedDetail.name];
+                  return { ...prev, [syncedDetail.weekOf]: week };
+                });
+              },
+            }}
+            onClose={() => setSyncedDetail(null)}
+          />
+        );
+      })()}
+
+      {addOrderPick && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-4" onClick={() => setAddOrderPick(null)}>
+          <form
+            className="w-full max-w-xs rounded-xl bg-white shadow-xl border border-slate-200 p-4 space-y-3 text-xs"
+            onClick={e => e.stopPropagation()}
+            onSubmit={e => {
+              e.preventDefault();
+              if (!addOrderPick.name || !addOrderPick.weekOf) return;
+              setSyncedDetail(addOrderPick);
+              setAddOrderPick(null);
+            }}
+          >
+            <h3 className="text-sm font-semibold text-slate-700">Add or remove an order number</h3>
+            <label className="block">
+              <span className="text-slate-500">Who did the work</span>
+              <select value={addOrderPick.name} onChange={e => setAddOrderPick({ ...addOrderPick, name: e.target.value })}
+                className="mt-1 w-full rounded border border-slate-200 px-2 py-1.5">
+                <option value="">Choose a person…</option>
+                {[...new Set([...members.map(m => m.name), ...flexNames])].sort().map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-slate-500">Week</span>
+              <select value={addOrderPick.weekOf} onChange={e => setAddOrderPick({ ...addOrderPick, weekOf: e.target.value })}
+                className="mt-1 w-full rounded border border-slate-200 px-2 py-1.5">
+                {[...allWeeks].reverse().filter(canAdjustWeek).map(w => <option key={w} value={w}>Week of {fmtWeek(w)}</option>)}
+              </select>
+            </label>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setAddOrderPick(null)} className="px-3 py-1.5 text-slate-500 hover:text-slate-700">Cancel</button>
+              <button type="submit" disabled={!addOrderPick.name}
+                className="rounded bg-violet-600 px-3 py-1.5 font-medium text-white hover:bg-violet-700 disabled:opacity-50">Next</button>
+            </div>
+          </form>
+        </div>
       )}
 
       {hiddenOrderRows.length > 0 && (
@@ -427,13 +511,23 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
             <h3 className="text-sm font-semibold text-slate-700">Weekly — {department} · {location}</h3>
             <p className="text-xs text-slate-400 mt-0.5">
               Oldest → newest. <span className="text-amber-600 font-medium">Amber</span> = missing actuals.{' '}
-              <span className="text-sky-600 font-medium">Blue orders</span> = auto-synced from the production app — click &quot;synced&quot; to see the orders{isAdmin ? ', still editable' : '; only an admin can change them'}.{' '}
+              <span className="text-sky-600 font-medium">Blue orders</span> = auto-synced from the production app — click &quot;synced&quot; to see the orders{canAdjustLocation && department !== 'resin' ? ' and add or remove order numbers' : ''}{isAdmin ? ' (admins can also type over the count)' : ''}.{' '}
+              <span className="text-violet-600 font-medium">Purple ±</span> = orders a manager added or removed.{' '}
               <span className="text-green-600 font-medium">Green CPO</span> = from Rippling payroll.{' '}
               <span className="text-amber-600 font-medium">Amber CPO</span> = estimated from rate.
             </p>
           </div>
           <div className="flex items-center gap-3">
             {savingKey && <span className="text-xs text-slate-400 italic">Saving…</span>}
+            {canAdjustLocation && department !== 'resin' && (
+              <button
+                type="button"
+                onClick={() => setAddOrderPick({ name: '', weekOf: [...allWeeks].reverse().find(canAdjustWeek) ?? allWeeks[allWeeks.length - 1] })}
+                className="text-xs font-medium text-violet-600 hover:text-violet-800 border border-violet-200 rounded-lg px-2.5 py-1 whitespace-nowrap"
+              >
+                + Add order #
+              </button>
+            )}
             {inactiveCount > 0 && (
               <button
                 type="button"
@@ -523,12 +617,17 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                             {e.ordersSource === 'auto' && (
                               department === 'resin' ? (
                                 <div className="text-[8px] leading-none text-sky-500 text-center -mt-0.5" title="Auto-synced from production app">synced</div>
-                              ) : (
-                                <button type="button"
-                                  onClick={() => setSyncedDetail({ name, weekOf: w, count: e.orders })}
-                                  className="text-[8px] leading-none text-sky-500 text-center -mt-0.5 underline decoration-dotted underline-offset-2 hover:text-sky-700 cursor-pointer"
-                                  title="Auto-synced from production app — click to see the orders">synced</button>
-                              )
+                              ) : (() => {
+                                const net = netAdjustment(adjustmentsFor(w, name));
+                                return (
+                                  <button type="button"
+                                    onClick={() => setSyncedDetail({ name, weekOf: w })}
+                                    className="text-[8px] leading-none text-sky-500 text-center -mt-0.5 underline decoration-dotted underline-offset-2 hover:text-sky-700 cursor-pointer"
+                                    title={net !== 0 ? 'Synced from production app, with orders a manager added or removed — click to see them' : 'Auto-synced from production app — click to see the orders'}>
+                                    synced{net !== 0 && <span className="text-violet-600 font-semibold no-underline"> {net > 0 ? '+' : '−'}{Math.abs(net)}</span>}
+                                  </button>
+                                );
+                              })()
                             )}
                             <div className="relative group">
                             <input type="number" min="0" step="0.5"

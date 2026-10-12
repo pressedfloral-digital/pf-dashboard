@@ -8,6 +8,7 @@ import {
   type AssignmentDepartment,
 } from '@/lib/assignment-counts';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
+import { adjustmentRowKey, netAdjustment, type OrderAdjustment } from '@/lib/orderAdjustments';
 
 export const maxDuration = 300;
 
@@ -17,7 +18,9 @@ export const maxDuration = 300;
 // RESYNC_WEEKS completed Mon–Sun weeks so app-side date corrections and
 // reassignments flow into Historicals. Any row a manager has edited via the Historicals UI is
 // marked orders_source='manual' (src/app/api/actuals/route.ts) and is never
-// touched again here. actual_hours is always preserved as-is.
+// touched again here. actual_hours is always preserved as-is. The raw count
+// lands in synced_orders; actual_orders adds any manager order-number
+// adjustments on top (src/lib/orderAdjustments.ts).
 //
 // ?dryRun=1 computes and reports what would change without writing anything.
 
@@ -47,6 +50,8 @@ interface PlannedWrite {
   member: string;
   weekOf: string;
   computedOrders: number;
+  /** computedOrders plus manager order-number adjustments, when written. */
+  adjustedOrders?: number;
   previousOrders: number | null;
   action: 'write' | 'skip_locked' | 'skip_unresolved_location' | 'skip_non_production';
 }
@@ -123,9 +128,10 @@ async function syncWeek(monday: Date, dryRun: boolean) {
 
   const { data: existingRows, error: existingErr } = await supabase
     .from('team_member_week_actuals')
-    .select('location, department, member_name, actual_hours, actual_orders, orders_source')
+    .select('location, department, member_name, actual_hours, actual_orders, synced_orders, orders_source')
     .eq('week_of', weekStart);
   if (existingErr) throw existingErr;
+  const adjustmentsByRow = await netAdjustmentsForWeek(weekStart);
 
   const planned: PlannedWrite[] = [];
   const toUpsert: Record<string, unknown>[] = [];
@@ -191,12 +197,14 @@ async function syncWeek(monday: Date, dryRun: boolean) {
         continue;
       }
 
+      const adjusted = Math.max(0, count + (adjustmentsByRow.get(adjustmentRowKey(writeLocation, actualsDept, weekStart, writeMember)) ?? 0));
+
       // Earlier weeks are re-synced; leave rows whose count hasn't moved alone.
-      if (existing && existing.actual_orders === count) continue;
+      if (existing && Number(existing.actual_orders) === adjusted && Number(existing.synced_orders ?? existing.actual_orders) === count) continue;
 
       planned.push({
         location: writeLocation, department: actualsDept, member: writeMember, weekOf: weekStart,
-        computedOrders: count, previousOrders: existing?.actual_orders ?? null,
+        computedOrders: count, adjustedOrders: adjusted, previousOrders: existing?.actual_orders ?? null,
         action: 'write',
       });
 
@@ -204,7 +212,8 @@ async function syncWeek(monday: Date, dryRun: boolean) {
         location: writeLocation, department: actualsDept, week_of: weekStart,
         member_name: writeMember,
         actual_hours: existing?.actual_hours ?? 0,
-        actual_orders: count,
+        synced_orders: count,
+        actual_orders: adjusted,
         orders_source: 'auto',
         updated_at: new Date().toISOString(),
       });
@@ -228,6 +237,21 @@ async function syncWeek(monday: Date, dryRun: boolean) {
     unmatchedStaff: computed.unmatched,
     planned,
   };
+}
+
+/** Net adjustment per actuals row key for one week (all locations/departments). */
+async function netAdjustmentsForWeek(weekOf: string): Promise<Map<string, number>> {
+  const { data, error } = await supabase
+    .from('order_count_adjustments')
+    .select('location, department, week_of, member_name, action, products')
+    .eq('week_of', weekOf);
+  if (error) throw error;
+  const byRow = new Map<string, number>();
+  (data ?? []).forEach(a => {
+    const key = adjustmentRowKey(a.location, a.department, a.week_of, a.member_name);
+    byRow.set(key, (byRow.get(key) ?? 0) + netAdjustment([a as OrderAdjustment]));
+  });
+  return byRow;
 }
 
 export async function GET(req: NextRequest) {
