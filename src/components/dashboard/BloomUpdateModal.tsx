@@ -455,6 +455,23 @@ export function BloomHistoryModal({ updates, loading, location, onClose }: {
   onClose: () => void;
 }) {
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [deletedIds, setDeletedIds] = useState<Set<number>>(new Set());
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const visibleUpdates = updates.filter(u => !deletedIds.has(u.id));
+
+  async function handleDelete(u: { id: number; sent_at: string }) {
+    if (!window.confirm(`Delete the ${fmtLongDate(u.sent_at)} bloom update from history? This can't be undone. Locked-in production goals won't change.`)) return;
+    setDeletingId(u.id);
+    try {
+      const res = await fetch(`/api/bloom-updates?id=${u.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Delete failed');
+      setDeletedIds(prev => new Set(prev).add(u.id));
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
@@ -468,8 +485,8 @@ export function BloomHistoryModal({ updates, loading, location, onClose }: {
         </div>
         <div className="overflow-y-auto px-5 py-3 space-y-2">
           {loading && <p className="text-xs text-slate-400 py-6 text-center">Loading…</p>}
-          {!loading && updates.length === 0 && <p className="text-xs text-slate-400 py-6 text-center">No bloom updates sent yet.</p>}
-          {!loading && updates.map(u => (
+          {!loading && visibleUpdates.length === 0 && <p className="text-xs text-slate-400 py-6 text-center">No bloom updates sent yet.</p>}
+          {!loading && visibleUpdates.map(u => (
             <div key={u.id} className="border border-slate-100 rounded-lg px-3 py-2.5">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -486,6 +503,12 @@ export function BloomHistoryModal({ updates, loading, location, onClose }: {
                     onClick={() => downloadBloomUpdatePNG(u.sent_at, u.rows, location)}
                     className="text-xs px-2.5 py-1 border border-indigo-200 bg-indigo-50 rounded text-indigo-700 hover:bg-indigo-100">
                     Download PNG
+                  </button>
+                  <button
+                    onClick={() => handleDelete(u)}
+                    disabled={deletingId === u.id}
+                    className="text-xs px-2.5 py-1 border border-red-200 rounded text-red-600 hover:bg-red-50 disabled:opacity-50">
+                    {deletingId === u.id ? 'Deleting…' : 'Delete'}
                   </button>
                 </div>
               </div>
