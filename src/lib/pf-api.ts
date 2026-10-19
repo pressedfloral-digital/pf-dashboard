@@ -56,17 +56,27 @@ export async function pfGet<T>(path: string, options?: { fresh?: boolean }): Pro
   return res.json();
 }
 
+// The API (Azure App Service) answers 503/429 when a burst of parallel
+// requests overloads it; those are worth a short wait and another try.
+const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
+const POST_RETRY_DELAYS_MS = [500, 1500, 4000];
+
 export async function pfPost<T>(path: string, body: unknown): Promise<T> {
   const { url } = getApiConfig();
   const token = await getToken();
-  const res = await fetch(`${url}${path}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    cache: 'no-store',
-  });
-  if (!res.ok) throw new Error(`PF API POST ${path} → ${res.status}`);
-  return res.json();
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`${url}${path}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      cache: 'no-store',
+    });
+    if (res.ok) return res.json();
+    if (!RETRYABLE_STATUSES.has(res.status) || attempt >= POST_RETRY_DELAYS_MS.length) {
+      throw new Error(`PF API POST ${path} → ${res.status}`);
+    }
+    await new Promise(r => setTimeout(r, POST_RETRY_DELAYS_MS[attempt]));
+  }
 }
 
 /** Fetch multiple URLs in parallel (like GAS fetchAll) */

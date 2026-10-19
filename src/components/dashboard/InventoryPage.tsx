@@ -117,13 +117,22 @@ export default function InventoryPage() {
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/design-inventory?location=${location}`)
-      .then(r => r.json())
+      .then(async r => {
+        // A non-JSON body is Next's HTML error page (e.g. the route is still
+        // compiling); report the status rather than a JSON parse error.
+        if (!r.headers.get('content-type')?.includes('application/json')) {
+          throw new Error(`the server returned ${r.status}. Try refreshing in a moment.`);
+        }
+        const d = await r.json() as InventoryResponse;
+        if (!r.ok && !d.error) d.error = `the server returned ${r.status}`;
+        return d;
+      })
       .then((d: InventoryResponse) => {
         if (cancelled) return;
         setLoaded({ location, data: d });
         setSelectedWeek(d.weeks?.find(w => w.lines.length > 0)?.weekOf ?? null);
       })
-      .catch(e => { if (!cancelled) setLoaded({ location, data: { error: String(e) } as InventoryResponse }); });
+      .catch(e => { if (!cancelled) setLoaded({ location, data: { error: e instanceof Error ? e.message : String(e) } as InventoryResponse }); });
     return () => { cancelled = true; };
   }, [location]);
 
