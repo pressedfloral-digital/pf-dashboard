@@ -21,7 +21,7 @@ export const maxDuration = 120;
 const ORDER_LOOKBACK_MONTHS = 15;
 // PF API caps /OrderProducts/Search at 50 per page.
 const SEARCH_PAGE_SIZE = 50;
-const SEARCH_PAGE_BATCH = 10;
+const SEARCH_PAGE_BATCH = 5;
 // Concurrent /Orders/{uuid} requests (each cached 5 min by pfGetAll).
 const ORDER_DETAIL_BATCH = 20;
 
