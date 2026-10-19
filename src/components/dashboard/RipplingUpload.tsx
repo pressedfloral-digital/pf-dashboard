@@ -79,8 +79,10 @@ function parseHoursXLSX(file: File): Promise<HoursRow[]> {
         const rows = XLSX.utils.sheet_to_json<Record<string,unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: '' });
         // Keep Checks & Unboxing shifts — hours-upload files them as
         // 'checks_unboxing', which counts toward Preservation everywhere.
+        // Recreation hours go only to the Bloom Stock Products tab (the
+        // server routes them to bloom_stock_week_actuals, never a team dept).
         const isProductionDept = (raw: string) =>
-          /design|preservation|fulfillment|resin|checks|unboxing/i.test(raw);
+          /design|preservation|fulfillment|resin|checks|unboxing|recreation/i.test(raw);
         const parsed = rows
           .filter(r => r['Employee'] && r['Time entry clock in date'] && isProductionDept(String(r['Department (Worked)'] ?? '')))
           .map(r => ({
