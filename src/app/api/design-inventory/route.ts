@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
-import { pfGetAll, pfPost, fmtDate } from '@/lib/pf-api';
+import { pfGetAll, fmtDate } from '@/lib/pf-api';
 import { supabase } from '@/lib/supabase';
 import { fetchAllRows } from '@/lib/fetchAllRows';
 import { isoMonday, getWeekMondays } from '@/lib/weekDates';
@@ -13,40 +13,15 @@ import {
 import { loadKatana } from '@/lib/katana';
 import { buildOrderPlan, ORDER_EDITS_KEY, type OrderPlan, type OrderEdits } from '@/lib/katanaPlan';
 import { MAX_LEAD_WEEKS } from '@/lib/supplierLeadTimes';
+import { resolveOrderUuids } from '@/lib/orderUuids';
 
 export const maxDuration = 120;
 
 // Orders are placed around the event date, so anything still in
 // Preservation or Design was ordered within roughly this many months.
 const ORDER_LOOKBACK_MONTHS = 15;
-// PF API caps /OrderProducts/Search at 50 per page.
-const SEARCH_PAGE_SIZE = 50;
-const SEARCH_PAGE_BATCH = 5;
 // Concurrent /Orders/{uuid} requests (each cached 5 min by pfGetAll).
 const ORDER_DETAIL_BATCH = 20;
-
-// WeeklyReport has order numbers but not order UUIDs, which /Orders/{uuid}
-// (the only endpoint returning backing/glass add-ons) needs. Page through
-// every Preservation/Design line once — ~80 pages — rather than one search
-// per order.
-async function findOrderUuids(): Promise<Record<string, string>> {
-  const statuses = [...DESIGN_QUEUE_STATUSES, ...PRESERVATION_STATUSES];
-  type SearchPage = { totalPages: number; items: { orderUuid: string; shopifyOrderNumber: string | number }[] };
-  const search = (pageNumber: number) => pfPost<SearchPage>('/OrderProducts/Search', {
-    searchTerm: '', pageNumber, pageSize: SEARCH_PAGE_SIZE, orderProductStatusFilter: statuses,
-  });
-  const first = await search(1);
-  const pages = [first];
-  for (let p = 2; p <= first.totalPages; p += SEARCH_PAGE_BATCH) {
-    const batch = Array.from({ length: Math.min(SEARCH_PAGE_BATCH, first.totalPages - p + 1) }, (_, k) => search(p + k));
-    pages.push(...await Promise.all(batch));
-  }
-  const out: Record<string, string> = {};
-  pages.forEach(pg => pg.items.forEach(it => {
-    if (it.orderUuid) out[String(it.shopifyOrderNumber)] = it.orderUuid;
-  }));
-  return out;
-}
 
 interface WeeklyReportItem {
   orderNumber?: string | number;
@@ -84,14 +59,19 @@ export async function GET(req: NextRequest) {
       const last  = m === 0 ? today : new Date(today.getFullYear(), today.getMonth() - m + 1, 0);
       return `/OrderProducts/WeeklyReport?startDate=${fmtDate(first)}&endDate=${fmtDate(last)}`;
     });
-    // Started now so its ~80 search pages overlap the report pull below.
-    const orderUuidsPromise = findOrderUuids();
-    orderUuidsPromise.catch(() => {}); // awaited (and surfaced) in step 4
     // Katana recipes + stock load alongside; a Katana failure only drops the
     // order list, not the schedule.
     const katanaPromise = loadKatana(location);
     katanaPromise.catch(() => {}); // awaited in step 5
     const reports = await pfGetAll<WeeklyReportItem[]>(paths);
+    // A missing month silently drops its orders from the schedule and the
+    // order list, so fail instead of showing a confident partial answer.
+    const failedMonths = reports.filter(r => r === null).length;
+    if (failedMonths > 0) {
+      return NextResponse.json({
+        error: `the production app didn't return ${failedMonths} of ${paths.length} months of orders, so the schedule would be incomplete. Try again in a minute.`,
+      }, { status: 503 });
+    }
 
     const seen = new Set<string>();
     const raw: { key: string; item: WeeklyReportItem; num: string }[] = [];
@@ -186,7 +166,9 @@ export async function GET(req: NextRequest) {
 
     // ── 4. Backing & glass for every scheduled order ───────────────────────
     const scheduledNums = new Set(weeks.flatMap(w => w.lines.map(l => l.orderNumber)));
-    const orderUuids = await orderUuidsPromise;
+    // WeeklyReport has order numbers but not the order UUIDs /Orders/{uuid}
+    // (the only endpoint returning backing/glass add-ons) needs.
+    const orderUuids = await resolveOrderUuids([...scheduledNums], [...DESIGN_QUEUE_STATUSES, ...PRESERVATION_STATUSES]);
     const addOnsByOrder: Record<string, OrderAddOn[]> = {};
     const nums = [...scheduledNums].filter(n => orderUuids[n]);
     for (let i = 0; i < nums.length; i += ORDER_DETAIL_BATCH) {

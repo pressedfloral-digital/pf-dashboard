@@ -59,33 +59,37 @@ export async function pfGet<T>(path: string, options?: { fresh?: boolean }): Pro
 // The API (Azure App Service) answers 503/429 when a burst of parallel
 // requests overloads it; those are worth a short wait and another try.
 const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
-const POST_RETRY_DELAYS_MS = [500, 1500, 4000];
+const RETRY_DELAYS_MS = [500, 1500, 4000];
+
+async function fetchWithRetry(input: string, init: RequestInit): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(input, init);
+    if (res.ok || !RETRYABLE_STATUSES.has(res.status) || attempt >= RETRY_DELAYS_MS.length) return res;
+    await new Promise(r => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+  }
+}
 
 export async function pfPost<T>(path: string, body: unknown): Promise<T> {
   const { url } = getApiConfig();
   const token = await getToken();
-  for (let attempt = 0; ; attempt++) {
-    const res = await fetch(`${url}${path}`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      cache: 'no-store',
-    });
-    if (res.ok) return res.json();
-    if (!RETRYABLE_STATUSES.has(res.status) || attempt >= POST_RETRY_DELAYS_MS.length) {
-      throw new Error(`PF API POST ${path} → ${res.status}`);
-    }
-    await new Promise(r => setTimeout(r, POST_RETRY_DELAYS_MS[attempt]));
-  }
+  const res = await fetchWithRetry(`${url}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error(`PF API POST ${path} → ${res.status}`);
+  return res.json();
 }
 
-/** Fetch multiple URLs in parallel (like GAS fetchAll) */
+/** Fetch multiple URLs in parallel (like GAS fetchAll). A path that still
+ *  fails after retries comes back as null. */
 export async function pfGetAll<T>(paths: string[]): Promise<(T | null)[]> {
   const { url } = getApiConfig();
   const token = await getToken();
   return Promise.all(
     paths.map(path =>
-      fetch(`${url}${path}`, {
+      fetchWithRetry(`${url}${path}`, {
         headers: { Authorization: `Bearer ${token}` },
         next: { revalidate: 300 },
       })
