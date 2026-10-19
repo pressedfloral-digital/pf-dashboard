@@ -111,6 +111,18 @@ export interface ScheduleSettings {
   // are excluded from the turnaround math and surfaced separately for
   // investigation instead.
   resinQueueFrontWeek: string | null;
+  // Utah Bloom Stock Products department (handprint/paw/footprint frames +
+  // bloom recreations) — see src/lib/bloomStock.ts and BloomStockPage.tsx.
+  // Roster is BloomStockMember[] (null = defaults); daily hours keyed
+  // `${weekIso}-${memberId}`.
+  bloomStockRoster:       unknown;
+  bloomStockDailyHours:   DailyHoursMap;
+  bloomStockRatio:        number | null;
+  // Manual per-week order estimates (ISO Monday → items), overriding the
+  // seasonal forecast — same role as Design's weeklyEstimates.
+  bloomStockWeeklyEstimates: Record<string, number>;
+  bloomStockScenarios:    unknown;
+  bloomStockDeadline:     unknown;
   // Manually-confirmed front of the Design queue — replaces the hardcoded
   // DESIGNED_BASELINE calibration in SchedulePage. weekOf is the ISO Monday
   // of the intake week being worked and remaining how many of its bouquets
@@ -142,6 +154,12 @@ const DEFAULTS: ScheduleSettings = {
   resinHours: {},
   resinDailyHours: {},
   resinQueueFrontWeek: null,
+  bloomStockRoster: null,
+  bloomStockDailyHours: {},
+  bloomStockRatio: null,
+  bloomStockWeeklyEstimates: {},
+  bloomStockScenarios: [],
+  bloomStockDeadline: null,
   designQueueFront: null,
 };
 
@@ -149,7 +167,9 @@ const KEYS: (keyof ScheduleSettings)[] = [
   'designHours','designRoster','presHours','presRoster','presSettings',
   'ffHours','ffRoster','masterAvailability','avgIntake','newHireHours','ffNewHireHours','presNewHireHours','weeklyEstimates','weeklyMultipliers',
   'mgrTotalHours','mgrTotalDailyHours','designDailyHours','ffDailyHours','presDailyHours','presCheckHours',
-  'resinRoster','resinHours','resinDailyHours','resinQueueFrontWeek','designQueueFront',
+  'resinRoster','resinHours','resinDailyHours','resinQueueFrontWeek',
+  'bloomStockRoster','bloomStockDailyHours','bloomStockRatio','bloomStockWeeklyEstimates','bloomStockScenarios','bloomStockDeadline',
+  'designQueueFront',
 ];
 
 export function useScheduleSettings(location: 'Utah' | 'Georgia') {

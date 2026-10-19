@@ -1,5 +1,6 @@
 'use client';
 import ResinPage, { DEFAULT_RESIN_ROSTER, type ResinMember } from './ResinPage';
+import BloomStockPage from './BloomStockPage';
 import { RipplingUpload } from './RipplingUpload';
 import { EmployeeAutocomplete } from './EmployeeAutocomplete';
 import type { RipplingEmployee } from './EmployeeAutocomplete';
@@ -4048,7 +4049,7 @@ export function SchedulePage({
   // Permission derived from current location
   const canEditCurrent = location === 'Utah' ? canEditUtah : canEditGeorgia;
   const defaultDept = (userDepartment as 'design' | 'preservation' | 'fulfillment' | null) ?? 'design';
-  const [dept, setDept] = useState<'design' | 'preservation' | 'fulfillment' | 'master' | 'payroll' | 'resin'>(defaultDept);
+  const [dept, setDept] = useState<'design' | 'preservation' | 'fulfillment' | 'master' | 'payroll' | 'resin' | 'bloomstock'>(defaultDept);
 
   // ── Supabase-persisted settings ───────────────────────────────────────────────
   const { settings, loading: settingsLoading, saveState, update } = useScheduleSettings(location);
@@ -5218,12 +5219,13 @@ export function SchedulePage({
               ['master',       'Master Schedule'],
               ['payroll',      'Payroll Upload'],
               ['resin',        'Resin'],
+              ['bloomstock',   'Bloom Stock Products'],
             ] as const).filter(([id]) => {
               if (userRole === 'manager' && userDepartment) {
                 return id === userDepartment;
               }
               if (userRole === 'viewer') {
-                return ['design', 'preservation', 'resin'].includes(id);
+                return ['design', 'preservation', 'resin', 'bloomstock'].includes(id);
               }
               return true;
             }).map(([id, label]) => (
@@ -6333,6 +6335,8 @@ export function SchedulePage({
         <ResinPage canViewCPO={canViewCPO} canSeeManagerCPO={canSeeManagerCPO} />
         </>
       )}
+      {/* Utah-only, like Resin — shows regardless of the location toggle */}
+      {dept === 'bloomstock' && <BloomStockPage canEdit={canEditUtah} canViewCPO={canViewCPO} />}
       {dept === 'master' && (
         <>
         <div className="bg-white border border-slate-100 rounded-xl p-4">

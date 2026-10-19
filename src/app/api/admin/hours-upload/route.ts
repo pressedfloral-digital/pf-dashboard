@@ -63,8 +63,24 @@ export async function POST(req: NextRequest) {
       hours:       number;
     }> = {};
 
+    // Rippling's "Recreation" department (or anything named Bloom Stock) is
+    // Bloom Stock Products work: those hours go only to
+    // bloom_stock_week_actuals (its own table, read by the Bloom Stock
+    // Products tab) — checked before normalizeDept so they never land in a
+    // team department.
+    const bloomGrouped: Record<string, { member_name: string; location: string; week_of: string; hours: number }> = {};
+
     for (const r of rows) {
       if (!r.employee || !r.date || !r.department || !r.location) continue;
+      if (/bloom|recreation/i.test(r.department)) {
+        const loc = normalizeLocation(r.location);
+        const member = canonicalPayrollName(r.employee);
+        const weekOf = getMondayISO(r.date);
+        const key = `${member}|${loc}|${weekOf}`;
+        bloomGrouped[key] ??= { member_name: member, location: loc, week_of: weekOf, hours: 0 };
+        bloomGrouped[key].hours += r.durationHours ?? 0;
+        continue;
+      }
       const dept = normalizeDept(r.department);
       const loc  = normalizeLocation(r.location);
       if (!['design', 'preservation', 'fulfillment', 'checks_unboxing', 'Resin'].includes(dept)) continue;
@@ -82,8 +98,20 @@ export async function POST(req: NextRequest) {
     }
 
     const records = Object.values(grouped).filter(r => r.hours > 0);
-    if (records.length === 0)
+    const bloomRecords = Object.values(bloomGrouped).filter(r => r.hours > 0);
+    if (records.length === 0 && bloomRecords.length === 0)
       return NextResponse.json({ error: 'No valid rows after grouping' }, { status: 400 });
+
+    if (bloomRecords.length > 0) {
+      const { error: bloomErr } = await supabase
+        .from('bloom_stock_week_actuals')
+        .upsert(bloomRecords.map(r => ({
+          location: r.location, week_of: r.week_of, member_name: r.member_name,
+          hours: Math.round(r.hours * 100) / 100,
+          entered_by: 'payroll upload', updated_at: new Date().toISOString(),
+        })), { onConflict: 'location,week_of,member_name' });
+      if (bloomErr) throw new Error(`Bloom stock hours upsert failed: ${bloomErr.message}`);
+    }
 
     // Upsert into team_member_week_actuals — only update actual_hours, preserve actual_orders
     let upserted = 0;
@@ -134,6 +162,7 @@ export async function POST(req: NextRequest) {
       departments: depts,
       totalHours: Math.round(totalH * 10) / 10,
       names,
+      bloomStockRows: bloomRecords.length,
     });
   } catch (e) {
     console.error('Hours upload error:', e);
