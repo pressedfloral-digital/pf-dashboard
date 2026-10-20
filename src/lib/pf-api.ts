@@ -23,39 +23,6 @@ function getApiConfig(): ApiConfig {
   return { url, email, password };
 }
 
-let cachedToken: { token: string; expiresAt: number } | null = null;
-
-async function getToken(): Promise<string> {
-  if (cachedToken && Date.now() < cachedToken.expiresAt) return cachedToken.token;
-
-  const { url, email, password } = getApiConfig();
-
-  const res = await fetch(`${url}/Authentication/Login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-    cache: 'no-store',
-  });
-  const json = await res.json();
-  const token = json.jwt ?? json.token ?? json.accessToken ?? json.access_token;
-  if (!token) throw new Error('PF API login failed');
-
-  // Cache token for 50 minutes
-  cachedToken = { token, expiresAt: Date.now() + 50 * 60 * 1000 };
-  return token;
-}
-
-export async function pfGet<T>(path: string, options?: { fresh?: boolean }): Promise<T> {
-  const { url } = getApiConfig();
-  const token = await getToken();
-  const res = await fetch(`${url}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
-    ...(options?.fresh ? { cache: "no-store" as const } : { next: { revalidate: 300 } }), // corrections must be visible immediately
-  });
-  if (!res.ok) throw new Error(`PF API GET ${path} → ${res.status}`);
-  return res.json();
-}
-
 // The API (Azure App Service) answers 503/429 when a burst of parallel
 // requests overloads it; those are worth a short wait and another try.
 const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
@@ -67,6 +34,46 @@ async function fetchWithRetry(input: string, init: RequestInit): Promise<Respons
     if (res.ok || !RETRYABLE_STATUSES.has(res.status) || attempt >= RETRY_DELAYS_MS.length) return res;
     await new Promise(r => setTimeout(r, RETRY_DELAYS_MS[attempt]));
   }
+}
+
+let cachedToken: { token: string; expiresAt: number } | null = null;
+// Requests that start before the first login finishes wait on it instead of
+// each logging in (a page load can fire dozens at once).
+let pendingLogin: Promise<string> | null = null;
+
+async function login(): Promise<string> {
+  const { url, email, password } = getApiConfig();
+  const res = await fetchWithRetry(`${url}/Authentication/Login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error(`PF API login failed → ${res.status}`);
+  const json = await res.json();
+  const token = json.jwt ?? json.token ?? json.accessToken ?? json.access_token;
+  if (!token) throw new Error('PF API login failed (no token in response)');
+
+  // Cache token for 50 minutes
+  cachedToken = { token, expiresAt: Date.now() + 50 * 60 * 1000 };
+  return token;
+}
+
+async function getToken(): Promise<string> {
+  if (cachedToken && Date.now() < cachedToken.expiresAt) return cachedToken.token;
+  pendingLogin ??= login().finally(() => { pendingLogin = null; });
+  return pendingLogin;
+}
+
+export async function pfGet<T>(path: string, options?: { fresh?: boolean }): Promise<T> {
+  const { url } = getApiConfig();
+  const token = await getToken();
+  const res = await fetchWithRetry(`${url}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    ...(options?.fresh ? { cache: "no-store" as const } : { next: { revalidate: 300 } }), // corrections must be visible immediately
+  });
+  if (!res.ok) throw new Error(`PF API GET ${path} → ${res.status}`);
+  return res.json();
 }
 
 export async function pfPost<T>(path: string, body: unknown): Promise<T> {

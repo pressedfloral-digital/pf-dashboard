@@ -229,6 +229,9 @@ export interface OrderPlan {
   substitutions: Substitution[];
   matchedLines: number;
   totalLines:   number;
+  // Lines whose order add-ons couldn't be loaded: their backing and glass are
+  // missing from the quantities above, not known to be absent.
+  unknownAddOnLines: number;
 }
 
 interface PlanWeek { weekOf: string; lines: QueueLine[] }
@@ -243,7 +246,7 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
   const demand = new Map<number, Record<string, number>>();
   const unmatched = new Map<string, Unmatched>();
   const substitutions = new Map<string, Substitution>();
-  let matchedLines = 0, totalLines = 0;
+  let matchedLines = 0, totalLines = 0, unknownAddOnLines = 0;
 
   const addProduct = (weekOf: string, product: string, variant: string): boolean => {
     // Glass backing is the back pane of the Glass add-on's set — nothing
@@ -281,6 +284,7 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
     for (const line of w.lines) {
       totalLines++;
       if (addProduct(w.weekOf, line.product, line.variant)) matchedLines++;
+      if (line.materials?.addOnsUnknown) unknownAddOnLines++;
       const { backingAddOn, glassAddOn } = line.materials ?? {};
       if (backingAddOn) addProduct(w.weekOf, backingAddOn.productTitle, backingAddOn.variantTitle ?? '');
       if (glassAddOn)   addProduct(w.weekOf, glassAddOn.productTitle, glassAddOn.variantTitle ?? '');
@@ -358,6 +362,7 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
     substitutions: [...substitutions.values()].sort((a, b) => b.count - a.count),
     matchedLines,
     totalLines,
+    unknownAddOnLines,
   };
 }
 

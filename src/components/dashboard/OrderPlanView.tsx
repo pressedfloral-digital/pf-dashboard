@@ -167,6 +167,18 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
         )}
       </div>
 
+      {(plan.unknownAddOnLines ?? 0) > 0 && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+          <span className="font-semibold">
+            Backing &amp; glass couldn&apos;t be loaded for {plan.unknownAddOnLines} scheduled frame{plan.unknownAddOnLines === 1 ? '' : 's'}.
+          </span>{' '}
+          <span className="text-xs">
+            Their backing and glass aren&apos;t included in the quantities below, so actual needs may be higher. They&apos;re marked
+            &ldquo;Couldn&apos;t load&rdquo; under Frames, backing &amp; glass and fill in as the production app returns them.
+          </span>
+        </div>
+      )}
+
       {dueNow.length > 0 && (
         <div className={`rounded-xl border px-4 py-3 text-sm flex flex-wrap items-center gap-x-3 gap-y-1 ${
           lateCount ? 'border-rose-200 bg-rose-50 text-rose-900' : 'border-amber-200 bg-amber-50 text-amber-900'
