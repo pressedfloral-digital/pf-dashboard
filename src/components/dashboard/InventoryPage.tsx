@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { PRESERVATION_WEEKS, NOT_ON_ORDER, sizeLabel, type QueueLine } from '@/lib/designInventory';
+import { PRESERVATION_WEEKS, NOT_ON_ORDER, ADDONS_UNKNOWN, sizeLabel, type QueueLine } from '@/lib/designInventory';
 import type { OrderEdits, OrderPlan } from '@/lib/katanaPlan';
 import OrderPlanView from './OrderPlanView';
 
@@ -23,8 +23,14 @@ interface InventoryResponse {
   orderEdits:       OrderEdits;
   totals: {
     lines: number; inDesignQueue: number; inPreservation: number;
-    intakeFromEventDate: number; missingLocation: number; missingOrderDetail: number;
+    intakeFromEventDate: number; missingLocation: number;
   };
+  // Absent on copies saved before backing/glass were cached.
+  addOns?: {
+    orders: number; unknownOrders: number; unknownLines: number;
+    oldestFetchedAt: string | null; newestFetchedAt: string | null; refreshHours: number;
+  };
+  savedCopy?: true;   // the last successful build, not a fresh one
   error?: string;
 }
 
@@ -47,6 +53,30 @@ const STATUS_LABELS: Record<string, string> = {
 
 function fmtWeek(iso: string): string {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function fmtTime(iso: string): string {
+  return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+// "Not on order" (the order has none) and "Couldn't load" (unknown) must
+// never look alike.
+function materialClass(v: string | null | undefined): string {
+  if (v === ADDONS_UNKNOWN) return 'text-rose-600 font-medium';
+  if (v === NOT_ON_ORDER) return 'text-amber-600';
+  return 'text-slate-700';
+}
+
+async function fetchInventory(url: string): Promise<InventoryResponse> {
+  const r = await fetch(url);
+  // A non-JSON body is Next's HTML error page (e.g. a timeout); report the
+  // status rather than a JSON parse error.
+  if (!r.headers.get('content-type')?.includes('application/json')) {
+    throw new Error(`the server returned ${r.status}`);
+  }
+  const d = await r.json() as InventoryResponse;
+  if (!r.ok) throw new Error(d.error ?? `the server returned ${r.status}`);
+  return d;
 }
 
 // One countable item per line for a material, or null when the line's
@@ -108,31 +138,40 @@ export default function InventoryPage() {
   // other location's numbers, and a slow earlier response can't overwrite a
   // newer one.
   const [loaded, setLoaded] = useState<{ location: string; data: InventoryResponse } | null>(null);
+  // The fresh build runs alongside; until it lands the last saved copy shows,
+  // and if it fails that copy stays up with the error.
+  const [refresh, setRefresh] = useState<{ location: string; state: 'failed' | 'done'; error?: string } | null>(null);
   const [selectedWeek, setSelectedWeek] = useState<string | null>(null);
   const [material, setMaterial] = useState<Material>('frame');
   const [view, setView] = useState<'order' | 'schedule'>('order');
   const data = loaded?.location === location ? loaded.data : null;
+  // No result yet for this location means the fresh build is still running.
+  const refreshState = refresh?.location === location ? refresh : null;
   const loading = !data;
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/design-inventory?location=${location}`)
-      .then(async r => {
-        // A non-JSON body is Next's HTML error page (e.g. the route is still
-        // compiling); report the status rather than a JSON parse error.
-        if (!r.headers.get('content-type')?.includes('application/json')) {
-          throw new Error(`the server returned ${r.status}. Try refreshing in a moment.`);
-        }
-        const d = await r.json() as InventoryResponse;
-        if (!r.ok && !d.error) d.error = `the server returned ${r.status}`;
-        return d;
-      })
-      .then((d: InventoryResponse) => {
+    const show = (d: InventoryResponse) => {
+      setLoaded(prev => {
+        // A saved copy never replaces a fresh one that already arrived.
+        if (d.savedCopy && prev?.location === location && !prev.data.savedCopy) return prev;
+        return { location, data: d };
+      });
+      setSelectedWeek(prev => {
+        const ws = d.weeks?.filter(w => w.lines.length > 0) ?? [];
+        return prev && ws.some(w => w.weekOf === prev) ? prev : ws[0]?.weekOf ?? null;
+      });
+    };
+    fetchInventory(`/api/design-inventory?location=${location}&saved=1`)
+      .then(d => { if (!cancelled) show(d); })
+      .catch(() => {}); // no saved copy yet — wait for the fresh build
+    fetchInventory(`/api/design-inventory?location=${location}`)
+      .then(d => {
         if (cancelled) return;
-        setLoaded({ location, data: d });
-        setSelectedWeek(d.weeks?.find(w => w.lines.length > 0)?.weekOf ?? null);
+        show(d);
+        setRefresh({ location, state: 'done' });
       })
-      .catch(e => { if (!cancelled) setLoaded({ location, data: { error: e instanceof Error ? e.message : String(e) } as InventoryResponse }); });
+      .catch(e => { if (!cancelled) setRefresh({ location, state: 'failed', error: e instanceof Error ? e.message : String(e) }); });
     return () => { cancelled = true; };
   }, [location]);
 
@@ -190,8 +229,32 @@ export default function InventoryPage() {
         )}
       </div>
 
-      {loading && <div className="py-12 text-center text-sm text-slate-500">Loading orders from the production app and stock from Katana… this can take up to a minute.</div>}
-      {data?.error && <div className="py-12 text-center text-sm text-rose-600">Couldn&apos;t load inventory: {data.error}</div>}
+      {loading && refreshState?.state !== 'failed' && (
+        <div className="py-12 text-center text-sm text-slate-500">Loading orders from the production app and stock from Katana… this can take a few minutes.</div>
+      )}
+      {loading && refreshState?.state === 'failed' && (
+        <div className="py-12 text-center text-sm text-rose-600">Couldn&apos;t load inventory: {refreshState.error}. Try again in a minute.</div>
+      )}
+
+      {data && (
+        data.savedCopy && refreshState?.state === 'failed' ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <span className="font-semibold">Couldn&apos;t refresh — showing the last saved version from {fmtTime(data.generatedAt)}.</span>{' '}
+            <span className="text-xs">{refreshState.error && refreshState.error[0].toUpperCase() + refreshState.error.slice(1)}. Reload the page to try again.</span>
+          </div>
+        ) : (
+          <div className="text-xs text-slate-500">
+            {data.savedCopy
+              ? <>Showing the saved version from <span className="font-medium text-slate-700">{fmtTime(data.generatedAt)}</span> · <span className="text-indigo-600">refreshing…</span></>
+              : <>Updated <span className="font-medium text-slate-700">{fmtTime(data.generatedAt)}</span></>}
+            {data.addOns?.oldestFetchedAt && (
+              <> · backing &amp; glass last checked {data.addOns.oldestFetchedAt.slice(0, 16) === data.addOns.newestFetchedAt?.slice(0, 16)
+                ? fmtTime(data.addOns.oldestFetchedAt)
+                : <>between {fmtTime(data.addOns.oldestFetchedAt)} and {fmtTime(data.addOns.newestFetchedAt!)}</>} (rechecked about every {data.addOns.refreshHours} hours)</>
+            )}
+          </div>
+        )
+      )}
 
       {view === 'order' && data && !data.error && (
         data.orderPlan
@@ -217,7 +280,9 @@ export default function InventoryPage() {
             {data.designedThisWeek > 0 && <> · {Math.round(data.designedThisWeek)} already designed this week</>}
             {data.totals.intakeFromEventDate > 0 && <> · {data.totals.intakeFromEventDate} with no bouquet-received date (event date used)</>}
             {data.totals.missingLocation > 0 && <> · {data.totals.missingLocation} lines with no location skipped</>}
-            {data.totals.missingOrderDetail > 0 && <> · {data.totals.missingOrderDetail} lines whose order details couldn&apos;t be loaded (backing/glass show as {NOT_ON_ORDER})</>}
+            {(data.addOns?.unknownLines ?? 0) > 0 && (
+              <> · <span className="text-rose-600 font-medium">{data.addOns!.unknownLines} lines ({data.addOns!.unknownOrders} orders) whose backing &amp; glass couldn&apos;t be loaded</span> — shown as &ldquo;{ADDONS_UNKNOWN}&rdquo;, not counted as none</>
+            )}
             {data.unscheduledCount > 0 && <> · {data.unscheduledCount} not scheduled before year end</>}
           </div>
 
@@ -249,8 +314,8 @@ export default function InventoryPage() {
                       <ul className="px-4 py-2 text-xs divide-y divide-slate-50">
                         {m.rows.map(r => (
                           <li key={`${r.size}|${r.shape}|${r.type}`} className="flex justify-between py-1">
-                            <span className={r.type === NOT_ON_ORDER ? 'text-amber-600' : 'text-slate-700'}>
-                              {r.size} {r.type}{m.id === 'backing' && r.type !== NOT_ON_ORDER ? ' backing' : ''}
+                            <span className={materialClass(r.type)}>
+                              {r.size} {r.type}{m.id === 'backing' && r.type !== NOT_ON_ORDER && r.type !== ADDONS_UNKNOWN ? ' backing' : ''}
                               {r.shape !== 'Rectangle' && r.shape !== '—' && <span className="text-slate-400"> ({r.shape})</span>}
                             </span>
                             <span className="font-semibold text-slate-800">{r.total}</span>
@@ -294,7 +359,7 @@ export default function InventoryPage() {
                             <td key={k} className="px-3 py-2 whitespace-nowrap">
                               {lines.map((l, i) => {
                                 const v = l.materials?.[k];
-                                return <div key={i} className={v === NOT_ON_ORDER ? 'text-amber-600' : 'text-slate-700'}>{v ?? '—'}</div>;
+                                return <div key={i} className={materialClass(v)}>{v ?? '—'}</div>;
                               })}
                             </td>
                           ))}
@@ -348,7 +413,7 @@ export default function InventoryPage() {
                           <tr key={`${r.size}|${r.shape}|${r.type}`} className="border-t border-slate-100 hover:bg-slate-50">
                             <td className="sticky left-0 bg-white px-3 py-1.5 text-slate-700 whitespace-nowrap">{r.size}</td>
                             <td className="px-3 py-1.5 text-slate-600">{r.shape}</td>
-                            <td className={`px-3 py-1.5 whitespace-nowrap ${r.type === NOT_ON_ORDER ? 'text-amber-600' : 'text-slate-700'}`}>{r.type}</td>
+                            <td className={`px-3 py-1.5 whitespace-nowrap ${materialClass(r.type)}`}>{r.type}</td>
                             {weeks.map(w => (
                               <td key={w.weekOf} className="px-2 py-1.5 text-center text-slate-700">{r.byWeek[w.weekOf] ?? ''}</td>
                             ))}

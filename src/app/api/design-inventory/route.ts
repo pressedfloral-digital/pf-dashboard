@@ -1,39 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
-import { pfGetAll, fmtDate } from '@/lib/pf-api';
 import { supabase } from '@/lib/supabase';
 import { fetchAllRows } from '@/lib/fetchAllRows';
 import { isoMonday, getWeekMondays } from '@/lib/weekDates';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { projectDept, buildManagerHomeDept, type DesignRosterEntry, type HoursMap, type DailyHoursMap } from '@/lib/scheduleProjection';
 import {
-  DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, isNonDesignProduct, PRESERVATION_WEEKS,
-  parseVariant, mondayOf, addWeeks, scheduleLines, matchMaterials, type QueueLine, type OrderAddOn,
+  DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, PRESERVATION_WEEKS,
+  parseVariant, mondayOf, addWeeks, scheduleLines, matchMaterials, type QueueLine,
 } from '@/lib/designInventory';
 import { loadKatana } from '@/lib/katana';
 import { buildOrderPlan, ORDER_EDITS_KEY, type OrderPlan, type OrderEdits } from '@/lib/katanaPlan';
 import { MAX_LEAD_WEEKS } from '@/lib/supplierLeadTimes';
 import { resolveOrderUuids } from '@/lib/orderUuids';
+import { loadPipelineLines } from '@/lib/designPipeline';
+import { readSavedAddOns, fetchAddOns, ADDONS_REFRESH_HOURS, type SavedAddOns } from '@/lib/orderAddOns';
+import { saveSnapshot, loadSnapshot } from '@/lib/inventorySnapshots';
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
-// Orders are placed around the event date, so anything still in
-// Preservation or Design was ordered within roughly this many months.
-const ORDER_LOOKBACK_MONTHS = 15;
-// Concurrent /Orders/{uuid} requests (each cached 5 min by pfGetAll).
-const ORDER_DETAIL_BATCH = 20;
-
-interface WeeklyReportItem {
-  orderNumber?: string | number;
-  shopifyOrderNumber?: string | number;
-  orderName?: string;
-  status?: string;
-  location?: string;
-  eventDate?: string;
-  originalOrderDate?: string;
-  productTitle?: string;
-  variantTitle?: string;
-}
+// Orders whose add-ons have never been saved are fetched live, 8 at a time,
+// starting no new request after this long into the request; any left over
+// show as couldn't-load until the refresh cron reaches them.
+const LIVE_ADDON_BUDGET_MS = 150_000;
+const LIVE_ADDON_CONCURRENCY = 8;
 
 // ── GET /api/design-inventory?location=Utah&through=2026-12-31 ───────────────
 // Every order line Design is scheduled to work on each week from this week
@@ -41,11 +31,23 @@ interface WeeklyReportItem {
 // lead time from now if that's later, so it reaches into next year from about
 // November on), filled oldest-intake-first
 // against the saved Design schedule's capacity.
+//
+// With &saved=1, returns the last successful build for the location instead
+// (404 if there isn't one), with current hand edits.
 export async function GET(req: NextRequest) {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const startedAt = Date.now();
 
   const location = req.nextUrl.searchParams.get('location') === 'Georgia' ? 'Georgia' : 'Utah';
+
+  if (req.nextUrl.searchParams.get('saved') === '1') {
+    const snapshot = await loadSnapshot<Record<string, unknown>>(location);
+    if (!snapshot) return NextResponse.json({ error: 'No saved copy yet' }, { status: 404 });
+    const { data: editsRow } = await supabase
+      .from('schedule_settings').select('value').eq('location', location).eq('key', ORDER_EDITS_KEY).maybeSingle();
+    return NextResponse.json({ ...snapshot, orderEdits: (editsRow?.value ?? {}) as OrderEdits, savedCopy: true });
+  }
   const thisWeek = isoMonday(0);
   const leadHorizon = addWeeks(thisWeek, MAX_LEAD_WEEKS);
   const yearEnd = `${thisWeek.slice(0, 4)}-12-31`;
@@ -53,44 +55,23 @@ export async function GET(req: NextRequest) {
 
   try {
     // ── 1. Order lines in Preservation or Design ───────────────────────────
-    const today = new Date();
-    const paths = Array.from({ length: ORDER_LOOKBACK_MONTHS }, (_, m) => {
-      const first = new Date(today.getFullYear(), today.getMonth() - m, 1);
-      const last  = m === 0 ? today : new Date(today.getFullYear(), today.getMonth() - m + 1, 0);
-      return `/OrderProducts/WeeklyReport?startDate=${fmtDate(first)}&endDate=${fmtDate(last)}`;
-    });
     // Katana recipes + stock load alongside; a Katana failure only drops the
     // order list, not the schedule.
     const katanaPromise = loadKatana(location);
     katanaPromise.catch(() => {}); // awaited in step 5
-    const reports = await pfGetAll<WeeklyReportItem[]>(paths);
+    const pipeline = await loadPipelineLines();
     // A missing month silently drops its orders from the schedule and the
     // order list, so fail instead of showing a confident partial answer.
-    const failedMonths = reports.filter(r => r === null).length;
-    if (failedMonths > 0) {
+    if (pipeline.failedMonths > 0) {
       return NextResponse.json({
-        error: `the production app didn't return ${failedMonths} of ${paths.length} months of orders, so the schedule would be incomplete. Try again in a minute.`,
+        error: `the production app didn't return ${pipeline.failedMonths} of ${pipeline.totalMonths} months of orders, so the schedule would be incomplete. Try again in a minute.`,
       }, { status: 503 });
     }
-
-    const seen = new Set<string>();
-    const raw: { key: string; item: WeeklyReportItem; num: string }[] = [];
     let missingLocation = 0;
-    for (const items of reports) {
-      for (const item of items ?? []) {
-        const status = item.status ?? '';
-        if (!DESIGN_QUEUE_STATUSES.has(status) && !PRESERVATION_STATUSES.has(status)) continue;
-        if (isNonDesignProduct(item.productTitle ?? '')) continue;
-        const num = String(item.orderNumber ?? item.shopifyOrderNumber ?? '');
-        if (!num) continue;
-        const key = `${num}|${item.variantTitle ?? ''}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        if (!item.location) { missingLocation++; continue; }
-        if (item.location !== location) continue;
-        raw.push({ key, item, num });
-      }
-    }
+    const raw = pipeline.lines.filter(({ item }) => {
+      if (!item.location) { missingLocation++; return false; }
+      return item.location === location;
+    });
 
     // ── 2. Bouquet-received dates (intake week) ────────────────────────────
     const receivedAt: Record<string, string> = {};
@@ -165,25 +146,28 @@ export async function GET(req: NextRequest) {
     const { weeks, unscheduled } = scheduleLines(lines, capacityWeeks);
 
     // ── 4. Backing & glass for every scheduled order ───────────────────────
-    const scheduledNums = new Set(weeks.flatMap(w => w.lines.map(l => l.orderNumber)));
+    const scheduledNums = [...new Set(weeks.flatMap(w => w.lines.map(l => l.orderNumber)))];
     // WeeklyReport has order numbers but not the order UUIDs /Orders/{uuid}
     // (the only endpoint returning backing/glass add-ons) needs.
-    const orderUuids = await resolveOrderUuids([...scheduledNums], [...DESIGN_QUEUE_STATUSES, ...PRESERVATION_STATUSES]);
-    const addOnsByOrder: Record<string, OrderAddOn[]> = {};
-    const nums = [...scheduledNums].filter(n => orderUuids[n]);
-    for (let i = 0; i < nums.length; i += ORDER_DETAIL_BATCH) {
-      const batch = nums.slice(i, i + ORDER_DETAIL_BATCH);
-      const details = await pfGetAll<{ nonStatusOrderProducts?: OrderAddOn[] }>(batch.map(n => `/Orders/${orderUuids[n]}`));
-      details.forEach((d, j) => { if (d) addOnsByOrder[batch[j]] = d.nonStatusOrderProducts ?? []; });
-    }
+    const orderUuids = await resolveOrderUuids(scheduledNums, [...DESIGN_QUEUE_STATUSES, ...PRESERVATION_STATUSES]);
+    // Saved add-ons (kept current by /api/cron/refresh-order-addons); orders
+    // never saved are fetched now, within the time budget.
+    const { saved, tableOk } = await readSavedAddOns(scheduledNums);
+    const neverSaved = scheduledNums.filter(n => !saved[n] && orderUuids[n]);
+    const live = await fetchAddOns(neverSaved.map(num => ({ num, uuid: orderUuids[num] })), {
+      concurrency: LIVE_ADDON_CONCURRENCY, deadline: startedAt + LIVE_ADDON_BUDGET_MS, save: tableOk,
+    });
+    const addOnsByOrder: Record<string, SavedAddOns> = { ...saved, ...live.fetched };
+
     const usedAddOns = new Set<string>();
-    let missingOrderDetail = 0;
+    let unknownLines = 0;
     for (const w of weeks) {
       for (const line of w.lines) {
-        if (!addOnsByOrder[line.orderNumber]) missingOrderDetail++;
-        line.materials = matchMaterials(line, addOnsByOrder[line.orderNumber] ?? [], usedAddOns);
+        line.materials = matchMaterials(line, addOnsByOrder[line.orderNumber]?.addOns ?? null, usedAddOns);
+        if (line.materials.addOnsUnknown) unknownLines++;
       }
     }
+    const fetchedTimes = scheduledNums.map(n => addOnsByOrder[n]?.fetchedAt).filter((t): t is string => !!t).sort();
 
     // ── 5. What to order: recipes × schedule vs Katana stock ───────────────
     let orderPlan: OrderPlan | null = null;
@@ -194,7 +178,7 @@ export async function GET(req: NextRequest) {
       katanaError = String(e);
     }
 
-    return NextResponse.json({
+    const payload = {
       location,
       orderPlan,
       katanaError,
@@ -211,9 +195,18 @@ export async function GET(req: NextRequest) {
         inPreservation: lines.filter(l => PRESERVATION_STATUSES.has(l.status)).length,
         intakeFromEventDate: lines.filter(l => l.intakeSource === 'eventDate').length,
         missingLocation,
-        missingOrderDetail,
       },
-    });
+      addOns: {
+        orders:        scheduledNums.length,
+        unknownOrders: scheduledNums.filter(n => !addOnsByOrder[n]).length,
+        unknownLines,
+        oldestFetchedAt: fetchedTimes[0] ?? null,
+        newestFetchedAt: fetchedTimes[fetchedTimes.length - 1] ?? null,
+        refreshHours:  ADDONS_REFRESH_HOURS,
+      },
+    };
+    await saveSnapshot(location, payload);
+    return NextResponse.json(payload);
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
