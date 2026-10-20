@@ -367,10 +367,16 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
 }
 
 // Shortfall whose order-by date (need-by week minus lead time) is this week or past.
-function dueNow(toOrder: Record<string, number>, leadWeeks: number, thisWeek: string): number {
+// Shortfall whose order-by date (need week minus lead time) is on or before
+// `cutoff` — what a PO placed now has to cover to reach that far ahead.
+export function qtyDueBy(toOrder: Record<string, number>, leadWeeks: number, cutoff: string): number {
   return Object.entries(toOrder)
-    .filter(([wk]) => addWeeks(wk, -leadWeeks) <= thisWeek)
+    .filter(([wk]) => addWeeks(wk, -leadWeeks) <= cutoff)
     .reduce((sum, [, q]) => sum + q, 0);
+}
+
+function dueNow(toOrder: Record<string, number>, leadWeeks: number, thisWeek: string): number {
+  return qtyDueBy(toOrder, leadWeeks, thisWeek);
 }
 
 // Applies hand edits on top of the computed list. Runs in the browser too,
