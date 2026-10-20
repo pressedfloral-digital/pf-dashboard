@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { PlanRow } from '@/lib/katanaPlan';
+import { qtyDueBy, type PlanRow } from '@/lib/katanaPlan';
 import { addWeeks } from '@/lib/designInventory';
 
 // "Oct 26", or "Feb 1, 2027" when the date isn't in the current year.
@@ -133,6 +133,24 @@ function fromPoQty(r: PlanRow, poQty: number): number {
 
 export type EditAction = 'setQty' | 'remove' | 'reset';
 
+// ── Combining upcoming orders ────────────────────────────────────────────────
+// How far ahead one PO reaches: everything whose order-by date falls on or
+// before the cutoff is ticked, at the quantity short through then — so items
+// not due yet can ride along with what has to go out this week.
+
+type Horizon = 'now' | 'week' | 'month' | 'all';
+const HORIZON_WEEKS: Record<Exclude<Horizon, 'all'>, number> = { now: 0, week: 1, month: 4 };
+
+function horizonCutoff(h: Horizon, thisWeek: string): string | null {
+  return h === 'all' ? null : addWeeks(thisWeek, HORIZON_WEEKS[h]);
+}
+
+// Stock-unit quantity a PO placed now covers for `h` (everything for 'all').
+function qtyForHorizon(r: PlanRow, h: Horizon, thisWeek: string): number {
+  const cutoff = horizonCutoff(h, thisWeek);
+  return cutoff === null ? r.totalToOrder : qtyDueBy(r.toOrder, r.leadWeeks, cutoff);
+}
+
 interface Created { orderNo: string; total: number }
 
 export default function SupplierPoCard({ supplier, supplierId, rows: allRows, location, weeks, thisWeek, canOrder, through, thruShort, onEdit }: {
@@ -180,10 +198,30 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
 
   // Pre-select what's due now (order-by this week or past) at the due-now
   // quantity; later items start unticked at their full year-end quantity.
-  const [selected, setSelected] = useState<Record<number, boolean>>(() =>
-    Object.fromEntries(rows.map(r => [r.variantId, r.orderNowQty > 0])));
-  const [qty, setQty] = useState<Record<number, string>>(() =>
-    Object.fromEntries(rows.map(r => [r.variantId, String(toPoQty(r, r.orderNowQty > 0 ? r.orderNowQty : r.totalToOrder))])));
+  // Picking a wider horizon ticks and sizes everything due within it.
+  const [horizon, setHorizon] = useState<Horizon>('now');
+  const selectionFor = (h: Horizon) => Object.fromEntries(rows.map(r => [r.variantId, qtyForHorizon(r, h, thisWeek) > 0]));
+  const qtyFor = (h: Horizon) => Object.fromEntries(rows.map(r => {
+    const q = qtyForHorizon(r, h, thisWeek);
+    return [r.variantId, String(toPoQty(r, q > 0 ? q : r.totalToOrder))];
+  }));
+  const [selected, setSelected] = useState<Record<number, boolean>>(() => selectionFor('now'));
+  const [qty, setQty] = useState<Record<number, string>>(() => qtyFor('now'));
+  function chooseHorizon(h: Horizon) {
+    setHorizon(h);
+    setSelected(selectionFor(h));
+    setQty(qtyFor(h));
+  }
+  const horizonCount = (h: Horizon) => rows.filter(r => qtyForHorizon(r, h, thisWeek) > 0).length;
+  // An option that ticks the same items at the same PO quantities as "Due
+  // now" adds nothing (more yards of thread can still be one roll), so it's
+  // greyed out rather than hidden.
+  const nowSelection = selectionFor('now'), nowQty = qtyFor('now');
+  const addsNothing = (h: Horizon) => {
+    if (h === 'now') return false;
+    const sel = selectionFor(h), q = qtyFor(h);
+    return rows.every(r => sel[r.variantId] === nowSelection[r.variantId] && (!sel[r.variantId] || q[r.variantId] === nowQty[r.variantId]));
+  };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<Created | null>(null);
@@ -239,6 +277,38 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
           ? <OrderByBadge orderBy={earliest} needBy={soonest?.firstShortWeek} thisWeek={thisWeek} />
           : <NextOrderBadge orderBy={nextCovered?.c.orderBy ?? null} thisWeek={thisWeek} />}
       </div>
+
+      {rows.length > 0 && canOrder && supplierId && !created && (
+        <div className="px-4 py-2 border-b border-slate-100 text-xs">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-slate-500 mr-1">Combine into one PO:</span>
+            {([
+              ['now',   'Due now'],
+              ['week',  '+ next week'],
+              ['month', '+ next 4 weeks'],
+              ['all',   `Everything thru ${thruShort}`],
+            ] as const).map(([h, name]) => (
+              <button
+                key={h}
+                onClick={() => chooseHorizon(h)}
+                disabled={addsNothing(h)}
+                title={addsNothing(h) ? 'Nothing else comes due by then' : undefined}
+                className={`px-2 py-0.5 rounded-full font-medium disabled:opacity-40 disabled:cursor-not-allowed ${horizon === h ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+              >
+                {name} ({horizonCount(h)})
+              </button>
+            ))}
+          </div>
+          {horizon !== 'now' && (
+            <div className="mt-1 text-[11px] text-slate-500">
+              {horizon === 'all'
+                ? <>Ticked every item at its full quantity through {thruShort}.</>
+                : <>Ticked every item with an order-by date through {fmtWeek(horizonCutoff(horizon, thisWeek)!)}, sized to cover its shortfall through then.</>}
+              {' '}You can still untick items or change quantities below.
+            </div>
+          )}
+        </div>
+      )}
 
       {rows.length > 0 && <table className="min-w-full text-xs">
         <thead className="text-slate-400">
