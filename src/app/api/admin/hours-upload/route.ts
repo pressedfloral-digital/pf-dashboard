@@ -123,39 +123,57 @@ export async function POST(req: NextRequest) {
       if (bloomErr) throw new Error(`Bloom stock hours upsert failed: ${bloomErr.message}`);
     }
 
-    // Upsert into team_member_week_actuals — only update actual_hours, preserve actual_orders
-    let upserted = 0;
-    for (const rec of records) {
-      // Check if row exists — if so, update hours only
-      const { data: existing } = await supabase
-        .from('team_member_week_actuals')
-        .select('actual_orders, orders_source')
-        .eq('location', rec.location)
-        .eq('department', rec.department)
-        .eq('week_of', rec.week_of)
-        .eq('member_name', rec.member_name)
-        .single();
+    // Upsert into team_member_week_actuals — only update actual_hours, preserve
+    // actual_orders. Batched: a months-long backfill is ~1,300 person-weeks,
+    // and one select + upsert per row ran past Vercel's 300s limit.
+    const weekList = [...new Set(records.map(r => r.week_of))].sort();
+    const existingByKey = new Map<string, { actual_orders: number; orders_source: string }>();
+    if (records.length > 0) {
+      const PAGE = 1000;
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await supabase
+          .from('team_member_week_actuals')
+          .select('location, department, week_of, member_name, actual_orders, orders_source')
+          .gte('week_of', weekList[0])
+          .lte('week_of', weekList[weekList.length - 1])
+          .order('id')
+          .range(from, from + PAGE - 1);
+        if (error) throw new Error(`Reading existing actuals failed: ${error.message}`);
+        for (const e of data ?? [])
+          existingByKey.set(`${e.member_name}|${e.location}|${e.department}|${e.week_of}`, e);
+        if (!data || data.length < PAGE) break;
+      }
+    }
 
+    const now = new Date().toISOString();
+    const upsertRows = records.map(rec => {
+      const existing = existingByKey.get(`${rec.member_name}|${rec.location}|${rec.department}|${rec.week_of}`);
+      return {
+        location:     rec.location,
+        department:   rec.department,
+        week_of:      rec.week_of,
+        member_name:  rec.member_name,
+        actual_hours: Math.round(rec.hours * 100) / 100,
+        actual_orders: existing?.actual_orders ?? 0,
+        // A row created here has no typed order count, so leave it open to
+        // the production sync. The column defaults to 'manual', which would
+        // lock a new row at 0 orders forever (sync-production-actuals skips
+        // anything not 'auto').
+        orders_source: existing?.orders_source ?? 'auto',
+        hours_source: 'upload',
+        updated_at:   now,
+      };
+    });
+
+    let upserted = 0;
+    const BATCH = 500;
+    for (let i = 0; i < upsertRows.length; i += BATCH) {
+      const batch = upsertRows.slice(i, i + BATCH);
       const { error } = await supabase
         .from('team_member_week_actuals')
-        .upsert({
-          location:     rec.location,
-          department:   rec.department,
-          week_of:      rec.week_of,
-          member_name:  rec.member_name,
-          actual_hours: Math.round(rec.hours * 100) / 100,
-          actual_orders: existing?.actual_orders ?? 0,
-          // A row created here has no typed order count, so leave it open to
-          // the production sync. The column defaults to 'manual', which would
-          // lock a new row at 0 orders forever (sync-production-actuals skips
-          // anything not 'auto').
-          orders_source: existing?.orders_source ?? 'auto',
-          hours_source: 'upload',
-          updated_at:   new Date().toISOString(),
-        }, { onConflict: 'location,department,week_of,member_name' });
-
-      if (error) throw new Error(`Upsert failed for ${rec.member_name} / ${rec.department} / ${rec.week_of}: ${error.message} (${error.code ?? ''} ${error.details ?? ''})`);
-      upserted++;
+        .upsert(batch, { onConflict: 'location,department,week_of,member_name' });
+      if (error) throw new Error(`Upsert failed for weeks ${batch[0].week_of} – ${batch[batch.length - 1].week_of}: ${error.message} (${error.code ?? ''} ${error.details ?? ''})`);
+      upserted += batch.length;
     }
 
     // Summary
