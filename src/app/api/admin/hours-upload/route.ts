@@ -18,7 +18,8 @@ function normalizeDept(raw: string): string {
   if (l.includes('preservation'))  return 'preservation';
   if (l.includes('fulfillment'))   return 'fulfillment';
   if (l.includes('checks') || l.includes('unboxing')) return 'checks_unboxing';
-  if (l.includes('resin'))         return 'Resin';
+  // GEM Studio is resin work — its hours count in Resin's historicals.
+  if (l.includes('resin') || /gem\s*studio/.test(l)) return 'Resin';
   return raw.toLowerCase();
 }
 
@@ -63,8 +64,8 @@ export async function POST(req: NextRequest) {
       hours:       number;
     }> = {};
 
-    // Rippling's "Recreation" department (or anything named Bloom Stock) is
-    // Bloom Stock Products work: those hours go only to
+    // Rippling's "Recreation" and "Baby Feet Design" departments (or anything
+    // named Bloom Stock) are Bloom Stock Products work: those hours go only to
     // bloom_stock_week_actuals (its own table, read by the Bloom Stock
     // Products tab) — checked before normalizeDept so they never land in a
     // team department.
@@ -72,7 +73,7 @@ export async function POST(req: NextRequest) {
 
     for (const r of rows) {
       if (!r.employee || !r.date || !r.department || !r.location) continue;
-      if (/bloom|recreation/i.test(r.department)) {
+      if (/bloom|recreation|baby\s*feet/i.test(r.department)) {
         const loc = normalizeLocation(r.location);
         const member = canonicalPayrollName(r.employee);
         const weekOf = getMondayISO(r.date);
