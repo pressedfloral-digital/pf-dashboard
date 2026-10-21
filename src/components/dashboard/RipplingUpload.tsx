@@ -220,7 +220,9 @@ function UploadCard({ type, title, description, frequency, accentColor }: Upload
                 <p><span className="font-medium">{String(result.inserted)}</span> employees synced to directory</p>
               </>}
               {type === 'hours' && <>
-                <p><span className="font-medium">{String(result.people)}</span> people · <span className="font-medium">{String(result.upserted)}</span> week entries updated</p>
+                <p><span className="font-medium">{String(result.people)}</span> people · <span className="font-medium">{String(result.upserted)}</span> week entries updated
+                  {Number(result.skippedOtherLocation) > 0 && <span className="text-amber-600"> · {String(result.skippedOtherLocation)} shifts skipped (not Utah or Georgia, e.g. Remote)</span>}
+                </p>
                 {result.weeks && <p>Weeks: {fmtDate(String((result.weeks as {from:string}).from))} – {fmtDate(String((result.weeks as {to:string}).to))}</p>}
                 <p>Total hours: <span className="font-medium">{String(result.totalHours)}</span></p>
               </>}

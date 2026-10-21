@@ -71,8 +71,17 @@ export async function POST(req: NextRequest) {
     // team department.
     const bloomGrouped: Record<string, { member_name: string; location: string; week_of: string; hours: number }> = {};
 
+    // Actuals are per site (the tables only allow Utah/Georgia), so shifts
+    // worked from any other Rippling location — e.g. "Remote" — are skipped
+    // and counted in the response instead of failing the whole upload.
+    let skippedOtherLocation = 0;
+
     for (const r of rows) {
       if (!r.employee || !r.date || !r.department || !r.location) continue;
+      if (!['Utah', 'Georgia'].includes(normalizeLocation(r.location))) {
+        skippedOtherLocation++;
+        continue;
+      }
       if (/bloom|recreation|baby\s*feet/i.test(r.department)) {
         const loc = normalizeLocation(r.location);
         const member = canonicalPayrollName(r.employee);
@@ -164,6 +173,7 @@ export async function POST(req: NextRequest) {
       totalHours: Math.round(totalH * 10) / 10,
       names,
       bloomStockRows: bloomRecords.length,
+      skippedOtherLocation,
     });
   } catch (e) {
     console.error('Hours upload error:', e);
