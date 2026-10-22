@@ -6,14 +6,14 @@ import { isoMonday, getWeekMondays } from '@/lib/weekDates';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { projectDept, buildManagerHomeDept, type DesignRosterEntry, type HoursMap, type DailyHoursMap } from '@/lib/scheduleProjection';
 import {
-  DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, PRESERVATION_WEEKS,
-  parseVariant, mondayOf, addWeeks, scheduleLines, matchMaterials, type QueueLine,
+  DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES,
+  addWeeks, scheduleLines, matchMaterials,
 } from '@/lib/designInventory';
 import { loadKatana } from '@/lib/katana';
 import { buildOrderPlan, ORDER_EDITS_KEY, type OrderPlan, type OrderEdits } from '@/lib/katanaPlan';
 import { MAX_LEAD_WEEKS } from '@/lib/supplierLeadTimes';
 import { resolveOrderUuids } from '@/lib/orderUuids';
-import { loadPipelineLines } from '@/lib/designPipeline';
+import { loadLocationQueueLines } from '@/lib/designPipeline';
 import { readSavedAddOns, fetchAddOns, ADDONS_REFRESH_HOURS, type SavedAddOns } from '@/lib/orderAddOns';
 import { saveSnapshot, loadSnapshot } from '@/lib/inventorySnapshots';
 
@@ -59,7 +59,7 @@ export async function GET(req: NextRequest) {
     // order list, not the schedule.
     const katanaPromise = loadKatana(location);
     katanaPromise.catch(() => {}); // awaited in step 5
-    const pipeline = await loadPipelineLines();
+    const pipeline = await loadLocationQueueLines(location, thisWeek);
     // A missing month silently drops its orders from the schedule and the
     // order list, so fail instead of showing a confident partial answer.
     if (pipeline.failedMonths > 0) {
@@ -67,44 +67,8 @@ export async function GET(req: NextRequest) {
         error: `the production app didn't return ${pipeline.failedMonths} of ${pipeline.totalMonths} months of orders, so the schedule would be incomplete. Try again in a minute.`,
       }, { status: 503 });
     }
-    let missingLocation = 0;
-    const raw = pipeline.lines.filter(({ item }) => {
-      if (!item.location) { missingLocation++; return false; }
-      return item.location === location;
-    });
-
-    // ── 2. Bouquet-received dates (intake week) ────────────────────────────
-    const receivedAt: Record<string, string> = {};
-    const keys = raw.map(r => r.key);
-    for (let i = 0; i < keys.length; i += 200) {
-      const { data, error } = await supabase
-        .from('order_status_history')
-        .select('order_product_key, entered_at')
-        .eq('status', 'bouquetReceived')
-        .in('order_product_key', keys.slice(i, i + 200));
-      if (error) throw error;
-      (data ?? []).forEach(r => {
-        const d = r.entered_at?.slice(0, 10);
-        if (d && (!receivedAt[r.order_product_key] || d < receivedAt[r.order_product_key])) receivedAt[r.order_product_key] = d;
-      });
-    }
-
-    const lines: QueueLine[] = raw.map(({ key, item, num }) => {
-      const received = receivedAt[key];
-      const intakeDate = received ?? item.eventDate?.slice(0, 10) ?? item.originalOrderDate?.slice(0, 10) ?? thisWeek;
-      const status = item.status ?? '';
-      return {
-        orderNumber:  num,
-        customer:     item.orderName ?? '',
-        product:      item.productTitle ?? '',
-        variant:      item.variantTitle ?? '',
-        ...parseVariant(item.variantTitle),
-        status,
-        intakeDate,
-        intakeSource: received ? 'bouquetReceived' : 'eventDate',
-        designableWeek: DESIGN_QUEUE_STATUSES.has(status) ? thisWeek : addWeeks(mondayOf(intakeDate), PRESERVATION_WEEKS),
-      };
-    });
+    // ── 2. Bouquet-received dates (intake week) — see loadLocationQueueLines
+    const { lines, missingLocation } = pipeline;
 
     // ── 3. Design capacity per week (same projection as /api/kpis) ─────────
     const [{ data: settingsData, error: settingsError }, { data: managerEmpRows }, actualRows] = await Promise.all([
