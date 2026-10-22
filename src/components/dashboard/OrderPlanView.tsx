@@ -65,8 +65,8 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
     setEdits(json as OrderEdits);
   }
 
-  // Design weeks that have scheduled work, this week through year end — or a
-  // little into next year once the longest lead time reaches past Dec 31.
+  // Design weeks that have scheduled work, this week through the last week any
+  // known order is scheduled (never earlier than year end).
   const weeks = plan.weeks;
   const pastYearEnd = !!plan.through && plan.through.slice(0, 4) > weeks[0]?.slice(0, 4);
   const thruText = pastYearEnd ? `through the week of ${fmtWeek(plan.through)}` : 'through year end';
