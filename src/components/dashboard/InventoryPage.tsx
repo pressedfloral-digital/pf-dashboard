@@ -18,6 +18,7 @@ interface InventoryResponse {
   designedThisWeek: number;
   weeks:            InventoryWeek[];
   unscheduledCount: number;
+  through?: string;
   orderPlan:        OrderPlan | null;
   katanaError:      string | null;
   orderEdits:       OrderEdits;
@@ -283,7 +284,7 @@ export default function InventoryPage() {
             {(data.addOns?.unknownLines ?? 0) > 0 && (
               <> · <span className="text-rose-600 font-medium">{data.addOns!.unknownLines} lines ({data.addOns!.unknownOrders} orders) whose backing &amp; glass couldn&apos;t be loaded</span> — shown as &ldquo;{ADDONS_UNKNOWN}&rdquo;, not counted as none</>
             )}
-            {data.unscheduledCount > 0 && <> · {data.unscheduledCount} not scheduled before year end</>}
+            {data.unscheduledCount > 0 && <> · {data.unscheduledCount} not scheduled{data.through ? <> by the week of {fmtWeek(data.through)}</> : ' in the plan window'}</>}
           </div>
 
           {/* ── One week: totals + orders ── */}

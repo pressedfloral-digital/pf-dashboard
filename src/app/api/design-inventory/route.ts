@@ -25,11 +25,15 @@ export const maxDuration = 300;
 const LIVE_ADDON_BUDGET_MS = 150_000;
 const LIVE_ADDON_CONCURRENCY = 8;
 
+// With no `through`, the schedule runs until every known order line has a
+// week, but never past this many weeks out (in case capacity stays at zero).
+const MAX_HORIZON_WEEKS = 104;
+
 // ── GET /api/design-inventory?location=Utah&through=2026-12-31 ───────────────
 // Every order line Design is scheduled to work on each week from this week
-// through `through` (default: Dec 31 of this year, or the longest supplier
-// lead time from now if that's later, so it reaches into next year from about
-// November on), filled oldest-intake-first
+// through `through` (default: as far out as there are known orders to
+// schedule — at least Dec 31 of this year or the longest supplier lead time
+// from now, at most MAX_HORIZON_WEEKS), filled oldest-intake-first
 // against the saved Design schedule's capacity.
 //
 // With &saved=1, returns the last successful build for the location instead
@@ -51,7 +55,10 @@ export async function GET(req: NextRequest) {
   const thisWeek = isoMonday(0);
   const leadHorizon = addWeeks(thisWeek, MAX_LEAD_WEEKS);
   const yearEnd = `${thisWeek.slice(0, 4)}-12-31`;
-  const through  = req.nextUrl.searchParams.get('through') ?? (leadHorizon > yearEnd ? leadHorizon : yearEnd);
+  const throughParam = req.nextUrl.searchParams.get('through');
+  // Weeks through here always show; later ones only while orders remain.
+  const minThrough = leadHorizon > yearEnd ? leadHorizon : yearEnd;
+  const through  = throughParam ?? addWeeks(thisWeek, MAX_HORIZON_WEEKS);
 
   try {
     // ── 1. Order lines in Preservation or Design ───────────────────────────
@@ -135,7 +142,7 @@ export async function GET(req: NextRequest) {
     const designedThisWeek = actualRows
       .filter(r => !isNonProductionStaff(r.member_name))
       .reduce((s, r) => s + (r.actual_orders ?? 0), 0);
-    const capacityWeeks = weekOfs.map(weekOf => {
+    const allCapacityWeeks = weekOfs.map(weekOf => {
       const scheduled = projectDept(
         designRoster, get('designHours') as HoursMap, get('designDailyHours') as DailyHoursMap,
         [weekOf], location, 'Design', new Set(paidHolidays), 'estimate', get('mgrTotalHours') as HoursMap, managerHomeDept,
@@ -143,7 +150,15 @@ export async function GET(req: NextRequest) {
       return { weekOf, scheduled, capacity: weekOf === thisWeek ? Math.max(0, scheduled - designedThisWeek) : scheduled };
     });
 
-    const { weeks, unscheduled } = scheduleLines(lines, capacityWeeks);
+    const scheduled = scheduleLines(lines, allCapacityWeeks);
+    const { unscheduled } = scheduled;
+    // Drop the empty weeks after the last order is placed (past minThrough).
+    let keep = scheduled.weeks.length;
+    if (!throughParam) {
+      while (keep > 0 && scheduled.weeks[keep - 1].lines.length === 0 && scheduled.weeks[keep - 1].weekOf > minThrough) keep--;
+    }
+    const weeks = scheduled.weeks.slice(0, keep);
+    const capacityWeeks = allCapacityWeeks.slice(0, keep);
 
     // ── 4. Backing & glass for every scheduled order ───────────────────────
     const scheduledNums = [...new Set(weeks.flatMap(w => w.lines.map(l => l.orderNumber)))];
@@ -189,6 +204,7 @@ export async function GET(req: NextRequest) {
       designedThisWeek,
       weeks: weeks.map((w, i) => ({ ...w, scheduled: Math.round(capacityWeeks[i].scheduled) })),
       unscheduledCount: unscheduled.length,
+      through: weeks[weeks.length - 1]?.weekOf ?? thisWeek,
       totals: {
         lines: lines.length,
         inDesignQueue: lines.filter(l => DESIGN_QUEUE_STATUSES.has(l.status)).length,

@@ -223,7 +223,7 @@ export interface Substitution {
 export interface OrderPlan {
   location:   string;
   weeks:      string[];   // design weeks with scheduled work
-  through:    string;     // last Monday the plan covers (Dec 31's week, or later near year end)
+  through:    string;     // last Monday the plan covers (the last week with scheduled orders, at least Dec 31's week)
   rows:       PlanRow[];
   unmatched:  Unmatched[];
   substitutions: Substitution[];
