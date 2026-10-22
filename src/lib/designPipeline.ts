@@ -5,6 +5,10 @@
  */
 import { pfGetAll, fmtDate } from '@/lib/pf-api';
 import { supabase } from '@/lib/supabase';
+import { fetchAllRows } from '@/lib/fetchAllRows';
+import { getWeekMondays } from '@/lib/weekDates';
+import { isNonProductionStaff } from '@/lib/nonProductionStaff';
+import { projectDept, buildManagerHomeDept, type DesignRosterEntry, type HoursMap, type DailyHoursMap } from '@/lib/scheduleProjection';
 import {
   DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, PRESERVATION_WEEKS, isNonDesignProduct,
   parseVariant, mondayOf, addWeeks, type QueueLine,
@@ -107,4 +111,51 @@ export async function loadLocationQueueLines(location: string, thisWeek: string)
     };
   });
   return { lines, missingLocation, failedMonths: pipeline.failedMonths, totalMonths: pipeline.totalMonths };
+}
+
+/** Design's frame capacity for each week from `thisWeek` through `through`,
+ *  from the saved schedule (same projection as /api/kpis). This week's
+ *  capacity is only what's left after frames already logged this week.
+ *  Shared by /api/design-inventory and /api/design-week-orders. */
+export async function loadDesignCapacityWeeks(location: string, thisWeek: string, through: string): Promise<{
+  capacityWeeks:    { weekOf: string; scheduled: number; capacity: number }[];
+  designedThisWeek: number;
+  settings:         { location: string; key: string; value: unknown }[];
+}> {
+  const [{ data: settingsData, error: settingsError }, { data: managerEmpRows }, actualRows] = await Promise.all([
+    supabase.from('schedule_settings').select('location,key,value'),
+    supabase.from('rippling_employees').select('full_name,location,department,title').eq('active', true),
+    fetchAllRows<{ member_name: string; actual_orders: number | null }>((from, to) =>
+      supabase
+        .from('team_member_week_actuals')
+        .select('member_name, actual_orders')
+        .eq('location', location)
+        .eq('department', 'design')
+        .eq('week_of', thisWeek)
+        .range(from, to)
+    ),
+  ]);
+  if (settingsError) throw settingsError;
+  const settings = (settingsData ?? []) as { location: string; key: string; value: unknown }[];
+  const get = (key: string) => settings.find(r => r.location === location && r.key === key)?.value ?? {};
+  const paidHolidays = (settings.find(r => r.location === 'Global' && r.key === 'paidHolidays')?.value as string[]) ?? [];
+  const designRoster = Object.fromEntries(
+    Object.entries(get('designRoster') as Record<string, DesignRosterEntry>).filter(([, m]) => !isNonProductionStaff(m.name))
+  );
+  const managerHomeDept = buildManagerHomeDept(managerEmpRows ?? []);
+
+  const weekOfs = getWeekMondays(thisWeek, through);
+  // This week is partly done — whatever Design already logged has left
+  // Ready to Frame, so only the rest of the week's capacity is still open.
+  const designedThisWeek = actualRows
+    .filter(r => !isNonProductionStaff(r.member_name))
+    .reduce((s, r) => s + (r.actual_orders ?? 0), 0);
+  const capacityWeeks = weekOfs.map(weekOf => {
+    const scheduled = projectDept(
+      designRoster, get('designHours') as HoursMap, get('designDailyHours') as DailyHoursMap,
+      [weekOf], location, 'Design', new Set(paidHolidays), 'estimate', get('mgrTotalHours') as HoursMap, managerHomeDept,
+    ).production;
+    return { weekOf, scheduled, capacity: weekOf === thisWeek ? Math.max(0, scheduled - designedThisWeek) : scheduled };
+  });
+  return { capacityWeeks, designedThisWeek, settings };
 }

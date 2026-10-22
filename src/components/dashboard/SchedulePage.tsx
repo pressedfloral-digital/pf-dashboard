@@ -32,6 +32,7 @@ import { useDistributionEstimate } from '@/hooks/useDistributionEstimate';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
 import { SyncedOrdersPopover } from './SyncedOrdersPopover';
 import { BehindPromiseModal, type BehindPromiseSummary } from './BehindPromiseModal';
+import { WeekOrdersModal } from './WeekOrdersModal';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -4206,6 +4207,8 @@ export function SchedulePage({
   const [bloomModalOpen, setBloomModalOpen] = useState(false);
   // Queue & Turnaround row whose "behind promise" detail is open.
   const [behindPromiseRow, setBehindPromiseRow] = useState<{ weekOf: string; weeksLeft: number } | null>(null);
+  // Weekly Schedule week (offset) whose order list is open.
+  const [weekOrdersWeek, setWeekOrdersWeek] = useState<number | null>(null);
   const [bloomHistoryOpen, setBloomHistoryOpen] = useState(false);
   const [bloomHistory, setBloomHistory] = useState<{ id: number; sent_at: string; rows: BloomUpdateRow[] }[]>([]);
   const [bloomHistoryLoading, setBloomHistoryLoading] = useState(false);
@@ -5235,6 +5238,15 @@ export function SchedulePage({
 
   return (
     <div className="space-y-6">
+      {weekOrdersWeek !== null && (
+        <WeekOrdersModal
+          location={location}
+          weekOf={isoMonday(weekOrdersWeek)}
+          weekLabel={getWeekLabel(weekOrdersWeek)}
+          isThisWeek={weekOrdersWeek === 0}
+          onClose={() => setWeekOrdersWeek(null)}
+        />
+      )}
       {behindPromiseSummary && (
         <BehindPromiseModal
           location={location}
@@ -5754,12 +5766,19 @@ export function SchedulePage({
                     ))}
                     {/* Totals row */}
                     <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
-                      <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Week total</td>
+                      <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">
+                        <div>Week total</div>
+                        <div className="text-[9px] font-normal text-slate-400">click a total for its orders</div>
+                      </td>
                       {windowWeeks.map(w => {
                         const t = weeklyTotals[w];
                         return (
                           <td key={w} className={`px-2 py-2 text-center ${w === 0 ? 'bg-indigo-50/50' : ''}`}>
-                            <div className="text-indigo-700">{Math.round(t.totalFrames)}f</div>
+                            <button onClick={() => setWeekOrdersWeek(w)}
+                              className="text-indigo-700 underline decoration-dotted underline-offset-2 hover:text-indigo-900"
+                              title="See the orders to design this week, oldest first">
+                              {Math.round(t.totalFrames)}f
+                            </button>
                             {hasRates && t.totalCPO !== null && (
                               <div className="text-amber-600 text-[10px]">{fmt$(t.totalCPO)}</div>
                             )}
