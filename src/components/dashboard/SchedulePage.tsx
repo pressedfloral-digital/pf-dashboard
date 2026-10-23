@@ -31,6 +31,7 @@ import { useGrowthSettings } from '@/hooks/useGrowthSettings';
 import { useDistributionEstimate } from '@/hooks/useDistributionEstimate';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
 import { SyncedOrdersPopover } from './SyncedOrdersPopover';
+import { DesignAtAGlance, type GlancePerson } from './DesignAtAGlance';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -4360,14 +4361,14 @@ export function SchedulePage({
   const [weekOffset,   setWeekOffset]  = useState(0);
   const [showCPO,      setShowCPO]     = useState(true);
   const [designInputMode, setDesignInputMode] = useState<InputMode>('hours');
-  const [activeTab,    setActiveTab]   = useState<'thisweek' | 'schedule' | 'monthly' | 'queue' | 'historicals'>('thisweek');
+  const [activeTab,    setActiveTab]   = useState<'glance' | 'thisweek' | 'schedule' | 'monthly' | 'queue' | 'historicals'>('glance');
   const [showDoneCohorts, setShowDoneCohorts] = useState(false);
   const [designThisWeekOffset, setDesignThisWeekOffset] = useState(0);
   const designActualDays = getWeekdays(designThisWeekOffset);
   const designActuals = useProductionAssignmentCounts({
     names: designers.map(designer => designer.name),
     dates: designActualDays.map(day => day.iso),
-    enabled: dept === 'design' && activeTab === 'thisweek',
+    enabled: dept === 'design' && (activeTab === 'thisweek' || activeTab === 'glance'),
   });
   // "This Week" needs to reach as far out as "Weekly Schedule" does — now that
   // Weekly Schedule is read-only, far-future one-off exceptions can only be
@@ -5514,13 +5515,14 @@ export function SchedulePage({
           {/* Inner tabs */}
           <div className="flex border-b border-slate-200">
             {([
+              ['glance',      'At a Glance'],
               ['thisweek',    'This Week'],
               ['schedule',    'Weekly Schedule'],
               ['queue',       'Queue & Turnaround'],
               ['monthly',     'Monthly Summary'],
               ['historicals', 'Historicals'],
             ] as const).filter(([id]) => {
-              if (userRole === 'viewer') return ['thisweek', 'queue'].includes(id);
+              if (userRole === 'viewer') return ['glance', 'thisweek', 'queue'].includes(id);
               return true;
             }).map(([id, label]) => (
               <button key={id} onClick={() => setActiveTab(id)}
@@ -5533,6 +5535,51 @@ export function SchedulePage({
               </button>
             ))}
           </div>
+
+          {/* ── AT A GLANCE TAB ─────────────────────────────────────────────── */}
+          {activeTab === 'glance' && (() => {
+            const days = designActualDays;
+            const weekIso = isoMonday(designThisWeekOffset);
+            const today = new Date(); today.setHours(0, 0, 0, 0);
+            const people: GlancePerson[] = designers.map(d => {
+              const employment = { weekIso, startDate: settings.designRoster[d.id]?.startDate, endDate: settings.designRoster[d.id]?.endDate };
+              const std = settings.designRoster[d.id]?.standardWeeklyHours;
+              return {
+                id: d.id, name: d.name, ratio: d.ratio,
+                isManager: !!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || d.isManager),
+                days: days.map((day, di) => ({
+                  hours:        resolveDayHours(designDailyHours, `${weekIso}-${d.id}`, di, std, employment, paidHolidays).hours,
+                  usualHours:   resolveDayHours({}, `${weekIso}-${d.id}`, di, std, employment, paidHolidays).hours,
+                  actualFrames: designActuals.getCount(d.name, day.iso, 'design'),
+                })),
+              };
+            });
+            const mtdWindow = getWindowsByType(kpiMetrics.windows, 'mtd')[0];
+            const goalPeriod     = selectEstimated(kpiMetrics.estimated?.current, location, 'goal');
+            const expectedPeriod = selectEstimated(kpiMetrics.estimated?.current, location, 'expected');
+            return (
+              <DesignAtAGlance
+                location={location}
+                weekLabel={designThisWeekOffset === 0 ? 'This week' : designThisWeekOffset === 1 ? 'Next week' : `Week of ${getWeekLabel(designThisWeekOffset)}`}
+                weekOffset={designThisWeekOffset}
+                maxWeekOffset={maxDesignThisWeekOffset}
+                onWeekOffsetChange={setDesignThisWeekOffset}
+                todayIso={today.toISOString().split('T')[0]}
+                days={days.map(day => ({ ...day, isHoliday: paidHolidays.includes(day.iso) }))}
+                people={people}
+                actualsLoading={designActuals.loading}
+                kpiLoading={kpiMetrics.loading}
+                mtd={mtdWindow ? selectDept(selectLocation(mtdWindow, location), 'design') : null}
+                goal={goalPeriod ? selectDept(goalPeriod, 'design') : null}
+                expected={expectedPeriod ? selectDept(expectedPeriod, 'design') : null}
+                showCPO={hasRates}
+                plannedFrames={weeklyTotals[designThisWeekOffset]?.totalFrames ?? 0}
+                mustFrames={mustDesignByWeek[designThisWeekOffset] ?? 0}
+                hoursPerFrame={hiringPlan.hoursPerFrame[designThisWeekOffset] || 1}
+                onOpenThisWeek={() => setActiveTab('thisweek')}
+              />
+            );
+          })()}
 
           {/* ── WEEKLY SCHEDULE TAB ─────────────────────────────────────────── */}
           {activeTab === 'thisweek' && (() => {
