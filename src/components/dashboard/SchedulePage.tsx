@@ -72,6 +72,11 @@ const PRES_NEW_HIRE_RATIO = 0.6;
 // reads as understaffed, no tolerance band — the whole point is that
 // everything received in a week should get preserved that same week.
 const PRES_OVERSTAFF_PCT = 0.10;
+// Same idea for Fulfillment: scheduled capacity more than this share above the
+// orders actually available to ship that week (backlog carried in + what
+// Design hands over) reads as overstaffed. The turnaround columns can't show
+// this on their own — they bottom out at "~0 wks" once the queue is empty.
+const FF_OVERSTAFF_PCT = 0.10;
 
 // ─── Historical Utah intake (actual received by week) ─────────────────────────
 // Calibration for the designed-to-date anchor: frames designed before design-historicals
@@ -205,6 +210,46 @@ function preservationStaffingStatus(capacity: number, demand: number) {
     return { label: `+${Math.round(diff)} over — overstaffed`, text: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-200' };
   }
   return { label: 'correctly staffed', text: 'text-green-700', bg: 'bg-green-50', border: 'border-green-200' };
+}
+
+// Fulfillment staffing walk: week by week, orders available to fulfill
+// (carried-over backlog + that week's Design output) against scheduled
+// capacity. Whatever capacity has no order to work on is idle — the
+// overstaffing the turnaround columns hide behind "~0 wks".
+interface FfStaffingWeek {
+  available: number;   // orders that could be fulfilled this week
+  capacity:  number;   // orders the scheduled hours can fulfill
+  hours:     number;   // scheduled production hours
+  idleOrders: number;  // capacity with nothing to work on
+  idleHours:  number;  // idleOrders converted back to hours at this week's pace
+  carryOut:  number;   // backlog left at the end of the week
+}
+
+function simulateFfStaffing(startQueue: number, arrivingByWeek: number[], capacityByWeek: number[], hoursByWeek: number[]): FfStaffingWeek[] {
+  let carry = Math.max(0, startQueue);
+  return capacityByWeek.map((capacity, w) => {
+    const available = carry + (arrivingByWeek[w] ?? 0);
+    const processed = Math.min(available, capacity);
+    const idleOrders = Math.max(0, capacity - available);
+    const hours = hoursByWeek[w] ?? 0;
+    const idleHours = capacity > 0 ? idleOrders * (hours / capacity) : 0;
+    carry = available - processed;
+    return { available, capacity, hours, idleOrders, idleHours, carryOut: carry };
+  });
+}
+
+function ffStaffingStatus(week: FfStaffingWeek) {
+  const { available, capacity, idleOrders, idleHours, carryOut } = week;
+  if (capacity <= 0) {
+    return { kind: 'none' as const, label: 'no hours scheduled', short: 'no hours', text: 'text-slate-500', bg: 'bg-slate-50', border: 'border-slate-200' };
+  }
+  if (carryOut > 0.5) {
+    return { kind: 'under' as const, label: `${Math.round(carryOut)} orders carry over — understaffed`, short: `${Math.round(carryOut)} carry over`, text: 'text-red-700', bg: 'bg-red-50', border: 'border-red-200' };
+  }
+  if (available <= 0 || idleOrders / capacity > FF_OVERSTAFF_PCT) {
+    return { kind: 'over' as const, label: `~${Math.round(idleHours)}h idle (${Math.round(idleOrders)} orders of spare capacity) — overstaffed`, short: `~${Math.round(idleHours)}h idle`, text: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-200' };
+  }
+  return { kind: 'ok' as const, label: 'correctly staffed', short: 'on target', text: 'text-green-700', bg: 'bg-green-50', border: 'border-green-200' };
 }
 
 // Pure FIFO simulation: given a starting designable queue, a per-week inflow of
@@ -2734,7 +2779,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   ffHours, ffRoster, mgrTotalHours, mgrTotalDailyHours, onFfHoursChange, onFfRosterChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {},
   ffDailyHoursProp, onFfDailyHoursChange, canViewCPO = true, userRole = 'admin', canSeeManagerCPO = () => false,
   ffNewHireHours, onFfNewHireHoursChange, ffCohortIntake,
-  fullPipelineRemaining, paidHolidays }: {
+  fullPipelineRemaining, ffStaffingByWeek, paidHolidays }: {
   location:        'Utah' | 'Georgia';
   fulfillmentQueue: number;
   countsLoading:   boolean;
@@ -2763,6 +2808,9 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   // Design's own "Total w/ fulfillment" column can never disagree — see the
   // fullPipelineRemaining definition up there for the full reasoning.
   paidHolidays: string[];
+  // Week-by-week orders available vs. scheduled capacity — the overstaffing
+  // read the turnaround columns can't give once they hit "~0 wks".
+  ffStaffingByWeek: FfStaffingWeek[];
   fullPipelineRemaining: {
     weekOf: string; count: number;
     stage: 'fulfilled' | 'in_fulfillment' | 'in_design_queue' | 'still_drying' | 'not_yet_received' | 'partially_designed';
@@ -3315,11 +3363,36 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                       );
                     })}
                   </tr>
+                  <tr className="border-t border-slate-100 bg-white">
+                    <td className="sticky left-0 bg-white px-4 py-2 text-xs text-slate-600">
+                      <div className="font-semibold">Orders to fulfill</div>
+                      <div className="text-[10px] font-normal text-slate-400">backlog + Design output</div>
+                    </td>
+                    {Array.from({ length: WINDOW }, (_, i) => i + weekOffset).filter(i => i < WEEKS).map(w => {
+                      const week = ffStaffingByWeek[w];
+                      const status = week ? ffStaffingStatus(week) : null;
+                      return (
+                        <td key={w} className={`px-2 py-2 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
+                          {week && status && (
+                            <>
+                              <div className="text-slate-700 font-medium">{round2(week.available)} ord</div>
+                              <div className={`mt-1 inline-block text-[10px] font-medium rounded px-1.5 py-0.5 border whitespace-nowrap ${status.text} ${status.bg} ${status.border}`}
+                                title={status.label}>
+                                {status.short}
+                              </div>
+                            </>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
                 </tbody>
               </table>
             </div>
           </div>
-          <p className="text-xs text-slate-400">Right-click any hours cell to apply that value to all 52 weeks for that team member.</p>
+          <p className="text-xs text-slate-400">Right-click any hours cell to apply that value to all 52 weeks for that team member.
+            &ldquo;Orders to fulfill&rdquo; is the backlog carried into the week plus what Design is scheduled to finish; spare capacity beyond
+            {' '}{Math.round(FF_OVERSTAFF_PCT * 100)}% of that reads as overstaffed, shown as idle hours at that week&apos;s pace.</p>
         </>
       )}
 
@@ -3360,6 +3433,45 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
               </div>
             </div>
           </div>
+
+          {(() => {
+            const horizon = Math.min(12, ffStaffingByWeek.length);
+            const weeks = ffStaffingByWeek.slice(0, horizon);
+            const overWeeks = weeks.filter(wk => ffStaffingStatus(wk).kind === 'over').length;
+            const shortWeeks = weeks.filter(wk => ffStaffingStatus(wk).kind === 'under').length;
+            const idleHours = weeks.reduce((sum, wk) => sum + wk.idleHours, 0);
+            return (
+              <div className="bg-white border border-slate-100 rounded-xl p-5">
+                <div className="flex items-start justify-between gap-2 flex-wrap mb-1">
+                  <h2 className="text-sm font-semibold text-slate-700">Staffing vs. orders arriving — next {horizon} weeks</h2>
+                  <span className={`text-xs font-medium ${overWeeks > 0 ? 'text-amber-700' : shortWeeks > 0 ? 'text-red-700' : 'text-green-700'}`}>
+                    {overWeeks > 0 ? `${overWeeks} wk${overWeeks !== 1 ? 's' : ''} overstaffed · ~${Math.round(idleHours)}h idle`
+                      : shortWeeks > 0 ? `${shortWeeks} wk${shortWeeks !== 1 ? 's' : ''} carrying a backlog`
+                      : 'staffed to demand'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 mb-3">
+                  Orders available each week (backlog carried in + Design&apos;s scheduled output) against scheduled Fulfillment capacity.
+                  When the queue is empty the turnaround columns below just read &ldquo;~0 wks&rdquo; — this shows how much capacity has nothing to work on.
+                </p>
+                <div className="overflow-x-auto -mx-1 pb-1">
+                  <div className="flex gap-1.5" style={{ width: 'max-content' }}>
+                    {weeks.map((wk, w) => {
+                      const status = ffStaffingStatus(wk);
+                      return (
+                        <div key={w} title={status.label}
+                          className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded border ${status.bg} ${status.border}`}>
+                          <span className="text-[9px] text-slate-400 whitespace-nowrap">{getWeekLabel(w)}</span>
+                          <span className="text-[10px] text-slate-600 whitespace-nowrap">{Math.round(wk.available)} in / {Math.round(wk.capacity)} cap</span>
+                          <span className={`text-[10px] font-medium whitespace-nowrap ${status.text}`}>{status.short}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
             <div className="px-5 py-3 border-b border-slate-100 flex items-start justify-between gap-3 flex-wrap">
@@ -3484,6 +3596,12 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                           {row.designCompleteWeek !== null && row.designCompleteWeek > 0 && row.ffOnlyWeeks !== null && (
                             <div className="text-[10px] text-slate-400 mt-0.5">
                               ~{row.designCompleteWeek}w to design, then ~{row.ffOnlyWeeks}w in fulfillment
+                              {row.ffOnlyWeeks === 0 && (() => {
+                                const wk = ffStaffingByWeek[row.designCompleteWeek];
+                                return wk && wk.idleHours >= 1 ? (
+                                  <span className="text-amber-600" title={ffStaffingStatus(wk).label}> · team ~{Math.round(wk.idleHours)}h idle that week</span>
+                                ) : null;
+                              })()}
                             </div>
                           )}
                         </td>
@@ -4892,9 +5010,9 @@ export function SchedulePage({
     return base;
   }, [location, settings.ffRoster]);
 
-  const ffCapacityByWeekForPipeline = useMemo(() => Array.from({ length: WEEKS }, (_, w) => {
+  const ffWeekCapacityForPipeline = useMemo(() => Array.from({ length: WEEKS }, (_, w) => {
     const weekIso = isoMonday(w);
-    let totalOrders = 0;
+    let totalOrders = 0, totalHours = 0;
     ffTeamForPipeline.forEach(m => {
       const prodH = resolveWeekHours({
         dailyMap: settings.ffDailyHours, weekKey: `${weekIso}-${m.id}`,
@@ -4903,12 +5021,17 @@ export function SchedulePage({
         hardcodedDefault: m.defaultHrs,
         employment: { weekIso, startDate: settings.ffRoster[m.id]?.startDate, endDate: settings.ffRoster[m.id]?.endDate }, holidays: paidHolidays,
       });
-      totalOrders += m.ratio > 0 ? prodH / m.ratio : 0;
+      if (m.ratio > 0) { totalOrders += prodH / m.ratio; totalHours += prodH; }
     });
-    return totalOrders;
+    return { orders: totalOrders, hours: totalHours };
   }), [ffTeamForPipeline, settings.ffDailyHours, settings.ffHours, settings.ffRoster, paidHolidays]);
+  const ffCapacityByWeekForPipeline = useMemo(() => ffWeekCapacityForPipeline.map(c => c.orders), [ffWeekCapacityForPipeline]);
 
   const ffDerivedBacklogForPipeline = ffCohortIntake.totalDesigned - ffCohortIntake.alreadyFulfilled;
+
+  const ffStaffingByWeek = useMemo(() =>
+    simulateFfStaffing(ffDerivedBacklogForPipeline, designCapacityByWeek, ffCapacityByWeekForPipeline, ffWeekCapacityForPipeline.map(c => c.hours)),
+    [ffDerivedBacklogForPipeline, designCapacityByWeek, ffCapacityByWeekForPipeline, ffWeekCapacityForPipeline]);
 
   const ffScheduledTurnaroundForPipeline = useMemo(() =>
     simulateDesignTurnaroundsUnclamped(ffDerivedBacklogForPipeline, designCapacityByWeek, ffCapacityByWeekForPipeline),
@@ -5312,6 +5435,7 @@ export function SchedulePage({
           onFfNewHireHoursChange={(h) => update('ffNewHireHours', h)}
           ffCohortIntake={ffCohortIntake}
           fullPipelineRemaining={fullPipelineRemaining}
+          ffStaffingByWeek={ffStaffingByWeek}
           onActualsSaved={() => {
             fetch(`/api/actuals?location=${location}&type=team&weeks=52`)
               .then(r => r.json())
