@@ -215,7 +215,10 @@ function preservationStaffingStatus(capacity: number, demand: number) {
 // Fulfillment staffing walk: week by week, orders available to fulfill
 // (carried-over backlog + that week's Design output) against scheduled
 // capacity. Whatever capacity has no order to work on is idle — the
-// overstaffing the turnaround columns hide behind "~0 wks".
+// overstaffing the turnaround columns hide behind "~0 wks". Uses the same
+// queue recurrence as simulateDesignTurnaroundsUnclamped (week 0 works the
+// starting backlog, Design output joins from week 1), so a row reading
+// "~0 wks" there is exactly a week with spare capacity here.
 interface FfStaffingWeek {
   available: number;   // orders that could be fulfilled this week
   capacity:  number;   // orders the scheduled hours can fulfill
@@ -228,7 +231,7 @@ interface FfStaffingWeek {
 function simulateFfStaffing(startQueue: number, arrivingByWeek: number[], capacityByWeek: number[], hoursByWeek: number[]): FfStaffingWeek[] {
   let carry = Math.max(0, startQueue);
   return capacityByWeek.map((capacity, w) => {
-    const available = carry + (arrivingByWeek[w] ?? 0);
+    const available = carry + (w === 0 ? 0 : (arrivingByWeek[w] ?? 0));
     const processed = Math.min(available, capacity);
     const idleOrders = Math.max(0, capacity - available);
     const hours = hoursByWeek[w] ?? 0;
@@ -3434,45 +3437,6 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
             </div>
           </div>
 
-          {(() => {
-            const horizon = Math.min(12, ffStaffingByWeek.length);
-            const weeks = ffStaffingByWeek.slice(0, horizon);
-            const overWeeks = weeks.filter(wk => ffStaffingStatus(wk).kind === 'over').length;
-            const shortWeeks = weeks.filter(wk => ffStaffingStatus(wk).kind === 'under').length;
-            const idleHours = weeks.reduce((sum, wk) => sum + wk.idleHours, 0);
-            return (
-              <div className="bg-white border border-slate-100 rounded-xl p-5">
-                <div className="flex items-start justify-between gap-2 flex-wrap mb-1">
-                  <h2 className="text-sm font-semibold text-slate-700">Staffing vs. orders arriving — next {horizon} weeks</h2>
-                  <span className={`text-xs font-medium ${overWeeks > 0 ? 'text-amber-700' : shortWeeks > 0 ? 'text-red-700' : 'text-green-700'}`}>
-                    {overWeeks > 0 ? `${overWeeks} wk${overWeeks !== 1 ? 's' : ''} overstaffed · ~${Math.round(idleHours)}h idle`
-                      : shortWeeks > 0 ? `${shortWeeks} wk${shortWeeks !== 1 ? 's' : ''} carrying a backlog`
-                      : 'staffed to demand'}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400 mb-3">
-                  Orders available each week (backlog carried in + Design&apos;s scheduled output) against scheduled Fulfillment capacity.
-                  When the queue is empty the turnaround columns below just read &ldquo;~0 wks&rdquo; — this shows how much capacity has nothing to work on.
-                </p>
-                <div className="overflow-x-auto -mx-1 pb-1">
-                  <div className="flex gap-1.5" style={{ width: 'max-content' }}>
-                    {weeks.map((wk, w) => {
-                      const status = ffStaffingStatus(wk);
-                      return (
-                        <div key={w} title={status.label}
-                          className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded border ${status.bg} ${status.border}`}>
-                          <span className="text-[9px] text-slate-400 whitespace-nowrap">{getWeekLabel(w)}</span>
-                          <span className="text-[10px] text-slate-600 whitespace-nowrap">{Math.round(wk.available)} in / {Math.round(wk.capacity)} cap</span>
-                          <span className={`text-[10px] font-medium whitespace-nowrap ${status.text}`}>{status.short}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
-
           <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
             <div className="px-5 py-3 border-b border-slate-100 flex items-start justify-between gap-3 flex-wrap">
               <div>
@@ -3513,6 +3477,10 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                     const totalToFulfill = row.stage !== 'fulfilled' && weeksLeft !== null ? row.weeksElapsed + weeksLeft : null;
                     const totalToFulfillPlanned = row.stage !== 'fulfilled' && weeksLeftPlanned !== null ? row.weeksElapsed + weeksLeftPlanned : null;
                     const done = row.stage === 'fulfilled';
+                    // A cohort clearing Fulfillment the same week it arrives can't show
+                    // overstaffing as weeks — show the spare hours that week instead.
+                    const ffWeek = !done && row.ffOnlyWeeks === 0 ? ffStaffingByWeek[row.designCompleteWeek ?? 0] : undefined;
+                    const ffOverstaffed = ffWeek && ffStaffingStatus(ffWeek).kind === 'over' ? ffWeek : null;
                     return (
                       <tr key={i} className={`border-b border-slate-50 ${
                         done ? 'bg-slate-50 opacity-50' : row.stage === 'partially_designed' ? 'bg-amber-50/30' : weeksLeft === 0 ? 'bg-indigo-50/40' : row.stage === 'not_yet_received' ? 'bg-slate-50/40' : 'hover:bg-slate-50'
@@ -3596,12 +3564,6 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                           {row.designCompleteWeek !== null && row.designCompleteWeek > 0 && row.ffOnlyWeeks !== null && (
                             <div className="text-[10px] text-slate-400 mt-0.5">
                               ~{row.designCompleteWeek}w to design, then ~{row.ffOnlyWeeks}w in fulfillment
-                              {row.ffOnlyWeeks === 0 && (() => {
-                                const wk = ffStaffingByWeek[row.designCompleteWeek];
-                                return wk && wk.idleHours >= 1 ? (
-                                  <span className="text-amber-600" title={ffStaffingStatus(wk).label}> · team ~{Math.round(wk.idleHours)}h idle that week</span>
-                                ) : null;
-                              })()}
                             </div>
                           )}
                         </td>
@@ -3623,10 +3585,16 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         <td className="px-3 py-2 text-center">
                           {row.totalFulfillmentWeeks !== null ? (
                             <div className="space-y-0.5">
-                              <div className={`text-xs font-semibold ${row.totalFulfillmentWeeks > FF_TARGET_WEEKS ? 'text-red-700' : 'text-slate-600'}`}
+                              <div className={`text-xs font-semibold ${row.totalFulfillmentWeeks > FF_TARGET_WEEKS ? 'text-red-700' : ffOverstaffed ? 'text-orange-700' : 'text-slate-600'}`}
                                 title={row.totalFulfillmentWeeks > FF_TARGET_WEEKS ? `Over the ${FF_TARGET_WEEKS}-week target` : undefined}>
                                 ~{row.totalFulfillmentWeeks} wk{row.totalFulfillmentWeeks !== 1 ? 's' : ''}
                               </div>
+                              {ffOverstaffed && (
+                                <div className="text-[10px] text-orange-600 whitespace-nowrap"
+                                  title={`Week of ${fmtDate(isoMonday(row.designCompleteWeek ?? 0))}: ${Math.round(ffOverstaffed.available)} orders to fulfill vs. ${Math.round(ffOverstaffed.capacity)} scheduled capacity (${Math.round(ffOverstaffed.hours)}h). Team-wide for that week, not just this cohort.`}>
+                                  overstaffed · ~{Math.round(ffOverstaffed.idleHours)}h too many
+                                </div>
+                              )}
                               {row.totalFulfillmentWeeksPlanned !== null && row.totalFulfillmentWeeksPlanned !== row.totalFulfillmentWeeks && (
                                 <div className={`text-[10px] font-medium ${row.totalFulfillmentWeeksPlanned > FF_TARGET_WEEKS ? 'text-red-600' : 'text-emerald-600'}`}>
                                   planned ~{row.totalFulfillmentWeeksPlanned} wk{row.totalFulfillmentWeeksPlanned !== 1 ? 's' : ''}
