@@ -5345,6 +5345,10 @@ export function SchedulePage({
               ['bloomstock',   'Bloom Stock Products'],
             ] as const).filter(([id]) => {
               if (userRole === 'manager' && userDepartment) {
+                // The Utah design manager also runs Resin and Bloom Stock (both Utah-only).
+                if (userDepartment === 'design' && userLocation === 'Utah') {
+                  return ['design', 'resin', 'bloomstock'].includes(id);
+                }
                 return id === userDepartment;
               }
               if (userRole === 'viewer') {
