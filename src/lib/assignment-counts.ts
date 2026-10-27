@@ -1,13 +1,14 @@
 /**
- * Direct Pressed Floral assignment counts, matching Support Assistant's
- * Frames > Team view exactly.
+ * Direct Pressed Floral assignment counts using the same attribution and
+ * UTC calendar as Support Assistant, excluding non-production products.
  *
  * The .NET endpoint returns the number of order products currently attributed
  * to a user for Preservation, Design, and Fulfillment, filtered by each
  * department's assignment timestamp. Reassignments therefore move attribution
  * in both this dashboard and Support Assistant.
  */
-import { pfGet, pfPost } from '@/lib/pf-api';
+import { pfPost } from '@/lib/pf-api';
+import { assignmentDates, createSingleFlight, sumCounts, validateBatch, type BatchResponse } from '@/lib/assignment-batch';
 
 export type AssignmentDepartment = 'preservation' | 'design' | 'fulfillment';
 
@@ -43,12 +44,6 @@ interface BaseUserDTO {
 
 interface UserPage {
   items?: BaseUserDTO[] | null;
-}
-
-interface RawAssignmentCounts {
-  assignedToUser?: number | null;
-  preservationUser?: number | null;
-  fulfillmentUser?: number | null;
 }
 
 interface AssignableStaff {
@@ -90,7 +85,11 @@ export function normalizeAssignmentStaffName(name: string): string {
 let staffCache: { expiresAt: number; staff: AssignableStaff[] } | null = null;
 
 /** Fetches the same Admin/Manager/Staff directory used by Support Assistant. */
-export async function fetchAssignableStaff(): Promise<AssignableStaff[]> {
+const directoryFlight = createSingleFlight<AssignableStaff[]>(0, 1);
+export function fetchAssignableStaff(): Promise<AssignableStaff[]> {
+  return directoryFlight('directory', loadAssignableStaff);
+}
+async function loadAssignableStaff(): Promise<AssignableStaff[]> {
   if (staffCache && Date.now() < staffCache.expiresAt) return staffCache.staff;
 
   const pageSize = 50; // .NET validates this as the maximum page size.
@@ -100,10 +99,12 @@ export async function fetchAssignableStaff(): Promise<AssignableStaff[]> {
       pageNumber,
       pageSize,
       roles: ['admin', 'manager', 'staff'],
-    });
-    const items = page.items ?? [];
+    }, { timeoutMs: 25000, retry: false });
+    if (!Array.isArray(page.items)) throw new Error('Incomplete staff directory.');
+    const items = page.items;
     users.push(...items);
     if (items.length < pageSize) break;
+    if (pageNumber === 200) throw new Error('Staff directory exceeds supported size.');
   }
 
   const byUuid = new Map<string, AssignableStaff>();
@@ -125,40 +126,6 @@ function rangeBounds(start: string, end: string): { startDate: string; endDate: 
     startDate: `${start}T00:00:00.000Z`,
     endDate: `${end}T23:59:59.999Z`,
   };
-}
-
-export async function fetchAssignmentCounts(
-  userUuid: string,
-  start: string,
-  end: string,
-): Promise<AssignmentCounts> {
-  const bounds = rangeBounds(start, end);
-  const params = new URLSearchParams(bounds);
-  const dto = await pfGet<RawAssignmentCounts>(
-    `/OrderProducts/ForUser/Counts/${encodeURIComponent(userUuid)}/false/false?${params}`
-  );
-  return {
-    preservation: dto.preservationUser ?? 0,
-    design: dto.assignedToUser ?? 0,
-    fulfillment: dto.fulfillmentUser ?? 0,
-  };
-}
-
-async function mapWithConcurrency<T, R>(
-  values: T[],
-  limit: number,
-  mapper: (value: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(values.length);
-  let next = 0;
-  async function worker() {
-    while (next < values.length) {
-      const index = next++;
-      results[index] = await mapper(values[index]);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, worker));
-  return results;
 }
 
 // Some people have more than one production-app account under the same name
@@ -201,91 +168,48 @@ function resolveRequestedStaff(
   return { targets, unmatched };
 }
 
-async function fetchTargetCounts(target: StaffTarget, start: string, end: string): Promise<AssignmentCounts> {
-  const perAccount = await Promise.all(target.accounts.map(a => fetchAssignmentCounts(a.uuid, start, end)));
-  const gross = perAccount.reduce(
-    (sum, c) => ({
-      preservation: sum.preservation + c.preservation,
-      design: sum.design + c.design,
-      fulfillment: sum.fulfillment + c.fulfillment,
-    }),
-    { preservation: 0, design: 0, fulfillment: 0 },
-  );
-  if (!ASSIGNMENT_DEPARTMENTS.some(d => gross[d] > 0)) return gross;
-
-  // The counts endpoint can't filter by product, so take the products that
-  // don't count (see isExcludedFromCounts) back out using the list.
-  const listed = await listTargetOrderProducts(target.accounts, start, end);
-  const net = { ...gross };
-  ASSIGNMENT_DEPARTMENTS.forEach(d => {
-    if (gross[d] > 0) net[d] = gross[d] - excludedInCount(deptOrderProducts(listed, d), gross[d]);
-  });
-  return net;
-}
-
-/** One aggregate count per person for a date range; used by Historicals sync. */
-export async function computeAssignmentCounts(
-  start: string,
-  end: string,
-  requestedNames?: string[],
-): Promise<{ rows: AssignmentCountRow[]; unmatched: string[] }> {
-  const staff = await fetchAssignableStaff();
-  const { targets, unmatched } = resolveRequestedStaff(staff, requestedNames);
-  const rows = await mapWithConcurrency(targets, 12, async target => ({
-    staff: target.requestedName,
-    userUuid: target.accounts[0].uuid,
-    counts: await fetchTargetCounts(target, start, end),
-  }));
-  return { rows, unmatched };
-}
-
 export interface DailyAssignmentCountRow {
   staff: string;
   userUuid: string;
   days: Record<string, AssignmentCounts>;
 }
 
-function listDates(start: string, end: string): string[] {
-  const dates: string[] = [];
-  const cursor = new Date(`${start}T00:00:00.000Z`);
-  const last = new Date(`${end}T00:00:00.000Z`);
-  while (cursor <= last) {
-    dates.push(cursor.toISOString().slice(0, 10));
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return dates;
+const batchFlight = createSingleFlight<BatchResponse>(5 * 60 * 1000);
+
+/** One request for every account, date and department. No legacy fan-out fallback. */
+export async function computeDailyAssignmentCounts(
+  start: string, end: string, requestedNames?: string[],
+): Promise<{ rows: DailyAssignmentCountRow[]; unmatched: string[]; refreshedAt: string }> {
+  const dates = assignmentDates(start, end);
+  const { targets, unmatched } = resolveRequestedStaff(await fetchAssignableStaff(), requestedNames);
+  const users = [...new Set(targets.flatMap(t => t.accounts.map(a => a.uuid.toLowerCase())))].sort();
+  if (users.length > 200) throw new Error('Assignment reports are limited to 200 accounts.');
+  if (!users.length) return { rows: [], unmatched, refreshedAt: new Date().toISOString() };
+  const result = await batchFlight(JSON.stringify([start, end, users]), async () => {
+    const response = await pfPost<BatchResponse>('/OrderProducts/ForUser/Counts/Batch', {
+      start, end, userUuids: users,
+    }, { timeoutMs: 25000, retry: false });
+    validateBatch(response, users, dates);
+    return response;
+  });
+  const counts = validateBatch(result, users, dates);
+  const rows = targets.map(target => ({
+    staff: target.requestedName,
+    userUuid: target.accounts[0].uuid,
+    days: Object.fromEntries(dates.map(date => [date, sumCounts(target.accounts.map(account =>
+      counts.get(`${account.uuid.toLowerCase()}/${date}`)!,
+    ))])),
+  }));
+  return { rows, unmatched, refreshedAt: result.refreshedAt };
 }
 
-/** Per-day counts for each requested roster name; used by This Week. */
-export async function computeDailyAssignmentCounts(
-  start: string,
-  end: string,
-  requestedNames: string[],
-): Promise<{ rows: DailyAssignmentCountRow[]; unmatched: string[] }> {
-  const dates = listDates(start, end);
-  if (dates.length > 7) throw new Error('Daily assignment counts are limited to seven days.');
-
-  const staff = await fetchAssignableStaff();
-  const { targets, unmatched } = resolveRequestedStaff(staff, requestedNames);
-  const jobs = targets.flatMap(target => dates.map(date => ({ target, date })));
-  const results = await mapWithConcurrency(jobs, 12, async job => ({
-    requestedName: job.target.requestedName,
-    uuid: job.target.accounts[0].uuid,
-    date: job.date,
-    counts: await fetchTargetCounts(job.target, job.date, job.date),
-  }));
-
-  const rowsByName = new Map<string, DailyAssignmentCountRow>();
-  results.forEach(result => {
-    const row = rowsByName.get(result.requestedName) ?? {
-      staff: result.requestedName,
-      userUuid: result.uuid,
-      days: {},
-    };
-    row.days[result.date] = result.counts;
-    rowsByName.set(result.requestedName, row);
-  });
-  return { rows: [...rowsByName.values()], unmatched };
+/** Historical weekly totals use exactly the same daily snapshot as the dashboard. */
+export async function computeAssignmentCounts(start: string, end: string, requestedNames?: string[]) {
+  const result = await computeDailyAssignmentCounts(start, end, requestedNames);
+  return {
+    rows: result.rows.map(row => ({ staff: row.staff, userUuid: row.userUuid, counts: sumCounts(Object.values(row.days)) })),
+    unmatched: result.unmatched,
+  };
 }
 
 export interface AssignedOrderProduct {
@@ -381,28 +305,6 @@ function deptOrderProducts(listed: ListedOrderProduct[], department: AssignmentD
     rows.push({ row, otherStages });
   }
   return rows;
-}
-
-// How many of a department's gross count are excluded products. Single-stage
-// products in the list are all in the count; multi-stage ones only partly
-// (same reasoning as SyncedOrdersPopover). When the count doesn't settle
-// which multi-stage products it covers, assume excluded ones make up their
-// proportional share.
-function excludedInCount(rows: DeptOrderProduct[], grossCount: number): number {
-  const single = rows.filter(r => r.otherStages.length === 0);
-  const multi = rows.filter(r => r.otherStages.length > 0);
-  const excludedSingle = single.filter(r => isExcludedFromCounts(r.row.productTitle)).length;
-  const excludedMulti = multi.filter(r => isExcludedFromCounts(r.row.productTitle)).length;
-  const needed = grossCount - single.length;
-  let excludedMultiCounted = 0;
-  if (needed >= multi.length) {
-    excludedMultiCounted = excludedMulti;
-  } else if (needed > 0) {
-    const lower = Math.max(0, needed - (multi.length - excludedMulti));
-    const upper = Math.min(needed, excludedMulti);
-    excludedMultiCounted = Math.min(upper, Math.max(lower, Math.round(needed * excludedMulti / multi.length)));
-  }
-  return Math.min(grossCount, excludedSingle + excludedMultiCounted);
 }
 
 /**
