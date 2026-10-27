@@ -14,15 +14,14 @@ import {
   fmtRatio, fmtCPO, fmtUnits, DEPT_LABELS, DEPT_PRODUCTION_UNIT,
   type KpiDept, type KpiLocation, type KpiState,
 } from '@/hooks/useKpiMetrics';
-import { useScheduleSettings, usePaidHolidays, type TeamRoster } from './useScheduleSettings';
+import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
 import { getMondayDate, isoMonday, isoMondayFromDate, getWeekLabel, getMonthKey, getISOWeekNumber } from '@/lib/weekDates';
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
 import { distributeHours, resolveDayHours, resolveWeekHours, resolveWeekHoursBoth, isWithinEmployment, isDayOff, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
 import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './BloomUpdateModal';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { ScheduleRulesEditor } from './ScheduleRulesEditor';
-import { TimeOffCalendar, type TimeOffDept, type TimeOffMember } from './TimeOffCalendar';
-import { DEFAULT_BLOOM_STOCK_ROSTER, type BloomStockMember } from '@/lib/bloomStock';
+import { TimeOffCalendar, toTimeOffMember, applyDaysOff } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { useVisibleManagerCPO } from '@/hooks/useVisibleManagerCPO';
 import {
@@ -2254,6 +2253,16 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
               + Add team member
             </button>
             <p className="mt-3 text-xs text-slate-400"><strong>Ratio:</strong> hours per order. e.g. 0.7 = 1 order takes 0.7 hrs.</p>
+            <div className="mt-5">
+              <TimeOffCalendar
+                members={team.map(m => toTimeOffMember(m.id, m.name, presRoster[m.id]))}
+                dailyMap={presDailyHours} holidays={paidHolidays} canEdit={userRole !== 'viewer'}
+                onChange={(id, dates, off) => {
+                  const m = team.find(x => x.id === id);
+                  const existing = presRoster[id] ?? { ratio: m?.ratio ?? 1, rate: m?.rate ?? 0, name: m?.name ?? '', payType: 'hourly' as const, annualSalary: 0 };
+                  onPresRosterChange({ ...presRoster, [id]: { ...existing, daysOff: applyDaysOff(existing.daysOff, dates, off) } });
+                }} />
+            </div>
           </div>
         )}
       </div>
@@ -3146,6 +3155,16 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
               + Add team member
             </button>
             <p className="mt-3 text-xs text-slate-400"><strong>Ratio:</strong> hours per order. e.g. 0.5 = 1 order per 0.5 hrs.</p>
+            <div className="mt-5">
+              <TimeOffCalendar
+                members={team.map(m => toTimeOffMember(m.id, m.name, ffRoster[m.id]))}
+                dailyMap={ffDailyHours} holidays={paidHolidays} canEdit={userRole !== 'viewer'}
+                onChange={(id, dates, off) => {
+                  const m = team.find(x => x.id === id);
+                  const existing = ffRoster[id] ?? { ratio: m?.ratio ?? 1, rate: m?.rate ?? 0, name: m?.name ?? '', payType: 'hourly' as const, annualSalary: 0 };
+                  onFfRosterChange({ ...ffRoster, [id]: { ...existing, daysOff: applyDaysOff(existing.daysOff, dates, off) } });
+                }} />
+            </div>
           </div>
         )}
       </div>
@@ -4202,11 +4221,9 @@ export function SchedulePage({
   // Permission derived from current location
   const canEditCurrent = location === 'Utah' ? canEditUtah : canEditGeorgia;
   const defaultDept = (userDepartment as 'design' | 'preservation' | 'fulfillment' | null) ?? 'design';
-  const [dept, setDept] = useState<'design' | 'preservation' | 'fulfillment' | 'master' | 'payroll' | 'resin' | 'bloomstock' | 'timeoff'>(defaultDept);
-  // Which department tabs this user sees. Time Off is open to everyone, but
-  // only lists the departments they can otherwise see.
+  const [dept, setDept] = useState<'design' | 'preservation' | 'fulfillment' | 'master' | 'payroll' | 'resin' | 'bloomstock'>(defaultDept);
+  // Which department tabs this user sees.
   const deptVisible = (id: string): boolean => {
-    if (id === 'timeoff') return true;
     if (userRole === 'manager' && userDepartment) {
       // The Utah design manager also runs Resin and Bloom Stock (both Utah-only).
       if (userDepartment === 'design' && userLocation === 'Utah') {
@@ -5378,82 +5395,11 @@ export function SchedulePage({
     return mustDesign;
   }, [historicalRemaining, designPromises, designCapacityByWeek]);
 
-  // ── Time Off calendar ───────────────────────────────────────────────────────
-  // Every visible department's active roster for this location (Resin and
-  // Bloom Stock are Utah-only), with what each member's day resolves to.
-  const resinRosterList: ResinMember[] = Array.isArray(settings.resinRoster)
-    ? settings.resinRoster as ResinMember[] : DEFAULT_RESIN_ROSTER;
-  const bloomRosterList: BloomStockMember[] = Array.isArray(settings.bloomStockRoster)
-    ? settings.bloomStockRoster as BloomStockMember[] : DEFAULT_BLOOM_STOCK_ROSTER;
-  const pickTimeOff = (id: string, name: string, r?: Omit<TimeOffMember, 'id' | 'name'>): TimeOffMember => ({
-    id, name,
-    standardWeeklyHours: r?.standardWeeklyHours, scheduleRules: r?.scheduleRules,
-    startDate: r?.startDate, endDate: r?.endDate, daysOff: r?.daysOff,
-  });
-  const teamTimeOff = (defaults: { id: string; name: string }[], roster: TeamRoster): TimeOffMember[] => {
-    const out = defaults.filter(m => !roster[m.id]?._removed).map(m => pickTimeOff(m.id, roster[m.id]?.name ?? m.name, roster[m.id]));
-    Object.entries(roster).forEach(([id, r]) => {
-      if (!defaults.some(m => m.id === id) && !r._removed) out.push(pickTimeOff(id, r.name, r));
-    });
-    return out.filter(m => !isNonProductionStaff(m.name));
-  };
-  const presDefaults = location === 'Utah' ? UTAH_PRESERVATION_TEAM : GEORGIA_PRESERVATION_TEAM;
-  const ffDefaults   = location === 'Utah' ? UTAH_FULFILLMENT_TEAM : GEORGIA_FULFILLMENT_TEAM;
-  const timeOffDepts: TimeOffDept[] = [
-    { key: 'design',       label: 'Design',       dailyMap: settings.designDailyHours ?? {},
-      members: designers.map(d => pickTimeOff(d.id, d.name, settings.designRoster[d.id])) },
-    { key: 'preservation', label: 'Preservation', dailyMap: settings.presDailyHours ?? {},
-      members: teamTimeOff(presDefaults, settings.presRoster) },
-    { key: 'fulfillment',  label: 'Fulfillment',  dailyMap: settings.ffDailyHours ?? {},
-      members: teamTimeOff(ffDefaults, settings.ffRoster) },
-    ...(location === 'Utah' ? [
-      { key: 'resin',      label: 'Resin',        dailyMap: settings.resinDailyHours ?? {},
-        members: resinRosterList.filter(m => !isNonProductionStaff(m.name)).map(m => pickTimeOff(m.id, m.name, m)) },
-      { key: 'bloomstock', label: 'Bloom Stock Products', dailyMap: settings.bloomStockDailyHours ?? {},
-        members: bloomRosterList.map(m => pickTimeOff(m.id, m.name, m)) },
-    ] : []),
-  ].filter(d => deptVisible(d.key));
-
-  // Marks/clears `dates` for every roster entry named `name` across all
-  // departments here, so a person on two rosters is off on both.
-  function handleTimeOffChange(name: string, dates: string[], off: boolean) {
-    const same = (n?: string) => (n ?? '').trim().toLowerCase() === name.trim().toLowerCase();
-    const apply = (list?: string[]) => {
-      const set = new Set(list ?? []);
-      dates.forEach(d => (off ? set.add(d) : set.delete(d)));
-      return set.size ? [...set].sort() : undefined;
-    };
-    const visible = new Set(timeOffDepts.map(d => d.key));
-
-    if (visible.has('design') && designers.some(d => same(d.name))) {
-      const next = { ...settings.designRoster };
-      designers.filter(d => same(d.name)).forEach(d => {
-        const existing = next[d.id] ?? d;
-        next[d.id] = { ...existing, daysOff: apply(existing.daysOff) } as typeof next[string];
-      });
-      update('designRoster', next);
-    }
-    (['preservation', 'fulfillment'] as const).forEach(key => {
-      if (!visible.has(key)) return;
-      const rosterKey = key === 'preservation' ? 'presRoster' : 'ffRoster';
-      const roster = settings[rosterKey];
-      const defaults = key === 'preservation' ? presDefaults : ffDefaults;
-      const hits = timeOffDepts.find(d => d.key === key)!.members.filter(m => same(m.name));
-      if (!hits.length) return;
-      const next = { ...roster };
-      hits.forEach(m => {
-        const def = defaults.find(x => x.id === m.id);
-        const existing = next[m.id] ?? { ratio: def?.ratio ?? 1, rate: def?.rate ?? 0, name: m.name, payType: 'hourly' as const, annualSalary: 0 };
-        next[m.id] = { ...existing, daysOff: apply(existing.daysOff) };
-      });
-      update(rosterKey, next);
-    });
-    if (visible.has('resin') && resinRosterList.some(m => same(m.name))) {
-      update('resinRoster', resinRosterList.map(m => same(m.name) ? { ...m, daysOff: apply(m.daysOff) } : m) as unknown);
-    }
-    if (visible.has('bloomstock') && bloomRosterList.some(m => same(m.name))) {
-      update('bloomStockRoster', bloomRosterList.map(m => same(m.name) ? { ...m, daysOff: apply(m.daysOff) } : m) as unknown);
-    }
+  function handleDesignerDaysOff(id: string, dates: string[], off: boolean) {
+    const currentRoster = { ...settings.designRoster };
+    const existing = currentRoster[id] ?? designers.find(d => d.id === id) ?? {};
+    currentRoster[id] = { ...existing, daysOff: applyDaysOff((existing as { daysOff?: string[] }).daysOff, dates, off) } as typeof currentRoster[string];
+    update('designRoster', currentRoster);
   }
 
   const windowWeeks = Array.from({ length: WINDOW }, (_, i) => i + weekOffset).filter(i => i < WEEKS);
@@ -5477,7 +5423,6 @@ export function SchedulePage({
               ['payroll',      'Payroll Upload'],
               ['resin',        'Resin'],
               ['bloomstock',   'Bloom Stock Products'],
-              ['timeoff',      'Time Off'],
             ] as const).filter(([id]) => deptVisible(id)).map(([id, label]) => (
               <button key={id} onClick={() => setDept(id)}
                 className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
@@ -5650,6 +5595,12 @@ export function SchedulePage({
                     ↩ Undo remove &quot;{deletedStack[deletedStack.length - 1].designer.name}&quot;
                   </button>
                 )}
+                <div className="mt-5">
+                  <TimeOffCalendar
+                    members={designers.map(d => toTimeOffMember(d.id, d.name, settings.designRoster[d.id]))}
+                    dailyMap={designDailyHours} holidays={paidHolidays} canEdit={canEditCurrent}
+                    onChange={handleDesignerDaysOff} />
+                </div>
               </div>
             )}
           </div>
@@ -6627,9 +6578,6 @@ export function SchedulePage({
         <DeptKPIBar dept="resin" location="Utah" kpiState={kpiMetrics} showCPO={hasAnyRates} />
         <ResinPage canViewCPO={canViewCPO} canSeeManagerCPO={canSeeManagerCPO} />
         </>
-      )}
-      {dept === 'timeoff' && (
-        <TimeOffCalendar depts={timeOffDepts} holidays={paidHolidays} canEdit={canEditCurrent} onChange={handleTimeOffChange} />
       )}
       {/* Utah-only, like Resin — shows regardless of the location toggle */}
       {dept === 'bloomstock' && <BloomStockPage canEdit={canEditUtah} canViewCPO={canViewCPO} />}

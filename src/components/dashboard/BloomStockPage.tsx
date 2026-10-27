@@ -17,6 +17,7 @@ import { resolveDayHours, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/sched
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { ScheduleRulesEditor } from './ScheduleRulesEditor';
+import { TimeOffCalendar, toTimeOffMember, applyDaysOff } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { buildActiveMemberIds, InactiveToggle } from './memberActivity';
 import { DEPARTMENT_MANAGERS, STANDARD_WEEKLY_HOURS } from '@/lib/managers';
@@ -245,7 +246,7 @@ export default function BloomStockPage({ canEdit, canViewCPO }: { canEdit: boole
         </div>
       </div>
 
-      <RosterPanel bs={bs} canEdit={canEdit} visibleRoster={visibleRoster}
+      <RosterPanel bs={bs} canEdit={canEdit} holidays={holidays} visibleRoster={visibleRoster}
         inactiveCount={inactiveCount} showInactive={showInactive} onToggleInactive={() => setShowInactive(v => !v)}
         onRefreshRatio={refreshRatio} refreshingId={refreshingId} />
 
@@ -1152,8 +1153,8 @@ function NotesInput({ value, onCommit }: { value: string; onCommit: (v: string) 
 // the tabs, Rippling autocomplete, role tier, ratio with ↻ refresh, Mon–Sun
 // standard schedule with reset-to-template, employment dates and an
 // inactive toggle.
-function RosterPanel({ bs, canEdit, visibleRoster, inactiveCount, showInactive, onToggleInactive, onRefreshRatio, refreshingId }: {
-  bs: BS; canEdit: boolean;
+function RosterPanel({ bs, canEdit, holidays, visibleRoster, inactiveCount, showInactive, onToggleInactive, onRefreshRatio, refreshingId }: {
+  bs: BS; canEdit: boolean; holidays: string[];
   visibleRoster: BloomStockMember[]; inactiveCount: number; showInactive: boolean; onToggleInactive: () => void;
   onRefreshRatio: (m: BloomStockMember) => void; refreshingId: string | null;
 }) {
@@ -1273,6 +1274,12 @@ function RosterPanel({ bs, canEdit, visibleRoster, inactiveCount, showInactive, 
           )}
           <span className="ml-3"><InactiveToggle count={inactiveCount} showing={showInactive} onToggle={onToggleInactive} /></span>
           <p className="mt-3 text-xs text-slate-400">Pay comes from the Rippling upload (used for CPO, never shown here). Ratio = hours per item — refreshes automatically each week from the last {RATIO_WEEKS} weeks of Historicals (hours ÷ items logged); ↻ refreshes now.</p>
+          <div className="mt-5">
+            <TimeOffCalendar
+              members={visibleRoster.map(m => toTimeOffMember(m.id, m.name, m))}
+              dailyMap={bs.daily} holidays={holidays} canEdit={canEdit}
+              onChange={(id, dates, off) => patch(id, { daysOff: applyDaysOff(bs.roster.find(m => m.id === id)?.daysOff, dates, off) })} />
+          </div>
         </div>
       )}
     </div>

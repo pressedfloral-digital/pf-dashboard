@@ -9,6 +9,7 @@ import { HistoricalsSection } from './HistoricalsSection';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { ScheduleRulesEditor } from './ScheduleRulesEditor';
+import { TimeOffCalendar, toTimeOffMember, applyDaysOff } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 
@@ -740,6 +741,12 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
               + Add member
             </button>
             <p className="mt-3 text-xs text-slate-400">Pay rates &amp; titles come from Rippling upload. Ratio = hours per unit.</p>
+            <div className="mt-5">
+              <TimeOffCalendar
+                members={roster.map(m => toTimeOffMember(m.id, m.name, m))}
+                dailyMap={resinDailyHours} holidays={paidHolidays} canEdit
+                onChange={(id, dates, off) => setRoster(roster.map(m => m.id === id ? { ...m, daysOff: applyDaysOff(m.daysOff, dates, off) } : m))} />
+            </div>
           </div>
         )}
       </div>
