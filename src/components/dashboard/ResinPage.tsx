@@ -814,14 +814,11 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                 {productionRoster.map((m, mi) => {
                   const weekTotal = [0,1,2,3,4,5,6].reduce((s, di) => s + getDH(m.id, thisWeekOffset, di), 0);
                   const units = m.ratio > 0 ? weekTotal / m.ratio : 0;
-                  const weekCost = [0,1,2,3,4,5,6].reduce((s, di) => s + dailyCost(m, thisWeekOffset, di), 0);
-                  const weekCPO = (!m.isManager || canSeeManagerCPO(m.name)) && units > 0 && weekCost > 0 ? weekCost / units : null;
                   return (
                     <tr key={m.id} className={`border-b border-slate-50 ${mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
                       <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 font-medium text-slate-700 whitespace-nowrap`}>
                         {m.name}
                         <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
-                        <div className="text-[10px] text-slate-400 font-normal">{m.ratio}h/unit</div>
                       </td>
                       {[0,1,2,3,4,5,6].map(di => {
                         const dayVal = getDH(m.id, thisWeekOffset, di);
@@ -829,8 +826,6 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                         const isHoliday = isDHHoliday(m.id, thisWeekOffset, di);
                         const dayUnits = m.ratio > 0 ? dayVal / m.ratio : 0;
                         const totalDayVal = m.isManager ? getMgrTotalDH(m, thisWeekOffset, di) : dayVal;
-                        const cost = dailyCost(m, thisWeekOffset, di);
-                        const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && dayUnits > 0 && cost > 0 ? cost / dayUnits : null;
                         return (
                           <td key={di} className={`px-1 py-1.5 text-center ${isHoliday ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/20' : ''}`}>
                             <input type="number"
@@ -857,7 +852,6 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                             {resinInputMode === 'output'
                               ? (dayVal > 0 && <div className="text-[10px] text-slate-400 mt-0.5">{round2(dayVal)}h</div>)
                               : (dayUnits > 0 && <div className="text-[10px] text-slate-400 mt-0.5">{round2(dayUnits)}u</div>)}
-                            {hasRates && cpo !== null && <div className="text-[10px] text-purple-500">${cpo.toFixed(2)}</div>}
                             {isHoliday && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay</div>}
                             {isDHDayOff(m.id, thisWeekOffset, di) && <div className="text-[9px] font-semibold text-red-500 mt-0.5" title="Marked off on the Time Off calendar — scheduled hours are 0">day off</div>}
                             {(hoursOffOn(di, { weekIso: isoMonday(thisWeekOffset), hoursOff: m.hoursOff })) > 0 && <div className="text-[9px] font-semibold text-red-400 mt-0.5" title="Hours off on the Days off calendar">{hoursOffOn(di, { weekIso: isoMonday(thisWeekOffset), hoursOff: m.hoursOff })}h off</div>}
@@ -867,7 +861,6 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                       <td className="px-2 py-1.5 text-center text-xs font-medium text-indigo-700">
                         {weekTotal > 0 ? weekTotal.toFixed(1) : '—'}
                         {units > 0 && <div className="text-[10px] text-slate-400">{units.toFixed(1)}u</div>}
-                        {hasRates && weekCPO !== null && <div className="text-[10px] text-purple-500">${weekCPO.toFixed(2)}</div>}
                       </td>
                     </tr>
                   );
@@ -878,12 +871,10 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                     const dayTotal = roster.reduce((s, m) => s + getDH(m.id, thisWeekOffset, di), 0);
                     const dayUnits = roster.reduce((s, m) => s + (m.ratio > 0 ? getDH(m.id, thisWeekOffset, di) / m.ratio : 0), 0);
                     const dayCost  = roster.reduce((s, m) => s + dailyCost(m, thisWeekOffset, di), 0);
-                    const dayCPO   = dayUnits > 0 && dayCost > 0 ? dayCost / dayUnits : null;
                     const isHoliday = isHolidayColumn(thisWeekOffset, di);
                     return (
                       <td key={di} className={`px-2 py-2 text-center text-xs text-purple-700 ${isHoliday ? 'bg-amber-50/50' : ''}`}>
                         {dayTotal > 0 ? <><div>{dayTotal.toFixed(1)}h</div><div className="text-[10px]">{dayUnits.toFixed(1)}u</div></> : <span className="text-slate-300">—</span>}
-                        {hasRates && dayCPO !== null && <div className="text-[10px]">${dayCPO.toFixed(2)}</div>}
                         {isHoliday && dayCost > 0 && <div className="text-[9px] text-amber-600">${dayCost.toFixed(2)} paid</div>}
                       </td>
                     );
@@ -892,6 +883,35 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                     {weeklyCapacity(thisWeekOffset) > 0 ? `${weeklyCapacity(thisWeekOffset).toFixed(0)}u` : <span className="text-slate-300">—</span>}
                   </td>
                 </tr>
+                {/* CPO — team labor cost ÷ planned units per day, moved out of Day
+                    total; the week cell averages the days that have one. Resin has
+                    no live production counts, so there's no actual CPO. */}
+                {hasRates && (() => {
+                  const dayCPOs = [0,1,2,3,4,5,6].map(di => {
+                    const dayUnits = roster.reduce((s, m) => s + (m.ratio > 0 ? getDH(m.id, thisWeekOffset, di) / m.ratio : 0), 0);
+                    const dayCost  = roster.reduce((s, m) => s + dailyCost(m, thisWeekOffset, di), 0);
+                    return dayUnits > 0 && dayCost > 0 ? dayCost / dayUnits : null;
+                  });
+                  const withCPO = dayCPOs.filter((c): c is number => c !== null);
+                  const avgCPO = withCPO.length > 0 ? withCPO.reduce((s, c) => s + c, 0) / withCPO.length : null;
+                  return (
+                    <tr className="border-t border-slate-200 bg-white">
+                      <td className="sticky left-0 bg-white px-4 py-2 text-xs font-semibold text-slate-600">
+                        <div>CPO</div>
+                        <div className="text-[9px] font-normal text-slate-400">planned</div>
+                      </td>
+                      {dayCPOs.map((c, di) => (
+                        <td key={di} className={`px-2 py-2 text-center ${isHolidayColumn(thisWeekOffset, di) ? 'bg-amber-50/50' : ''}`}>
+                          {c !== null ? <div className="font-semibold text-amber-700">${c.toFixed(2)}</div> : <div className="text-slate-300">—</div>}
+                        </td>
+                      ))}
+                      <td className="px-3 py-2 text-center whitespace-nowrap">
+                        {avgCPO !== null ? <div className="font-semibold text-amber-700">${avgCPO.toFixed(2)}</div> : <div className="text-slate-300">—</div>}
+                        <div className="text-[10px] text-slate-400">day avg</div>
+                      </td>
+                    </tr>
+                  );
+                })()}
               </tbody>
             </table>
           </div>
@@ -950,7 +970,6 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                     <td className="sticky left-0 bg-white px-4 py-1.5 font-medium text-slate-700 whitespace-nowrap">
                       {m.name}
                       <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
-                      <div className="text-[10px] text-slate-400 font-normal">{m.ratio}h/unit</div>
                     </td>
                     {windowWeeks.map(w => {
                       const h    = memberWeekHours(w, m);
