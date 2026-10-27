@@ -5674,7 +5674,6 @@ export function SchedulePage({
                         <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Planned total</td>
                         {days.map((_, di) => {
                           const f = Math.round(teamDailyFrames(di) * 100) / 100; const cc = teamDailyCost(di);
-                          const cpo = f > 0 && cc > 0 ? cc / f : null;
                           // h/f ratio excludes managers entirely — neither their hours nor
                           // their frame output count toward it — while `f` above stays the
                           // full team frame total.
@@ -5691,7 +5690,6 @@ export function SchedulePage({
                             <td key={di} className={`px-2 py-2 text-center ${isHolidayDay(di) ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/50' : ''}`}>
                               <div className="text-indigo-700">{f}f</div>
                               {designDayRatio !== null && <div className="text-[10px] text-slate-500">{Math.round(designDayRatio * 100) / 100} h/f</div>}
-                              {hasRates && cpo !== null && <div className="text-[10px] text-amber-600">{fmt$(cpo)}</div>}
                               {hasRates && isHolidayDay(di) && cc > 0 && <div className="text-[10px] text-amber-600">{fmt$(cc)} paid</div>}
                             </td>
                           );
@@ -5720,36 +5718,45 @@ export function SchedulePage({
                           />
                         </td>
                       </tr>
-                      {/* Actual CPO — each day's team labor cost ÷ that day's actual MT
-                          frames; the week cell averages the days that have one. */}
+                      {/* CPO — planned (team labor cost ÷ planned frames, moved here from
+                          Planned total) and actual (÷ actual MT frames) per day; the week cell
+                          averages the days that have one. */}
                       {hasRates && (() => {
-                        const dayCPOs = days.map((day, di) => {
+                        const avg = (vals: (number | null)[]) => {
+                          const v = vals.filter((c): c is number => c !== null);
+                          return v.length > 0 ? v.reduce((sum, c) => sum + c, 0) / v.length : null;
+                        };
+                        const plannedCPOs = days.map((_, di) => {
+                          const f = Math.round(teamDailyFrames(di) * 100) / 100; const cost = teamDailyCost(di);
+                          return f > 0 && cost > 0 ? cost / f : null;
+                        });
+                        const actualCPOs = days.map((day, di) => {
                           const actual = sumActuals(designers.map(designer => designActuals.getCount(designer.name, day.iso, 'design')));
                           const cost = teamDailyCost(di);
                           return actual && actual > 0 && cost > 0 ? cost / actual : null;
                         });
-                        const withCPO = dayCPOs.filter((c): c is number => c !== null);
-                        const avgCPO = withCPO.length > 0 ? withCPO.reduce((sum, c) => sum + c, 0) / withCPO.length : null;
+                        const avgPlanned = avg(plannedCPOs);
+                        const avgActual  = avg(actualCPOs);
                         return (
                           <tr className="border-t border-slate-200 bg-white">
                             <td className="sticky left-0 bg-white px-4 py-2 text-xs font-semibold text-slate-600">
-                              <div>Actual CPO</div>
-                              <div className="text-[9px] font-normal text-slate-400">labor cost ÷ actual frames</div>
+                              <div>CPO</div>
+                              <div className="text-[9px] font-normal text-slate-400">planned · actual</div>
                             </td>
                             {days.map((day, di) => (
                               <td key={day.iso} className={`px-2 py-2 text-center ${isHolidayDay(di) ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/30' : ''}`}>
-                                {dayCPOs[di] !== null
-                                  ? <span className="font-semibold text-amber-700">{fmt$(dayCPOs[di]!)}</span>
-                                  : <span className="text-slate-300">{designActuals.loading ? '…' : '—'}</span>}
+                                {plannedCPOs[di] !== null
+                                  ? <div className="font-semibold text-amber-700">{fmt$(plannedCPOs[di]!)}</div>
+                                  : <div className="text-slate-300">—</div>}
+                                {actualCPOs[di] !== null && <div className="text-[10px] text-sky-700">actual {fmt$(actualCPOs[di]!)}</div>}
                               </td>
                             ))}
                             <td className="px-3 py-2 text-center whitespace-nowrap">
-                              {avgCPO !== null ? (
-                                <>
-                                  <div className="font-semibold text-amber-700">{fmt$(avgCPO)}</div>
-                                  <div className="text-[10px] text-slate-400">day avg ({withCPO.length} {withCPO.length === 1 ? 'day' : 'days'})</div>
-                                </>
-                              ) : <span className="text-slate-300">{designActuals.loading ? '…' : '—'}</span>}
+                              {avgPlanned !== null
+                                ? <div className="font-semibold text-amber-700">{fmt$(avgPlanned)}</div>
+                                : <div className="text-slate-300">—</div>}
+                              {avgActual !== null && <div className="text-[10px] text-sky-700">actual {fmt$(avgActual)}</div>}
+                              <div className="text-[10px] text-slate-400">day avg</div>
                             </td>
                           </tr>
                         );
