@@ -8,12 +8,8 @@ import type { RipplingEmployee } from './EmployeeAutocomplete';
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { HistoricalsSection } from './HistoricalsSection';
 import { DisapprovalRateSection } from './DisapprovalRateSection';
-import { DesignKpiBars } from './DesignKpiBars';
-import {
-  useKpiMetrics, getWindowsByType, selectLocation, selectDept, selectEstimated,
-  fmtRatio, fmtCPO, fmtUnits, DEPT_LABELS, DEPT_PRODUCTION_UNIT,
-  type KpiDept, type KpiLocation, type KpiState,
-} from '@/hooks/useKpiMetrics';
+import { DeptKpiBars } from './DeptKpiBars';
+import { useKpiMetrics } from '@/hooks/useKpiMetrics';
 import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
 import { getMondayDate, isoMonday, isoMondayFromDate, getWeekLabel, getMonthKey, getISOWeekNumber } from '@/lib/weekDates';
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
@@ -218,6 +214,69 @@ function AheadBehind({ actual, goal, unit }: { actual: number | null; goal: numb
     <div className={`text-[10px] font-semibold tabular-nums ${tone}`} title={`${actual}${unit} actual vs ${Math.round(goal * 100) / 100}${unit} planned through today`}>
       {diff > 0 ? `+${diff}${unit} ahead` : diff < 0 ? `${-diff}${unit} behind` : 'on goal'}
     </div>
+  );
+}
+
+// Local-date ISO for today — days after it have no actuals yet, so they stay
+// uncoloured and don't count toward week-to-date ahead/behind.
+function localTodayIso(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+// Planned output for the days that have started — what week-to-date actuals
+// are judged against. null when the week hasn't started.
+function plannedThroughToday(days: { iso: string }[], todayIso: string, perDay: (di: number) => number): number | null {
+  if (days.length === 0 || days[0].iso > todayIso) return null;
+  return days.reduce((s, day, di) => s + (day.iso <= todayIso ? perDay(di) : 0), 0);
+}
+
+// CPO row under a This Week grid's Actual total: planned (team labor cost ÷
+// planned output) and actual (÷ actual MT output) per day; the week cell
+// averages the days that have one.
+function PlannedActualCpoRow({ days, dayCost, plannedOutput, actualOutput, dayCellClass }: {
+  days:          { iso: string }[];
+  dayCost:       (di: number) => number;
+  plannedOutput: (di: number) => number;
+  actualOutput:  (di: number) => number | null;
+  dayCellClass?: (di: number) => string;
+}) {
+  const avg = (vals: (number | null)[]) => {
+    const v = vals.filter((c): c is number => c !== null);
+    return v.length > 0 ? v.reduce((sum, c) => sum + c, 0) / v.length : null;
+  };
+  const plannedCPOs = days.map((_, di) => {
+    const out = Math.round(plannedOutput(di) * 100) / 100; const cost = dayCost(di);
+    return out > 0 && cost > 0 ? cost / out : null;
+  });
+  const actualCPOs = days.map((_, di) => {
+    const actual = actualOutput(di); const cost = dayCost(di);
+    return actual && actual > 0 && cost > 0 ? cost / actual : null;
+  });
+  const avgPlanned = avg(plannedCPOs);
+  const avgActual  = avg(actualCPOs);
+  return (
+    <tr className="border-t border-slate-200 bg-white">
+      <td className="sticky left-0 bg-white px-4 py-2 text-xs font-semibold text-slate-600">
+        <div>CPO</div>
+        <div className="text-[9px] font-normal text-slate-400">planned · actual</div>
+      </td>
+      {days.map((day, di) => (
+        <td key={day.iso} className={`px-2 py-2 text-center ${dayCellClass?.(di) ?? ''}`}>
+          {plannedCPOs[di] !== null
+            ? <div className="font-semibold text-amber-700">{fmt$(plannedCPOs[di]!)}</div>
+            : <div className="text-slate-300">—</div>}
+          {actualCPOs[di] !== null && <div className="text-[10px] text-sky-700">actual {fmt$(actualCPOs[di]!)}</div>}
+        </td>
+      ))}
+      <td className="px-3 py-2 text-center whitespace-nowrap">
+        {avgPlanned !== null
+          ? <div className="font-semibold text-amber-700">{fmt$(avgPlanned)}</div>
+          : <div className="text-slate-300">—</div>}
+        {avgActual !== null && <div className="text-[10px] text-sky-700">actual {fmt$(avgActual)}</div>}
+        <div className="text-[10px] text-slate-400">day avg</div>
+      </td>
+    </tr>
   );
 }
 
@@ -2180,6 +2239,32 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
           { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }, paidHolidays).hours / m.ratio
       : 0), 0);
   });
+  // This Week grid helpers: one member's planned orders on a day, and the
+  // team's labor cost that day (managers at their total hours incl. checks).
+  const presMemberDayOrders = (m: (typeof team)[number], di: number) => {
+    if (m.ratio <= 0) return 0;
+    const weekIso = isoMonday(presThisWeekOffset);
+    return resolveDayHours(presDailyHours, `${weekIso}-${m.id}`, di, presRoster[m.id]?.standardWeeklyHours,
+      { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }, paidHolidays).hours / m.ratio;
+  };
+  const presTeamDayCost = (di: number) => team.reduce((s, m) => {
+    if (m.rate === 0 && m.annualSalary === 0) return s;
+    if ((presRoster[m.id] as {excludeFromCost?: boolean})?.excludeFromCost) return s;
+    const weekIso = isoMonday(presThisWeekOffset);
+    const dailyKey = `${weekIso}-${m.id}`;
+    const payH = resolveDayHours(presDailyHours, dailyKey, di, presRoster[m.id]?.standardWeeklyHours,
+      { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }, paidHolidays).payHours;
+    const chkH  = presCheckHours[dailyKey]?.[di] ?? 0;
+    const capTotalTemplate = presRoster[m.id]?.standardTotalWeeklyHours;
+    const totalH = m.isManager
+      ? (mgrTotalDailyHours[dailyKey]?.[di] ?? (capTotalTemplate ? (capTotalTemplate[di] ?? 0) : (payH + chkH)))
+      : (payH + chkH);
+    return s + (m.payType === 'salary' ? m.annualSalary / 260 : totalH * m.rate);
+  }, 0);
+  const presTodayIso = localTodayIso();
+  const presPlannedToDate = (perDay: (di: number) => number) => plannedThroughToday(days, presTodayIso, perDay);
+  const presMemberWeekActual = (name: string) => sumActuals(days.map(day => preservationActuals.getCount(name, day.iso, 'preservation')));
+
   // Total check hours scheduled per day — no standard template for checks
   const checkDayTotals = Array.from({ length: 7 }, (_, di) =>
     team.reduce((s, m) => s + (presCheckHours[`${isoMonday(presThisWeekOffset)}-${m.id}`]?.[di] ?? 0), 0)
@@ -2354,6 +2439,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           {paidHolidays.includes(d.iso) && <div className="text-[9px] font-semibold text-amber-600 mt-0.5">Holiday</div>}
                         </th>
                       ))}
+                      <th className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap">Week total</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2362,8 +2448,8 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                         <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                           <div className="font-medium text-slate-700">{m.name}</div>
                           <MemberTierBadges name={m.name} location={location} dept="Preservation" fallbackRole={m.role} fallbackIsManager={m.isManager} />
-                          <div className="text-slate-400">{m.ratio} h/ord
-                            <span className={`ml-1.5 text-[10px] rounded px-1 py-px ${tagStyle[m.pay] ?? 'bg-slate-100 text-slate-600'}`}>{m.pay}</span>
+                          <div>
+                            <span className={`text-[10px] rounded px-1 py-px ${tagStyle[m.pay] ?? 'bg-slate-100 text-slate-600'}`}>{m.pay}</span>
                           </div>
                           {preservationActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
                         </td>
@@ -2381,9 +2467,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                             ? (mgrTotalDailyHours[dailyKey]?.[di] ?? (totalTemplate ? (totalTemplate[di] ?? 0) : totalPayH))
                             : totalPayH;
                           const orders = m.ratio > 0 ? prodH / m.ratio : 0;
-                          const hasRate = m.rate > 0 || m.annualSalary > 0;
                           const cost = m.payType === 'salary' ? m.annualSalary / 260 : totalH * m.rate;
-                          const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && hasRate && orders > 0 && cost > 0 ? cost / orders : null;
                           return (
                             <td key={di} className={`px-2 py-1.5 text-center ${isHoliday ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/30' : ''}`}>
                               <div className="flex items-center gap-1">
@@ -2422,35 +2506,31 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                               {presInputMode === 'output'
                                 ? (prodH > 0 && <div className="text-slate-400 mt-0.5">{round2(prodH)}h</div>)
                                 : (orders > 0 && <div className="text-slate-400 mt-0.5">{round2(orders)} ord</div>)}
-                              <ProductionActual value={preservationActuals.getCount(m.name, days[di].iso, 'preservation')} loading={preservationActuals.loading} unit=" bouq" drill={{ name: m.name, start: days[di].iso, end: days[di].iso, department: 'preservation' }} />
-                              {cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
+                              <ProductionActual value={preservationActuals.getCount(m.name, days[di].iso, 'preservation')} loading={preservationActuals.loading} unit=" bouq" drill={{ name: m.name, start: days[di].iso, end: days[di].iso, department: 'preservation' }}
+                                goal={days[di].iso <= presTodayIso ? orders : null} />
                               {isHoliday && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay{hasRates && cost > 0 ? ` ${fmt$(cost)}` : ''}</div>}
                               {dayOff && <div className="text-[9px] font-semibold text-red-500 mt-0.5" title="Marked off on the Time Off calendar — scheduled hours are 0">day off</div>}
                               {(hoursOffOn(di, { weekIso, hoursOff: presRoster[m.id]?.hoursOff })) > 0 && <div className="text-[9px] font-semibold text-red-400 mt-0.5" title="Hours off on the Days off calendar">{hoursOffOn(di, { weekIso, hoursOff: presRoster[m.id]?.hoursOff })}h off</div>}
                             </td>
                           );
                         })}
+                        <td className="px-3 py-2 text-center">
+                          <div className="font-medium text-indigo-700">{round2(days.reduce((s, _, di) => s + presMemberDayOrders(m, di), 0))} ord</div>
+                          <ProductionActual
+                            value={presMemberWeekActual(m.name)}
+                            loading={preservationActuals.loading}
+                            unit=" bouq"
+                            drill={{ name: m.name, start: days[0].iso, end: days[days.length - 1].iso, department: 'preservation' }}
+                          />
+                          <AheadBehind actual={presMemberWeekActual(m.name)} goal={presPlannedToDate(di => presMemberDayOrders(m, di))} unit=" bouq" />
+                        </td>
                       </tr>
                     ))}
                     <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
                       <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Daily capacity</td>
                       {days.map((d, di) => {
                         const cap = dayTotals[di];
-                        const dayCost = team.reduce((s, m) => {
-                          if (m.rate === 0 && m.annualSalary === 0) return s;
-                          if ((presRoster[m.id] as {excludeFromCost?: boolean})?.excludeFromCost) return s;
-                          const weekIso = isoMonday(presThisWeekOffset);
-                          const dailyKey = `${weekIso}-${m.id}`;
-                          const payH = resolveDayHours(presDailyHours, dailyKey, di, presRoster[m.id]?.standardWeeklyHours,
-                            { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }, paidHolidays).payHours;
-                          const chkH  = presCheckHours[dailyKey]?.[di] ?? 0;
-                          const capTotalTemplate = presRoster[m.id]?.standardTotalWeeklyHours;
-                          const totalH = m.isManager
-                            ? (mgrTotalDailyHours[dailyKey]?.[di] ?? (capTotalTemplate ? (capTotalTemplate[di] ?? 0) : (payH + chkH)))
-                            : (payH + chkH);
-                          return s + (m.payType === 'salary' ? m.annualSalary / 260 : totalH * m.rate);
-                        }, 0);
-                        const dayCPO = cap > 0 && dayCost > 0 ? dayCost / cap : null;
+                        const dayCost = presTeamDayCost(di);
                         // h/ord ratio excludes managers entirely — neither their hours nor
                         // their capacity count toward it — while `cap` above stays the full
                         // team capacity.
@@ -2488,10 +2568,10 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                               );
                             })()}
                             {dayRatio !== null && <div className="text-[10px] text-slate-500">{Math.round(dayRatio * 100) / 100} h/ord</div>}
-                            {dayCPO !== null && <div className="text-[10px] text-amber-600">{fmt$(dayCPO)}</div>}
                           </td>
                         );
                       })}
+                      <td className="px-3 py-2 text-center font-semibold text-indigo-700">{round2(dayTotals.reduce((s, v) => s + v, 0))} ord</td>
                     </tr>
                     {/* ── Actual received row ── */}
                     <tr className="bg-emerald-50/40 border-t border-slate-100">
@@ -2512,6 +2592,9 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           </td>
                         );
                       })}
+                      <td className="px-3 py-1.5 text-center text-[11px] font-semibold text-emerald-800">
+                        {days.reduce((s, d) => s + (Number(dailyReceived[d.iso]) || 0), 0) || ''}
+                      </td>
                     </tr>
                     {/* ── Check load rows ── */}
                     {[
@@ -2558,6 +2641,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                             </td>
                           );
                         })}
+                        <td />
                       </tr>
                     ))}
                     <tr className="border-t-2 border-sky-200 bg-sky-50/60 font-semibold">
@@ -2565,16 +2649,30 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                         <div>Actual total</div>
                         <div className="text-[9px] font-normal text-sky-600">MT production</div>
                       </td>
-                      {days.map(day => (
+                      {days.map((day, di) => (
                         <td key={day.iso} className="px-2 py-2 text-center">
                           <ProductionActual
                             value={sumActuals(team.map(member => preservationActuals.getCount(member.name, day.iso, 'preservation')))}
                             loading={preservationActuals.loading}
                             unit=" bouq"
+                            goal={day.iso <= presTodayIso ? dayTotals[di] : null}
                           />
                         </td>
                       ))}
+                      <td className="px-3 py-2 text-center">
+                        <ProductionActual value={sumActuals(team.map(member => presMemberWeekActual(member.name)))} loading={preservationActuals.loading} unit=" bouq" />
+                        <AheadBehind actual={sumActuals(team.map(member => presMemberWeekActual(member.name)))} goal={presPlannedToDate(di => dayTotals[di])} unit=" bouq" />
+                      </td>
                     </tr>
+                    {hasRates && (
+                      <PlannedActualCpoRow
+                        days={days}
+                        dayCost={presTeamDayCost}
+                        plannedOutput={di => dayTotals[di]}
+                        actualOutput={di => sumActuals(team.map(member => preservationActuals.getCount(member.name, days[di].iso, 'preservation')))}
+                        dayCellClass={di => paidHolidays.includes(days[di].iso) ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/30' : ''}
+                      />
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -2621,7 +2719,6 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                             <div className="font-medium text-slate-700">{m.name}</div>
                             <MemberTierBadges name={m.name} location={location} dept="Preservation" fallbackRole={m.role} fallbackIsManager={m.isManager} />
-                            <div className="text-slate-400">{m.ratio} h/ord</div>
                           </td>
                           {windowWeeks.map(w => {
                             const weekIso = isoMonday(w);
@@ -3236,6 +3333,8 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
         const teamDailyCost = (di: number) => team.reduce((s, m) => s + ffDailyCost(m, di), 0);
         const teamWeekOrders = days.reduce((s, _, di) => s + teamDailyOrders(di), 0);
         const ffHasRates = canViewCPO && team.some(m => m.rate > 0 || m.annualSalary > 0);
+        const todayIso = localTodayIso();
+        const plannedToDate = (perDay: (di: number) => number) => plannedThroughToday(days, todayIso, perDay);
         return (
           <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
@@ -3269,14 +3368,11 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                   {team.map((m, mi) => {
                     const weekOrders = days.reduce((s, _, di) => { const h = getFFH(m.id, di); return s + (m.ratio > 0 && h > 0 ? h / m.ratio : 0); }, 0);
                     const weekHrs = days.reduce((s, _, di) => s + (m.isManager ? getMgrTotalFFH(m.id, di) : getFFH(m.id, di)), 0);
-                    const weekCost = days.reduce((s, _, di) => s + ffDailyCost(m, di), 0);
-                    const weekCPO = weekOrders > 0 && weekCost > 0 ? weekCost / weekOrders : null;
                     return (
                       <tr key={m.id} className={`border-b border-slate-50 ${mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
                         <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                           <div className="font-medium text-slate-700">{m.name}</div>
                           <MemberTierBadges name={m.name} location={location} dept="Fulfillment" fallbackRole={m.role} fallbackIsManager={m.isManager} />
-                          <div className="text-slate-400">{m.ratio} h/ord</div>
                           {fulfillmentActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
                         </td>
                         {days.map((_, dayIdx) => {
@@ -3285,7 +3381,6 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                           const totalH = m.isManager ? getMgrTotalFFH(m.id, dayIdx) : h;
                           const orders = m.ratio > 0 && h > 0 ? h / m.ratio : 0;
                           const cost = ffDailyCost(m, dayIdx);
-                          const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && orders > 0 && cost > 0 ? cost / orders : null;
                           return (
                             <td key={dayIdx} className={`px-2 py-1.5 text-center ${isHolidayDay(dayIdx) ? 'bg-amber-50/60' : dayIdx === 0 ? 'bg-amber-50/30' : ''}`}>
                               <input type="number"
@@ -3310,8 +3405,8 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                               {ffInputMode === 'output'
                                 ? (h > 0 && <div className="text-slate-400 mt-0.5">{round2(h)}h</div>)
                                 : (orders > 0 && <div className="text-slate-400 mt-0.5">{round2(orders)} ord</div>)}
-                              <ProductionActual value={fulfillmentActuals.getCount(m.name, days[dayIdx].iso, 'fulfillment')} loading={fulfillmentActuals.loading} unit=" ord" drill={{ name: m.name, start: days[dayIdx].iso, end: days[dayIdx].iso, department: 'fulfillment' }} />
-                              {ffHasRates && cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
+                              <ProductionActual value={fulfillmentActuals.getCount(m.name, days[dayIdx].iso, 'fulfillment')} loading={fulfillmentActuals.loading} unit=" ord" drill={{ name: m.name, start: days[dayIdx].iso, end: days[dayIdx].iso, department: 'fulfillment' }}
+                                goal={days[dayIdx].iso <= todayIso ? orders : null} />
                               {isHolidayDay(dayIdx) && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay{ffHasRates && cost > 0 ? ` ${fmt$(cost)}` : ''}</div>}
                               {ffRoster[m.id]?.daysOff?.includes(days[dayIdx]?.iso ?? '') && <div className="text-[9px] font-semibold text-red-500 mt-0.5" title="Marked off on the Time Off calendar — scheduled hours are 0">day off</div>}
                               {(ffRoster[m.id]?.hoursOff?.[days[dayIdx]?.iso ?? ''] ?? 0) > 0 && <div className="text-[9px] font-semibold text-red-400 mt-0.5" title="Hours off on the Days off calendar">{ffRoster[m.id]?.hoursOff?.[days[dayIdx]?.iso ?? ''] ?? 0}h off</div>}
@@ -3327,7 +3422,11 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                             unit=" ord"
                             drill={{ name: m.name, start: days[0].iso, end: days[days.length - 1].iso, department: 'fulfillment' }}
                           />
-                          {ffHasRates && (!m.isManager || canSeeManagerCPO(m.name)) && weekCPO !== null && <div className="text-amber-600 text-[10px]">{fmt$(weekCPO)}</div>}
+                          <AheadBehind
+                            actual={sumActuals(days.map(day => fulfillmentActuals.getCount(m.name, day.iso, 'fulfillment')))}
+                            goal={plannedToDate(dayIdx => { const h = getFFH(m.id, dayIdx); return m.ratio > 0 && h > 0 ? h / m.ratio : 0; })}
+                            unit=" ord"
+                          />
                         </td>
                       </tr>
                     );
@@ -3336,7 +3435,6 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                     <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Planned total</td>
                     {days.map((_, di) => {
                       const o = teamDailyOrders(di); const cc = teamDailyCost(di);
-                      const cpo = o > 0 && cc > 0 ? cc / o : null;
                       // h/ord ratio excludes managers entirely — neither their hours nor
                       // their order output count toward it — while `o` above stays the
                       // full team order total.
@@ -3352,7 +3450,6 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         <td key={di} className={`px-2 py-2 text-center ${di === 0 ? 'bg-amber-50/50' : ''}`}>
                           <div className="text-amber-700">{Math.round(o * 100) / 100} ord</div>
                           {ffDayRatio !== null && <div className="text-[10px] text-slate-500">{Math.round(ffDayRatio * 100) / 100} h/ord</div>}
-                          {ffHasRates && cpo !== null && <div className="text-[10px] text-amber-600">{fmt$(cpo)}/ord</div>}
                           {ffHasRates && isHolidayDay(di) && cc > 0 && <div className="text-[10px] text-amber-600">{fmt$(cc)} paid</div>}
                         </td>
                       );
@@ -3364,12 +3461,13 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                       <div>Actual total</div>
                       <div className="text-[9px] font-normal text-sky-600">MT production</div>
                     </td>
-                    {days.map(day => (
+                    {days.map((day, di) => (
                       <td key={day.iso} className="px-2 py-2 text-center">
                         <ProductionActual
                           value={sumActuals(team.map(member => fulfillmentActuals.getCount(member.name, day.iso, 'fulfillment')))}
                           loading={fulfillmentActuals.loading}
                           unit=" ord"
+                          goal={day.iso <= todayIso ? teamDailyOrders(di) : null}
                         />
                       </td>
                     ))}
@@ -3379,8 +3477,22 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         loading={fulfillmentActuals.loading}
                         unit=" ord"
                       />
+                      <AheadBehind
+                        actual={sumActuals(team.flatMap(member => days.map(day => fulfillmentActuals.getCount(member.name, day.iso, 'fulfillment'))))}
+                        goal={plannedToDate(teamDailyOrders)}
+                        unit=" ord"
+                      />
                     </td>
                   </tr>
+                  {ffHasRates && (
+                    <PlannedActualCpoRow
+                      days={days}
+                      dayCost={teamDailyCost}
+                      plannedOutput={teamDailyOrders}
+                      actualOutput={di => sumActuals(team.map(member => fulfillmentActuals.getCount(member.name, days[di].iso, 'fulfillment')))}
+                      dayCellClass={di => isHolidayDay(di) ? 'bg-amber-50/60' : di === 0 ? 'bg-amber-50/30' : ''}
+                    />
+                  )}
                 </tbody>
               </table>
             </div>
@@ -3420,7 +3532,6 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                       <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                         <div className="font-medium text-slate-700">{m.name}</div>
                         <MemberTierBadges name={m.name} location={location} dept="Fulfillment" fallbackRole={m.role} fallbackIsManager={m.isManager} />
-                        <div className="text-slate-400">{m.ratio} h/ord</div>
                         {m.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
                       </td>
                       {Array.from({ length: WINDOW }, (_, i) => i + weekOffset).filter(i => i < WEEKS).map(w => {
@@ -4119,64 +4230,6 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
           );
         })}
       </div>
-    </div>
-  );
-}
-
-// Monthly Ratio/CPO for one department: month-to-date actual vs. this month's
-// Expected and Goal targets — all three pulled from useKpiMetrics, the exact
-// same hook and /api/kpis formulas the All KPIs tab uses, so this card can
-// never drift out of sync with it.
-function DeptKPIBar({ dept, location, kpiState, showCPO }: {
-  dept: KpiDept;
-  location: KpiLocation;
-  kpiState: KpiState;
-  showCPO: boolean;
-}) {
-  if (kpiState.loading) return null;
-  const mtdWindow = getWindowsByType(kpiState.windows, 'mtd')[0];
-  const actual   = mtdWindow ? selectDept(selectLocation(mtdWindow, location), dept) : null;
-  const expectedPeriod = selectEstimated(kpiState.estimated?.current, location, 'expected');
-  const goalPeriod     = selectEstimated(kpiState.estimated?.current, location, 'goal');
-  const expected = expectedPeriod ? selectDept(expectedPeriod, dept) : null;
-  const goal     = goalPeriod ? selectDept(goalPeriod, dept) : null;
-
-  const ratioColor = actual?.ratio != null && goal?.ratio != null
-    ? actual.ratio <= goal.ratio ? 'text-green-600' : 'text-red-500'
-    : 'text-slate-800';
-
-  const columns: { label: string; d: typeof actual; labelColor: string; valueColor: string }[] = [
-    { label: 'Month to date',  d: actual,   labelColor: 'text-indigo-400', valueColor: ratioColor },
-    { label: 'Expected',       d: expected, labelColor: 'text-amber-500',  valueColor: 'text-slate-700' },
-    { label: 'Goal',           d: goal,     labelColor: 'text-green-500',  valueColor: 'text-green-700' },
-  ];
-
-  return (
-    <div className="bg-white border border-slate-100 rounded-xl px-5 py-3 flex items-center gap-0 flex-wrap gap-y-3">
-      <div className="pr-4 mr-2 border-r border-slate-200 shrink-0">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{DEPT_LABELS[dept]} · {location}</p>
-        <p className="text-[10px] text-slate-400">Monthly KPIs</p>
-      </div>
-      {columns.map(({ label, d, labelColor, valueColor }) => (
-        <div key={label} className="flex flex-col gap-0.5 px-4 border-r border-slate-100 last:border-0">
-          <span className={`text-[10px] font-semibold uppercase tracking-wide ${labelColor}`}>{label}</span>
-          <div className="flex flex-col gap-0.5">
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-[10px] text-slate-400 w-8">Ratio</span>
-              <span className={`text-sm font-semibold ${valueColor}`}>{fmtRatio(d?.ratio ?? null)}</span>
-            </div>
-            {showCPO && (
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-[10px] text-slate-400 w-8">CPO</span>
-                <span className="text-sm font-semibold text-slate-800">{fmtCPO(d?.cpo ?? null)}</span>
-              </div>
-            )}
-            {label === 'Month to date' && d && d.production > 0 && (
-              <span className="text-[10px] text-slate-400">{fmtUnits(d.production)} {DEPT_PRODUCTION_UNIT[dept]}</span>
-            )}
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
@@ -5479,7 +5532,7 @@ export function SchedulePage({
       {/* ── PRESERVATION dept ───────────────────────────────────────────────── */}
       {dept === 'preservation' && (
         <>
-        <DeptKPIBar dept="preservation" location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} />
+        <DeptKpiBars dept="preservation" location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} />
         <PreservationSection
           location={location}
           paidHolidays={paidHolidays}
@@ -5536,7 +5589,7 @@ export function SchedulePage({
       {/* ── FULFILLMENT dept ────────────────────────────────────────────────── */}
       {dept === 'fulfillment' && (
         <>
-        <DeptKPIBar dept="fulfillment" location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} />
+        <DeptKpiBars dept="fulfillment" location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} />
         <FulfillmentSection
           location={location}
           paidHolidays={paidHolidays}
@@ -5573,7 +5626,7 @@ export function SchedulePage({
       {/* ── DESIGN dept ─────────────────────────────────────────────────────── */}
       {dept === 'design' && (
         <>
-          <DesignKpiBars location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} />
+          <DeptKpiBars dept="design" location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} />
 
           {/* Roster editor */}
           <div>
@@ -5640,9 +5693,7 @@ export function SchedulePage({
           {/* ── WEEKLY SCHEDULE TAB ─────────────────────────────────────────── */}
           {activeTab === 'thisweek' && (() => {
             const days = designActualDays;
-            // Days after today have no actuals yet, so they stay uncoloured.
-            const now = new Date();
-            const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+            const todayIso = localTodayIso();
             function getDH(id: string, di: number) {
               const weekIso = isoMonday(designThisWeekOffset);
               return resolveDayHours(designDailyHours, `${weekIso}-${id}`, di, settings.designRoster[id]?.standardWeeklyHours,
@@ -5698,11 +5749,7 @@ export function SchedulePage({
             }, 0);
             const teamDailyCost = (di: number) => designers.reduce((s, d) => s + dDailyCost(d, di), 0);
             const teamWeekFrames = days.reduce((s, _, di) => s + teamDailyFrames(di), 0);
-            // Planned frames for the days that have started — what week-to-date
-            // actuals are judged against. null when the week hasn't started.
-            const weekStarted = days.length > 0 && days[0].iso <= todayIso;
-            const plannedToDate = (perDay: (di: number) => number) =>
-              weekStarted ? days.reduce((s, day, di) => s + (day.iso <= todayIso ? perDay(di) : 0), 0) : null;
+            const plannedToDate = (perDay: (di: number) => number) => plannedThroughToday(days, todayIso, perDay);
             return (
               <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
@@ -5854,49 +5901,15 @@ export function SchedulePage({
                           />
                         </td>
                       </tr>
-                      {/* CPO — planned (team labor cost ÷ planned frames, moved here from
-                          Planned total) and actual (÷ actual MT frames) per day; the week cell
-                          averages the days that have one. */}
-                      {hasRates && (() => {
-                        const avg = (vals: (number | null)[]) => {
-                          const v = vals.filter((c): c is number => c !== null);
-                          return v.length > 0 ? v.reduce((sum, c) => sum + c, 0) / v.length : null;
-                        };
-                        const plannedCPOs = days.map((_, di) => {
-                          const f = Math.round(teamDailyFrames(di) * 100) / 100; const cost = teamDailyCost(di);
-                          return f > 0 && cost > 0 ? cost / f : null;
-                        });
-                        const actualCPOs = days.map((day, di) => {
-                          const actual = sumActuals(designers.map(designer => designActuals.getCount(designer.name, day.iso, 'design')));
-                          const cost = teamDailyCost(di);
-                          return actual && actual > 0 && cost > 0 ? cost / actual : null;
-                        });
-                        const avgPlanned = avg(plannedCPOs);
-                        const avgActual  = avg(actualCPOs);
-                        return (
-                          <tr className="border-t border-slate-200 bg-white">
-                            <td className="sticky left-0 bg-white px-4 py-2 text-xs font-semibold text-slate-600">
-                              <div>CPO</div>
-                              <div className="text-[9px] font-normal text-slate-400">planned · actual</div>
-                            </td>
-                            {days.map((day, di) => (
-                              <td key={day.iso} className={`px-2 py-2 text-center ${isHolidayDay(di) ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/30' : ''}`}>
-                                {plannedCPOs[di] !== null
-                                  ? <div className="font-semibold text-amber-700">{fmt$(plannedCPOs[di]!)}</div>
-                                  : <div className="text-slate-300">—</div>}
-                                {actualCPOs[di] !== null && <div className="text-[10px] text-sky-700">actual {fmt$(actualCPOs[di]!)}</div>}
-                              </td>
-                            ))}
-                            <td className="px-3 py-2 text-center whitespace-nowrap">
-                              {avgPlanned !== null
-                                ? <div className="font-semibold text-amber-700">{fmt$(avgPlanned)}</div>
-                                : <div className="text-slate-300">—</div>}
-                              {avgActual !== null && <div className="text-[10px] text-sky-700">actual {fmt$(avgActual)}</div>}
-                              <div className="text-[10px] text-slate-400">day avg</div>
-                            </td>
-                          </tr>
-                        );
-                      })()}
+                      {hasRates && (
+                        <PlannedActualCpoRow
+                          days={days}
+                          dayCost={teamDailyCost}
+                          plannedOutput={teamDailyFrames}
+                          actualOutput={di => sumActuals(designers.map(designer => designActuals.getCount(designer.name, days[di].iso, 'design')))}
+                          dayCellClass={di => isHolidayDay(di) ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/30' : ''}
+                        />
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -6586,7 +6599,7 @@ export function SchedulePage({
 
       {dept === 'resin' && (
         <>
-        <DeptKPIBar dept="resin" location="Utah" kpiState={kpiMetrics} showCPO={hasAnyRates} />
+        <DeptKpiBars dept="resin" location="Utah" kpiState={kpiMetrics} showCPO={hasAnyRates} />
         <ResinPage canViewCPO={canViewCPO} canSeeManagerCPO={canSeeManagerCPO} />
         </>
       )}

@@ -2,15 +2,15 @@
 
 import {
   getWindowsByType, selectLocation, selectDept, selectEstimated, selectPlanned,
-  fmtRatio, fmtCPO, fmtUnits,
-  type KpiLocation, type KpiState,
+  fmtRatio, fmtCPO, fmtUnits, DEPT_LABELS, DEPT_PRODUCTION_UNIT,
+  type KpiDept, type KpiLocation, type KpiState,
 } from '@/hooks/useKpiMetrics';
 import { getWeekMondays } from '@/lib/weekDates';
 
-// First month whose missed frame goal can roll forward. Months before this
+// First month whose missed production goal can roll forward. Months before this
 // never carry anything, so an old shortfall from before the rollover rule
 // existed can't snowball into today's goal.
-export const FRAME_ROLLOVER_START = '2026-10-01';
+export const ROLLOVER_START = '2026-10-01';
 
 type Status = 'green' | 'yellow' | 'red' | 'none';
 
@@ -100,7 +100,7 @@ function monthElapsedFraction(monthStart: string, today: Date): number {
   return total > 0 ? elapsed / total : 0;
 }
 
-export interface FrameRollover {
+export interface ProductionRollover {
   monthLabel: string;   // e.g. "Sep 2026"
   goal:       number;   // that month's own goal
   carriedIn:  number;   // shortfall it inherited
@@ -111,16 +111,16 @@ export interface FrameRollover {
 // Walk completed months oldest → newest: each month's target is its own goal
 // plus whatever the previous month missed. Beating a target only clears the
 // carry — a surplus never banks credit against future months.
-export function computeFrameRollover(kpiState: KpiState, location: KpiLocation, startMonth = FRAME_ROLLOVER_START): FrameRollover[] {
+export function computeProductionRollover(kpiState: KpiState, location: KpiLocation, dept: KpiDept, startMonth = ROLLOVER_START): ProductionRollover[] {
   const months = getWindowsByType(kpiState.windows, 'monthly')
     .filter(w => w.periodStart >= startMonth)
     .sort((a, b) => a.periodStart.localeCompare(b.periodStart));
-  const rows: FrameRollover[] = [];
+  const rows: ProductionRollover[] = [];
   let carry = 0;
   for (const w of months) {
     const planned = selectPlanned(w, location, 'goal');
-    const goal    = planned ? selectDept(planned, 'design').production : 0;
-    const actual  = selectDept(selectLocation(w, location), 'design').production;
+    const goal    = planned ? selectDept(planned, dept).production : 0;
+    const actual  = selectDept(selectLocation(w, location), dept).production;
     const carriedOut = Math.max(0, goal + carry - actual);
     rows.push({ monthLabel: w.label, goal, carriedIn: carry, actual, carriedOut });
     carry = carriedOut;
@@ -128,12 +128,14 @@ export function computeFrameRollover(kpiState: KpiState, location: KpiLocation, 
   return rows;
 }
 
-function MonthlyFrameGoalBar({ kpiState, location }: { kpiState: KpiState; location: KpiLocation }) {
+// Production vs. this month's goal plus whatever last month missed.
+function MonthlyProductionGoalBar({ dept, kpiState, location }: { dept: KpiDept; kpiState: KpiState; location: KpiLocation }) {
   const mtdWindow  = getWindowsByType(kpiState.windows, 'mtd')[0];
-  const actual     = mtdWindow ? selectDept(selectLocation(mtdWindow, location), 'design').production : 0;
+  const actual     = mtdWindow ? selectDept(selectLocation(mtdWindow, location), dept).production : 0;
   const goalPeriod = selectEstimated(kpiState.estimated?.current, location, 'goal');
-  const monthGoal  = goalPeriod ? selectDept(goalPeriod, 'design').production : 0;
-  const history    = computeFrameRollover(kpiState, location);
+  const monthGoal  = goalPeriod ? selectDept(goalPeriod, dept).production : 0;
+  const history    = computeProductionRollover(kpiState, location, dept);
+  const unit       = DEPT_PRODUCTION_UNIT[dept];
   const last       = history[history.length - 1];
   const carriedIn  = last?.carriedOut ?? 0;
   const target     = monthGoal + carriedIn;
@@ -159,7 +161,7 @@ function MonthlyFrameGoalBar({ kpiState, location }: { kpiState: KpiState; locat
     <div className="flex-1 min-w-[280px]">
       <div className="flex items-baseline justify-between mb-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-          Frames · {kpiState.estimated?.current?.label.replace(/^Est\.\s*/, '') ?? 'this month'} goal
+          {unit} · {kpiState.estimated?.current?.label.replace(/^Est\.\s*/, '') ?? 'this month'} goal
         </span>
         <span className={`text-[10px] font-semibold rounded px-1.5 py-px ${s.chip}`}>
           {status === 'none' ? s.label : pacingGap >= 0 ? `${fmtUnits(pacingGap)} ahead of pace` : `${fmtUnits(-pacingGap)} behind pace`}
@@ -170,7 +172,7 @@ function MonthlyFrameGoalBar({ kpiState, location }: { kpiState: KpiState; locat
           {fmtUnits(actual)}<span className="text-xs font-normal text-slate-400"> / {fmtUnits(target)}</span>
         </span>
         <div className="relative flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
-          {/* Rolled-over frames sit on top of this month's own goal */}
+          {/* Rolled-over units sit on top of this month's own goal */}
           {carriedIn > 0 && (
             <div className="absolute inset-y-0 bg-red-100" style={{ left: `${goalPct}%`, width: `${pct(target) - goalPct}%` }} />
           )}
@@ -192,26 +194,27 @@ function MonthlyFrameGoalBar({ kpiState, location }: { kpiState: KpiState; locat
   );
 }
 
-// Design tab header: month-to-date Ratio/CPO shown as red/yellow/green pace
-// bars against Goal and Expected, plus frames vs. the monthly frame goal
-// (with any missed frames from last month rolled in). Same useKpiMetrics data
-// as the All KPIs tab.
-export function DesignKpiBars({ location, kpiState, showCPO }: {
+// Department header on the Scheduling tabs: month-to-date Ratio/CPO shown as
+// red/yellow/green pace bars against Goal and Expected, plus production vs.
+// the monthly goal (with last month's missed units rolled in). Same
+// useKpiMetrics data as the All KPIs tab.
+export function DeptKpiBars({ dept, location, kpiState, showCPO }: {
+  dept:     KpiDept;
   location: KpiLocation;
   kpiState: KpiState;
   showCPO:  boolean;
 }) {
   if (kpiState.loading) return null;
   const mtdWindow = getWindowsByType(kpiState.windows, 'mtd')[0];
-  const actual    = mtdWindow ? selectDept(selectLocation(mtdWindow, location), 'design') : null;
+  const actual    = mtdWindow ? selectDept(selectLocation(mtdWindow, location), dept) : null;
   const expectedP = selectEstimated(kpiState.estimated?.current, location, 'expected');
   const goalP     = selectEstimated(kpiState.estimated?.current, location, 'goal');
-  const expected  = expectedP ? selectDept(expectedP, 'design') : null;
-  const goal      = goalP ? selectDept(goalP, 'design') : null;
+  const expected  = expectedP ? selectDept(expectedP, dept) : null;
+  const goal      = goalP ? selectDept(goalP, dept) : null;
 
   return (
     <div className="bg-white border border-slate-100 rounded-xl px-5 py-4">
-      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Design · {location} · Monthly KPIs</p>
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">{DEPT_LABELS[dept]} · {location} · Monthly KPIs</p>
       <div className="flex flex-wrap gap-x-8 gap-y-4">
         <MetricPaceBar label="Ratio" actual={actual?.ratio ?? null} goal={goal?.ratio ?? null} expected={expected?.ratio ?? null}
           fmt={n => fmtRatio(n)} />
@@ -219,7 +222,7 @@ export function DesignKpiBars({ location, kpiState, showCPO }: {
           <MetricPaceBar label="CPO" actual={actual?.cpo ?? null} goal={goal?.cpo ?? null} expected={expected?.cpo ?? null}
             fmt={n => fmtCPO(n)} />
         )}
-        <MonthlyFrameGoalBar kpiState={kpiState} location={location} />
+        <MonthlyProductionGoalBar dept={dept} kpiState={kpiState} location={location} />
       </div>
     </div>
   );
