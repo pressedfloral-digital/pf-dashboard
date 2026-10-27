@@ -32,6 +32,7 @@ import { useGrowthSettings } from '@/hooks/useGrowthSettings';
 import { useDistributionEstimate } from '@/hooks/useDistributionEstimate';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
 import { SyncedOrdersPopover } from './SyncedOrdersPopover';
+import { BehindPromiseModal, type BehindPromiseSummary } from './BehindPromiseModal';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -4314,6 +4315,8 @@ export function SchedulePage({
     promisedByDate: string; promisedWeeks: number; lastConfirmedWeeks: number; lastConfirmedAt: string;
   }>>({});
   const [bloomModalOpen, setBloomModalOpen] = useState(false);
+  // Queue & Turnaround row whose "behind promise" detail is open.
+  const [behindPromiseRow, setBehindPromiseRow] = useState<{ weekOf: string; weeksLeft: number } | null>(null);
   const [bloomHistoryOpen, setBloomHistoryOpen] = useState(false);
   const [bloomHistory, setBloomHistory] = useState<{ id: number; sent_at: string; rows: BloomUpdateRow[] }[]>([]);
   const [bloomHistoryLoading, setBloomHistoryLoading] = useState(false);
@@ -5320,8 +5323,41 @@ export function SchedulePage({
     (d.payType === 'salary' && d.annualSalary > 0)
   );
 
+  // Detail for the open "behind promise" flag — same FIFO queue and Must
+  // design due-week rule as mustDesignByWeek, narrowed to one intake week.
+  const behindPromiseSummary = useMemo((): BehindPromiseSummary | null => {
+    if (!behindPromiseRow) return null;
+    const promise = designPromises[behindPromiseRow.weekOf];
+    if (!promise) return null;
+    const active = historicalRemaining.filter(r => !('alreadyDone' in r && r.alreadyDone) && r.remaining > 0);
+    const framesLeft  = active.find(r => r.weekOf === behindPromiseRow.weekOf)?.remaining ?? 0;
+    const framesAhead = active.filter(r => r.weekOf < behindPromiseRow.weekOf).reduce((s, r) => s + r.remaining, 0);
+    let dueWeek = WEEKS - 1;
+    for (let w = 0; w < WEEKS; w++) {
+      if (isoMonday(w) >= promise.promisedByDate) { dueWeek = w; break; }
+    }
+    const capacityByPromise = designCapacityByWeek.slice(0, dueWeek + 1).reduce((s, n) => s + n, 0);
+    return {
+      weekOf:          behindPromiseRow.weekOf,
+      promisedByDate:  promise.promisedByDate,
+      promisedWeeks:   promise.promisedWeeks,
+      lastConfirmedAt: promise.lastConfirmedAt,
+      projectedDate:   addDays(isoMonday(0), behindPromiseRow.weeksLeft * 7),
+      framesLeft, framesAhead, capacityByPromise,
+      hoursPerFrame:   hiringPlan.hoursPerFrame[0] || 1,
+    };
+  }, [behindPromiseRow, designPromises, historicalRemaining, designCapacityByWeek, hiringPlan.hoursPerFrame]);
+
   return (
     <div className="space-y-6">
+      {behindPromiseSummary && (
+        <BehindPromiseModal
+          location={location}
+          summary={behindPromiseSummary}
+          todayIso={new Date().toLocaleDateString('en-CA')}
+          onClose={() => setBehindPromiseRow(null)}
+        />
+      )}
 
       {/* ── Dept tabs + Location toggle + Save indicator ────────────────────── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -6167,10 +6203,11 @@ export function SchedulePage({
                                 {partial && <span className="ml-2 text-[10px] bg-amber-100 text-amber-700 rounded px-1 py-px">partially designed</span>}
                                 {notYetIn && <span className="ml-2 text-[10px] bg-slate-100 text-slate-400 rounded px-1 py-px">est.</span>}
                                 {atRisk && (
-                                  <span className="ml-2 text-[10px] bg-red-100 text-red-700 rounded px-1 py-px"
-                                    title={`Promised by ${fmtDate(promise!.promisedByDate)} (~${promise!.promisedWeeks} wks when locked in) — currently trending later than that.`}>
+                                  <button onClick={() => setBehindPromiseRow({ weekOf: row.weekOf, weeksLeft: weeksLeft! })}
+                                    className="ml-2 text-[10px] bg-red-100 text-red-700 rounded px-1 py-px underline decoration-dotted underline-offset-2 hover:bg-red-200"
+                                    title={`Promised by ${fmtDate(promise!.promisedByDate)} (~${promise!.promisedWeeks} wks when locked in) — currently trending later than that. Click for details and orders.`}>
                                     behind promise
-                                  </span>
+                                  </button>
                                 )}
                               </td>
                               <td className="px-3 py-2 text-right text-slate-600">

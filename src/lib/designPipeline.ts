@@ -4,7 +4,11 @@
  * the order add-on refresh cron (every location's orders).
  */
 import { pfGetAll, fmtDate } from '@/lib/pf-api';
-import { DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, isNonDesignProduct } from '@/lib/designInventory';
+import { supabase } from '@/lib/supabase';
+import {
+  DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, PRESERVATION_WEEKS, isNonDesignProduct,
+  parseVariant, mondayOf, addWeeks, type QueueLine,
+} from '@/lib/designInventory';
 
 // Orders are placed around the event date, so anything still in
 // Preservation or Design was ordered within roughly this many months.
@@ -55,4 +59,52 @@ export async function loadPipelineLines(): Promise<{ lines: PipelineLine[]; fail
     }
   }
   return { lines, failedMonths: reports.filter(r => r === null).length, totalMonths: paths.length };
+}
+
+/** One location's Design/Preservation lines with their intake (bouquet
+ *  received) dates. Shared by /api/design-inventory and
+ *  /api/behind-promise-orders so both group orders into intake weeks the
+ *  same way. Lines with no received date fall back to the event date. */
+export async function loadLocationQueueLines(location: string, thisWeek: string): Promise<{
+  lines: QueueLine[]; missingLocation: number; failedMonths: number; totalMonths: number;
+}> {
+  const pipeline = await loadPipelineLines();
+  let missingLocation = 0;
+  const raw = pipeline.lines.filter(({ item }) => {
+    if (!item.location) { missingLocation++; return false; }
+    return item.location === location;
+  });
+
+  const receivedAt: Record<string, string> = {};
+  const keys = raw.map(r => r.key);
+  for (let i = 0; i < keys.length; i += 200) {
+    const { data, error } = await supabase
+      .from('order_status_history')
+      .select('order_product_key, entered_at')
+      .eq('status', 'bouquetReceived')
+      .in('order_product_key', keys.slice(i, i + 200));
+    if (error) throw error;
+    (data ?? []).forEach(r => {
+      const d = r.entered_at?.slice(0, 10);
+      if (d && (!receivedAt[r.order_product_key] || d < receivedAt[r.order_product_key])) receivedAt[r.order_product_key] = d;
+    });
+  }
+
+  const lines: QueueLine[] = raw.map(({ key, item, num }) => {
+    const received = receivedAt[key];
+    const intakeDate = received ?? item.eventDate?.slice(0, 10) ?? item.originalOrderDate?.slice(0, 10) ?? thisWeek;
+    const status = item.status ?? '';
+    return {
+      orderNumber:  num,
+      customer:     item.orderName ?? '',
+      product:      item.productTitle ?? '',
+      variant:      item.variantTitle ?? '',
+      ...parseVariant(item.variantTitle),
+      status,
+      intakeDate,
+      intakeSource: received ? 'bouquetReceived' : 'eventDate',
+      designableWeek: DESIGN_QUEUE_STATUSES.has(status) ? thisWeek : addWeeks(mondayOf(intakeDate), PRESERVATION_WEEKS),
+    };
+  });
+  return { lines, missingLocation, failedMonths: pipeline.failedMonths, totalMonths: pipeline.totalMonths };
 }
