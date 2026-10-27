@@ -13,9 +13,11 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useScheduleSettings, usePaidHolidays, type ScheduleSettings } from './useScheduleSettings';
 import { isoMonday, getWeekLabel, isoMondayFromDate, getISOWeekNumber } from '@/lib/weekDates';
-import { resolveDayHours, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
+import { resolveDayHours, hoursOffOn, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
+import { ScheduleRulesEditor } from './ScheduleRulesEditor';
+import { TimeOffCalendar, toTimeOffMember } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { buildActiveMemberIds, InactiveToggle } from './memberActivity';
 import { DEPARTMENT_MANAGERS, STANDARD_WEEKLY_HOURS } from '@/lib/managers';
@@ -73,7 +75,7 @@ function useBloomStock(settings: ScheduleSettings, update: (k: keyof ScheduleSet
 
   const dayHours = useCallback((m: BloomStockMember, weekIso: string, di: number) =>
     resolveDayHours(daily, `${weekIso}-${m.id}`, di, m.standardWeeklyHours,
-      { weekIso, startDate: m.startDate, endDate: m.endDate }, holidays), [daily, holidays]);
+      { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules, daysOff: m.daysOff, hoursOff: m.hoursOff }, holidays), [daily, holidays]);
   const weekHours = useCallback((m: BloomStockMember, weekIso: string, fromDay = 0) => {
     let h = 0;
     for (let di = fromDay; di < 7; di++) h += dayHours(m, weekIso, di).hours;
@@ -244,7 +246,7 @@ export default function BloomStockPage({ canEdit, canViewCPO }: { canEdit: boole
         </div>
       </div>
 
-      <RosterPanel bs={bs} canEdit={canEdit} visibleRoster={visibleRoster}
+      <RosterPanel bs={bs} canEdit={canEdit} holidays={holidays} visibleRoster={visibleRoster}
         inactiveCount={inactiveCount} showInactive={showInactive} onToggleInactive={() => setShowInactive(v => !v)}
         onRefreshRatio={refreshRatio} refreshingId={refreshingId} />
 
@@ -371,6 +373,8 @@ function ThisWeekTab({ bs, roster, canEdit, holidays }: { bs: BS; roster: BloomS
                             className={`${numInput} ${r.isOverride ? 'border-indigo-300 bg-indigo-50/50' : ''}`} />
                         ) : <span className="text-slate-700">{r.hours || '—'}</span>}
                         {r.hours > 0 && m.ratio ? <div className="text-[10px] text-slate-400 mt-0.5">{r1(bs.itemsOf(m, r.hours))} items</div> : null}
+                        {r.isDayOff && <div className="text-[9px] font-semibold text-red-500 mt-0.5" title="Marked off on the Time Off calendar — scheduled hours are 0">day off</div>}
+                        {(hoursOffOn(di, { weekIso, hoursOff: m.hoursOff })) > 0 && <div className="text-[9px] font-semibold text-red-400 mt-0.5" title="Hours off on the Days off calendar">{hoursOffOn(di, { weekIso, hoursOff: m.hoursOff })}h off</div>}
                       </td>
                     );
                   })}
@@ -1150,8 +1154,8 @@ function NotesInput({ value, onCommit }: { value: string; onCommit: (v: string) 
 // the tabs, Rippling autocomplete, role tier, ratio with ↻ refresh, Mon–Sun
 // standard schedule with reset-to-template, employment dates and an
 // inactive toggle.
-function RosterPanel({ bs, canEdit, visibleRoster, inactiveCount, showInactive, onToggleInactive, onRefreshRatio, refreshingId }: {
-  bs: BS; canEdit: boolean;
+function RosterPanel({ bs, canEdit, holidays, visibleRoster, inactiveCount, showInactive, onToggleInactive, onRefreshRatio, refreshingId }: {
+  bs: BS; canEdit: boolean; holidays: string[];
   visibleRoster: BloomStockMember[]; inactiveCount: number; showInactive: boolean; onToggleInactive: () => void;
   onRefreshRatio: (m: BloomStockMember) => void; refreshingId: string | null;
 }) {
@@ -1257,6 +1261,11 @@ function RosterPanel({ bs, canEdit, visibleRoster, inactiveCount, showInactive, 
                     onStartDateChange={v => patch(m.id, { startDate: v || undefined })}
                     onEndDateChange={v => patch(m.id, { endDate: v || undefined })} />
                 </div>
+                <div className="flex items-start gap-1.5 pl-1">
+                  <span className="text-[10px] text-slate-400 w-32 shrink-0 pt-0.5">Schedule rules</span>
+                  <ScheduleRulesEditor rules={m.scheduleRules} standardWeeklyHours={m.standardWeeklyHours}
+                    onChange={rules => patch(m.id, { scheduleRules: rules })} />
+                </div>
               </div>
             ))}
           </div>
@@ -1266,6 +1275,12 @@ function RosterPanel({ bs, canEdit, visibleRoster, inactiveCount, showInactive, 
           )}
           <span className="ml-3"><InactiveToggle count={inactiveCount} showing={showInactive} onToggle={onToggleInactive} /></span>
           <p className="mt-3 text-xs text-slate-400">Pay comes from the Rippling upload (used for CPO, never shown here). Ratio = hours per item — refreshes automatically each week from the last {RATIO_WEEKS} weeks of Historicals (hours ÷ items logged); ↻ refreshes now.</p>
+          <div className="mt-5">
+            <TimeOffCalendar
+              members={visibleRoster.map(m => toTimeOffMember(m.id, m.name, m))}
+              dailyMap={bs.daily} holidays={holidays} canEdit={canEdit}
+              onChange={(id, next) => patch(id, next)} />
+          </div>
         </div>
       )}
     </div>

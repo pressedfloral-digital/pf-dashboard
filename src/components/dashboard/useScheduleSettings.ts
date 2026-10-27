@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { DailyHoursMap } from '@/lib/scheduleResolution';
-export type { DailyHoursMap };
+import type { DailyHoursMap, ScheduleRule } from '@/lib/scheduleResolution';
+export type { DailyHoursMap, ScheduleRule };
 
 export interface DesignerRoster {
   [designerId: string]: {
@@ -30,6 +30,13 @@ export interface DesignerRoster {
     // regardless of template/override — see resolveDayHours/resolveWeekHours.
     startDate?: string;
     endDate?:   string;
+    // Date-bounded, toggleable replacements for standardWeeklyHours (e.g.
+    // "Feb–May: Mon/Wed/Fri only") — see ScheduleRule in scheduleResolution.ts.
+    scheduleRules?: ScheduleRule[];
+    // ISO dates marked off on the Time Off calendar — see EmploymentWindow.daysOff.
+    daysOff?: string[];
+    // ISO date → hours off that day (partial day off) — see EmploymentWindow.hoursOff.
+    hoursOff?: Record<string, number>;
   };
 }
 
@@ -55,6 +62,12 @@ export interface TeamRoster {
     // Employment window — see DesignerRoster.
     startDate?: string;
     endDate?:   string;
+    // Schedule rules — see DesignerRoster.
+    scheduleRules?: ScheduleRule[];
+    // ISO dates marked off on the Time Off calendar — see EmploymentWindow.daysOff.
+    daysOff?: string[];
+    // ISO date → hours off that day (partial day off) — see EmploymentWindow.hoursOff.
+    hoursOff?: Record<string, number>;
   };
 }
 

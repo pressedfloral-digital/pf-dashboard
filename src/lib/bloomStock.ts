@@ -1,3 +1,5 @@
+import type { ScheduleRule } from '@/lib/scheduleResolution';
+
 // Bloom-stock products — Handprint / Paw Print / Footprint frames and Bloom
 // Arrangement Recreation. They're made from Pressed Floral's own pressed
 // flower stock, so unlike custom (sent-in) bouquets there's no drying /
@@ -131,6 +133,12 @@ export interface BloomStockMember {
   standardWeeklyHours?: number[];
   startDate?:   string;
   endDate?:     string;
+  // Date-bounded, toggleable replacements for standardWeeklyHours — see scheduleResolution.ts.
+  scheduleRules?: ScheduleRule[];
+  // ISO dates marked off on the Time Off calendar — see EmploymentWindow.daysOff.
+  daysOff?: string[];
+  // ISO date → hours off that day (partial day off) — see EmploymentWindow.hoursOff.
+  hoursOff?: Record<string, number>;
 }
 
 export const DEFAULT_BLOOM_STOCK_ROSTER: BloomStockMember[] = [

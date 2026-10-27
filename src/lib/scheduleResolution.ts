@@ -18,6 +18,89 @@ export interface EmploymentWindow {
   weekIso:    string;
   startDate?: string;
   endDate?:   string;
+  // The member's schedule rules (see ScheduleRule) — carried here rather than
+  // as a separate param because every caller already builds this object per
+  // member+week, and rules need that same weekIso to know which dates apply.
+  rules?:     ScheduleRule[];
+  // ISO dates the member is marked off (Time Off calendar). Like the
+  // employment window, a day off forces production hours to 0 and outranks
+  // an explicit override.
+  daysOff?:   string[];
+  // ISO date → hours off that day (part of a day off). Subtracted from
+  // whatever the day otherwise resolves to, never below 0.
+  hoursOff?:  Record<string, number>;
+}
+
+// True if dayIdx of the week in `employment` is one of the member's days off.
+export function isDayOff(dayIdx: number, employment?: EmploymentWindow): boolean {
+  if (!employment?.daysOff?.length) return false;
+  return employment.daysOff.includes(addIsoDays(employment.weekIso, dayIdx));
+}
+
+// Hours off (partial day) for dayIdx of the week in `employment`, or 0.
+export function hoursOffOn(dayIdx: number, employment?: EmploymentWindow): number {
+  if (!employment?.hoursOff) return 0;
+  return employment.hoursOff[addIsoDays(employment.weekIso, dayIdx)] ?? 0;
+}
+
+// Applies a member's time off to an hours value for one day: a whole day off
+// zeroes it, partial hours off reduce it (never below 0).
+export function applyTimeOff(hours: number, dayIdx: number, employment?: EmploymentWindow): number {
+  if (isDayOff(dayIdx, employment)) return 0;
+  return Math.max(0, hours - hoursOffOn(dayIdx, employment));
+}
+
+// A manager-defined, date-bounded replacement for a member's standard
+// schedule — e.g. "Feb 1 – May 31: Mon/Wed/Fri 8h only". For every day that
+// falls inside [startDate, endDate] (inclusive, either bound optional) of an
+// enabled rule, hours[dayIdx] REPLACES the standard template for that
+// weekday; a null entry leaves the standard template in place for that day.
+// When several enabled rules cover the same date, the later one in the list
+// wins.
+//
+// Rules only ever stand in for the TEMPLATE — an explicit day override from
+// "This Week" still outranks them, so hand-entered hours (and anything
+// already recorded for a past week) are never rewritten. Actuals live in
+// team_member_week_actuals and never read the schedule at all.
+export interface ScheduleRule {
+  id:         string;
+  label?:     string;
+  enabled:    boolean;
+  startDate?: string;
+  endDate?:   string;
+  hours:      (number | null)[];
+}
+
+// The rule (if any) that governs dayIdx of the week in `employment`.
+export function activeRuleForDay(dayIdx: number, employment?: EmploymentWindow): ScheduleRule | undefined {
+  const rules = employment?.rules;
+  if (!rules || rules.length === 0 || !employment) return undefined;
+  const date = addIsoDays(employment.weekIso, dayIdx);
+  let match: ScheduleRule | undefined;
+  for (const r of rules) {
+    if (!r.enabled || r.hours[dayIdx] == null) continue;
+    if (r.startDate && date < r.startDate) continue;
+    if (r.endDate && date > r.endDate) continue;
+    match = r;
+  }
+  return match;
+}
+
+// The standard template with any active rules applied for the week in
+// `employment`. Returns the template untouched (same reference, possibly
+// undefined) when no rule covers any day of the week, so a member with no
+// template and no applicable rule still falls through to the legacy /
+// hardcoded-default branches of resolveWeekHoursBoth.
+export function effectiveTemplate(standardWeeklyHours: number[] | undefined, employment?: EmploymentWindow): number[] | undefined {
+  if (!employment?.rules?.length) return standardWeeklyHours;
+  let out: number[] | undefined;
+  for (let d = 0; d < 7; d++) {
+    const rule = activeRuleForDay(d, employment);
+    if (!rule) continue;
+    out ??= Array.from({ length: 7 }, (_, j) => standardWeeklyHours?.[j] ?? 0);
+    out[d] = rule.hours[d] ?? 0;
+  }
+  return out ?? standardWeeklyHours;
 }
 
 function addIsoDays(iso: string, days: number): string {
@@ -57,6 +140,11 @@ function isPaidHolidayDate(weekIso: string | undefined, dayIdx: number, holidays
   return holidays.includes(addIsoDays(weekIso, dayIdx));
 }
 
+// A day off (employment.daysOff) likewise forces production hours to 0 over
+// any override, template or rule; partial hours off (employment.hoursOff)
+// are subtracted from whatever the day resolves to. Pay follows: an unpaid 0 — except on a
+// paid holiday, which still pays the member's standard day.
+//
 // employment, when passed, forces hours to 0 for any day outside the
 // member's [startDate, endDate] window — taking priority over an explicit
 // override, so a member's schedule zeroes itself out from their last day
@@ -79,16 +167,25 @@ export function resolveDayHours(
   standardWeeklyHours: number[] | undefined,
   employment?: EmploymentWindow,
   holidays?: string[],
-): { hours: number; isOverride: boolean; payHours: number; isHoliday: boolean } {
-  if (!isWithinEmployment(dayIdx, employment)) return { hours: 0, isOverride: true, payHours: 0, isHoliday: false };
+): { hours: number; isOverride: boolean; payHours: number; isHoliday: boolean; isDayOff: boolean } {
+  if (!isWithinEmployment(dayIdx, employment)) return { hours: 0, isOverride: true, payHours: 0, isHoliday: false, isDayOff: false };
   const isHoliday = isPaidHolidayDate(employment?.weekIso, dayIdx, holidays);
   const override = dailyMap[weekKey]?.[dayIdx];
-  const standard = standardWeeklyHours?.[dayIdx] ?? 0;
-  if (override != null) {
-    return { hours: override, isOverride: true, payHours: isHoliday ? standard + override : override, isHoliday };
+  const standard = activeRuleForDay(dayIdx, employment)?.hours[dayIdx] ?? standardWeeklyHours?.[dayIdx] ?? 0;
+  if (isDayOff(dayIdx, employment)) {
+    return { hours: 0, isOverride: false, payHours: isHoliday ? standard : 0, isHoliday, isDayOff: true };
   }
-  if (isHoliday) return { hours: 0, isOverride: false, payHours: standard, isHoliday: true };
-  return { hours: standard, isOverride: false, payHours: standard, isHoliday: false };
+  const partialOff = hoursOffOn(dayIdx, employment);
+  if (override != null) {
+    const worked = Math.max(0, override - partialOff);
+    return { hours: worked, isOverride: true, payHours: isHoliday ? standard + worked : worked, isHoliday, isDayOff: false };
+  }
+  if (partialOff > 0 && !isHoliday) {
+    const worked = Math.max(0, standard - partialOff);
+    return { hours: worked, isOverride: false, payHours: worked, isHoliday: false, isDayOff: false };
+  }
+  if (isHoliday) return { hours: 0, isOverride: false, payHours: standard, isHoliday: true, isDayOff: false };
+  return { hours: standard, isOverride: false, payHours: standard, isHoliday: false, isDayOff: false };
 }
 
 export interface ResolveWeekHoursParams {
@@ -104,9 +201,12 @@ export interface ResolveWeekHoursParams {
 // Full per-member-per-week fallback chain, highest to lowest priority:
 //   1. Daily entries exist for this member+week -> sum of resolveDayHours (0-6)
 //   2. No daily entries yet, but a legacy (pre-cutover) weekly value exists -> that value, as-is
-//   3. Standard weekly template set on the roster -> sum(standardWeeklyHours)
+//   3. Standard weekly template set on the roster, with any active schedule
+//      rules applied (see effectiveTemplate) -> its sum
 //   4. Hardcoded per-member/week default (e.g. onboarding/offboarding ramps) -> that value
 //   5. else 0
+// Days off (employment.daysOff) are then zeroed on top, like the employment
+// window below.
 // employment (see resolveDayHours) is applied on top of whichever branch
 // resolves: a week fully outside the window returns 0, a week fully inside
 // is untouched, and a week the member starts or ends mid-way through is
@@ -118,7 +218,8 @@ export interface ResolveWeekHoursParams {
 // so most callers (capacity/turnaround math, which only ever wanted
 // production hours) don't need to change at all beyond passing `holidays`.
 export function resolveWeekHoursBoth(params: ResolveWeekHoursParams): { hours: number; payHours: number } {
-  const { dailyMap, weekKey, legacyWeeklyValue, standardWeeklyHours, hardcodedDefault, employment, holidays } = params;
+  const { dailyMap, weekKey, legacyWeeklyValue, hardcodedDefault, employment, holidays } = params;
+  const standardWeeklyHours = effectiveTemplate(params.standardWeeklyHours, employment);
   const daily = dailyMap[weekKey];
   if (daily !== undefined) {
     let hours = 0, payHours = 0;
@@ -140,7 +241,9 @@ export function resolveWeekHoursBoth(params: ResolveWeekHoursParams): { hours: n
   const weekIso = employment?.weekIso;
   const daysIn = Array.from({ length: 7 }, (_, d) => isWithinEmployment(d, employment));
   const hasHoliday = !!weekIso && daysIn.some((inWindow, d) => inWindow && isPaidHolidayDate(weekIso, d, holidays));
-  if (daysIn.every(Boolean) && !hasHoliday) return { hours: weekTotal, payHours: weekTotal };
+  const off = Array.from({ length: 7 }, (_, d) => isDayOff(d, employment));
+  const partial = Array.from({ length: 7 }, (_, d) => hoursOffOn(d, employment));
+  if (daysIn.every(Boolean) && !hasHoliday && !off.some(Boolean) && !partial.some(h => h > 0)) return { hours: weekTotal, payHours: weekTotal };
   if (daysIn.every(v => !v)) return { hours: 0, payHours: 0 };
 
   const perDay = standardWeeklyHours ?? distributeHours(weekTotal);
@@ -148,8 +251,12 @@ export function resolveWeekHoursBoth(params: ResolveWeekHoursParams): { hours: n
   for (let d = 0; d < 7; d++) {
     if (!daysIn[d]) continue;
     const h = perDay[d] ?? 0;
-    payHours += h;
-    hours += isPaidHolidayDate(weekIso, d, holidays) ? 0 : h;
+    const holiday = isPaidHolidayDate(weekIso, d, holidays);
+    if (off[d]) { payHours += holiday ? h : 0; continue; }
+    if (holiday) { payHours += h; continue; }
+    const worked = Math.max(0, h - partial[d]);
+    payHours += worked;
+    hours += worked;
   }
   return { hours, payHours };
 }
