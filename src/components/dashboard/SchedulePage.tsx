@@ -206,6 +206,19 @@ function ProductionActual({ value, loading, unit, drill, goal }: { value: number
   );
 }
 
+// "+3f ahead" / "2f behind" for an actual against its goal so far, coloured
+// the same way as ProductionActual's goal tone.
+function AheadBehind({ actual, goal, unit }: { actual: number | null; goal: number | null; unit: string }) {
+  if (actual === null || goal === null || (goal <= 0 && actual <= 0)) return null;
+  const diff = Math.round(actual - goal);
+  const tone = actualGoalTone(actual, goal) ?? 'text-slate-500';
+  return (
+    <div className={`text-[10px] font-semibold tabular-nums ${tone}`} title={`${actual}${unit} actual vs ${Math.round(goal * 100) / 100}${unit} planned through today`}>
+      {diff > 0 ? `+${diff}${unit} ahead` : diff < 0 ? `${-diff}${unit} behind` : 'on goal'}
+    </div>
+  );
+}
+
 function ProductionActualsStatus({ loading, error, refreshedAt }: { loading: boolean; error: string | null; refreshedAt: string | null }) {
   if (error) return <span className="text-[11px] font-medium text-red-600" title={error}>Production actuals unavailable</span>;
   if (loading) return <span className="text-[11px] text-slate-400">Loading production actuals…</span>;
@@ -5593,6 +5606,11 @@ export function SchedulePage({
             }, 0);
             const teamDailyCost = (di: number) => designers.reduce((s, d) => s + dDailyCost(d, di), 0);
             const teamWeekFrames = days.reduce((s, _, di) => s + teamDailyFrames(di), 0);
+            // Planned frames for the days that have started — what week-to-date
+            // actuals are judged against. null when the week hasn't started.
+            const weekStarted = days.length > 0 && days[0].iso <= todayIso;
+            const plannedToDate = (perDay: (di: number) => number) =>
+              weekStarted ? days.reduce((s, day, di) => s + (day.iso <= todayIso ? perDay(di) : 0), 0) : null;
             return (
               <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
@@ -5679,6 +5697,11 @@ export function SchedulePage({
                                 unit="f"
                                 drill={{ name: d.name, start: days[0].iso, end: days[days.length - 1].iso, department: 'design' }}
                               />
+                              <AheadBehind
+                                actual={sumActuals(days.map(day => designActuals.getCount(d.name, day.iso, 'design')))}
+                                goal={plannedToDate(dayIdx => { const h = getDH(d.id, dayIdx); return d.ratio > 0 && h > 0 ? h / d.ratio : 0; })}
+                                unit="f"
+                              />
                             </td>
                           </tr>
                         );
@@ -5728,6 +5751,11 @@ export function SchedulePage({
                           <ProductionActual
                             value={sumActuals(designers.flatMap(designer => days.map(day => designActuals.getCount(designer.name, day.iso, 'design'))))}
                             loading={designActuals.loading}
+                            unit="f"
+                          />
+                          <AheadBehind
+                            actual={sumActuals(designers.flatMap(designer => days.map(day => designActuals.getCount(designer.name, day.iso, 'design'))))}
+                            goal={plannedToDate(teamDailyFrames)}
                             unit="f"
                           />
                         </td>
