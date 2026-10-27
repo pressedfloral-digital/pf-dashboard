@@ -175,15 +175,26 @@ function sumActuals(values: (number | null)[]): number | null {
 // A single person's count can open the orders behind it; team totals can't.
 interface ActualDrill { name: string; start: string; end: string; department: 'design' | 'preservation' | 'fulfillment' }
 
-function ProductionActual({ value, loading, unit, drill }: { value: number | null; loading: boolean; unit: string; drill?: ActualDrill }) {
+// Colour for an actual against its goal: green at/above goal, yellow within
+// 90% of it, red further behind. null (no colour) when there's no goal to
+// compare against — e.g. a day that hasn't happened yet.
+function actualGoalTone(value: number | null, goal: number | null | undefined): string | null {
+  if (goal == null || value === null) return null;
+  if (goal <= 0) return value > 0 ? 'text-green-600' : null;
+  const pct = value / goal;
+  return pct >= 1 ? 'text-green-600' : pct >= 0.9 ? 'text-amber-500' : 'text-red-600';
+}
+
+function ProductionActual({ value, loading, unit, drill, goal }: { value: number | null; loading: boolean; unit: string; drill?: ActualDrill; goal?: number | null }) {
   const [open, setOpen] = useState(false);
   const label = `Actual ${loading && value === null ? '…' : `${value ?? '—'}${value === null ? '' : unit}`}`;
-  const cls = 'mt-0.5 text-[10px] font-semibold text-sky-600 tabular-nums';
+  const tone = actualGoalTone(value, goal);
+  const cls = `mt-0.5 text-[10px] font-semibold ${tone ?? 'text-sky-600'} tabular-nums`;
   if (!drill || !value) return <div className={cls} title="Live assignment count from the production app">{label}</div>;
   return (
     <>
       <button type="button" onClick={() => setOpen(true)}
-        className={`${cls} block mx-auto underline decoration-dotted underline-offset-2 hover:text-sky-800 cursor-pointer`}
+        className={`${cls} block mx-auto underline decoration-dotted underline-offset-2 ${tone ? 'hover:opacity-80' : 'hover:text-sky-800'} cursor-pointer`}
         title="Live assignment count from the production app — click to see the orders">
         {label}
       </button>
@@ -5524,6 +5535,9 @@ export function SchedulePage({
           {/* ── WEEKLY SCHEDULE TAB ─────────────────────────────────────────── */}
           {activeTab === 'thisweek' && (() => {
             const days = designActualDays;
+            // Days after today have no actuals yet, so they stay uncoloured.
+            const now = new Date();
+            const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
             function getDH(id: string, di: number) {
               const weekIso = isoMonday(designThisWeekOffset);
               return resolveDayHours(designDailyHours, `${weekIso}-${id}`, di, settings.designRoster[id]?.standardWeeklyHours,
@@ -5651,7 +5665,7 @@ export function SchedulePage({
                                   {designInputMode === 'output'
                                     ? (h > 0 && <div className="text-slate-400 mt-0.5">{round2(h)}h</div>)
                                     : (frames > 0 && <div className="text-slate-400 mt-0.5">{round2(frames)}f</div>)}
-                                  <ProductionActual value={designActuals.getCount(d.name, days[dayIdx].iso, 'design')} loading={designActuals.loading} unit="f" drill={{ name: d.name, start: days[dayIdx].iso, end: days[dayIdx].iso, department: 'design' }} />
+                                  <ProductionActual value={designActuals.getCount(d.name, days[dayIdx].iso, 'design')} loading={designActuals.loading} unit="f" drill={{ name: d.name, start: days[dayIdx].iso, end: days[dayIdx].iso, department: 'design' }} goal={days[dayIdx].iso <= todayIso ? frames : null} />
                                   {isHolidayDay(dayIdx) && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay{hasRates && cost > 0 ? ` ${fmt$(cost)}` : ''}</div>}
                                 </td>
                               );
@@ -5700,12 +5714,13 @@ export function SchedulePage({
                           <div>Actual total</div>
                           <div className="text-[9px] font-normal text-sky-600">MT production</div>
                         </td>
-                        {days.map(day => (
+                        {days.map((day, di) => (
                           <td key={day.iso} className="px-2 py-2 text-center">
                             <ProductionActual
                               value={sumActuals(designers.map(designer => designActuals.getCount(designer.name, day.iso, 'design')))}
                               loading={designActuals.loading}
                               unit="f"
+                              goal={day.iso <= todayIso ? teamDailyFrames(di) : null}
                             />
                           </td>
                         ))}
