@@ -22,6 +22,16 @@ export interface EmploymentWindow {
   // as a separate param because every caller already builds this object per
   // member+week, and rules need that same weekIso to know which dates apply.
   rules?:     ScheduleRule[];
+  // ISO dates the member is marked off (Time Off calendar). Like the
+  // employment window, a day off forces production hours to 0 and outranks
+  // an explicit override.
+  daysOff?:   string[];
+}
+
+// True if dayIdx of the week in `employment` is one of the member's days off.
+export function isDayOff(dayIdx: number, employment?: EmploymentWindow): boolean {
+  if (!employment?.daysOff?.length) return false;
+  return employment.daysOff.includes(addIsoDays(employment.weekIso, dayIdx));
 }
 
 // A manager-defined, date-bounded replacement for a member's standard
@@ -114,6 +124,10 @@ function isPaidHolidayDate(weekIso: string | undefined, dayIdx: number, holidays
   return holidays.includes(addIsoDays(weekIso, dayIdx));
 }
 
+// A day off (employment.daysOff) likewise forces production hours to 0 over
+// any override, template or rule. Pay follows: an unpaid 0 — except on a
+// paid holiday, which still pays the member's standard day.
+//
 // employment, when passed, forces hours to 0 for any day outside the
 // member's [startDate, endDate] window — taking priority over an explicit
 // override, so a member's schedule zeroes itself out from their last day
@@ -136,16 +150,19 @@ export function resolveDayHours(
   standardWeeklyHours: number[] | undefined,
   employment?: EmploymentWindow,
   holidays?: string[],
-): { hours: number; isOverride: boolean; payHours: number; isHoliday: boolean } {
-  if (!isWithinEmployment(dayIdx, employment)) return { hours: 0, isOverride: true, payHours: 0, isHoliday: false };
+): { hours: number; isOverride: boolean; payHours: number; isHoliday: boolean; isDayOff: boolean } {
+  if (!isWithinEmployment(dayIdx, employment)) return { hours: 0, isOverride: true, payHours: 0, isHoliday: false, isDayOff: false };
   const isHoliday = isPaidHolidayDate(employment?.weekIso, dayIdx, holidays);
   const override = dailyMap[weekKey]?.[dayIdx];
   const standard = activeRuleForDay(dayIdx, employment)?.hours[dayIdx] ?? standardWeeklyHours?.[dayIdx] ?? 0;
-  if (override != null) {
-    return { hours: override, isOverride: true, payHours: isHoliday ? standard + override : override, isHoliday };
+  if (isDayOff(dayIdx, employment)) {
+    return { hours: 0, isOverride: false, payHours: isHoliday ? standard : 0, isHoliday, isDayOff: true };
   }
-  if (isHoliday) return { hours: 0, isOverride: false, payHours: standard, isHoliday: true };
-  return { hours: standard, isOverride: false, payHours: standard, isHoliday: false };
+  if (override != null) {
+    return { hours: override, isOverride: true, payHours: isHoliday ? standard + override : override, isHoliday, isDayOff: false };
+  }
+  if (isHoliday) return { hours: 0, isOverride: false, payHours: standard, isHoliday: true, isDayOff: false };
+  return { hours: standard, isOverride: false, payHours: standard, isHoliday: false, isDayOff: false };
 }
 
 export interface ResolveWeekHoursParams {
@@ -165,6 +182,8 @@ export interface ResolveWeekHoursParams {
 //      rules applied (see effectiveTemplate) -> its sum
 //   4. Hardcoded per-member/week default (e.g. onboarding/offboarding ramps) -> that value
 //   5. else 0
+// Days off (employment.daysOff) are then zeroed on top, like the employment
+// window below.
 // employment (see resolveDayHours) is applied on top of whichever branch
 // resolves: a week fully outside the window returns 0, a week fully inside
 // is untouched, and a week the member starts or ends mid-way through is
@@ -199,7 +218,8 @@ export function resolveWeekHoursBoth(params: ResolveWeekHoursParams): { hours: n
   const weekIso = employment?.weekIso;
   const daysIn = Array.from({ length: 7 }, (_, d) => isWithinEmployment(d, employment));
   const hasHoliday = !!weekIso && daysIn.some((inWindow, d) => inWindow && isPaidHolidayDate(weekIso, d, holidays));
-  if (daysIn.every(Boolean) && !hasHoliday) return { hours: weekTotal, payHours: weekTotal };
+  const off = Array.from({ length: 7 }, (_, d) => isDayOff(d, employment));
+  if (daysIn.every(Boolean) && !hasHoliday && !off.some(Boolean)) return { hours: weekTotal, payHours: weekTotal };
   if (daysIn.every(v => !v)) return { hours: 0, payHours: 0 };
 
   const perDay = standardWeeklyHours ?? distributeHours(weekTotal);
@@ -207,8 +227,10 @@ export function resolveWeekHoursBoth(params: ResolveWeekHoursParams): { hours: n
   for (let d = 0; d < 7; d++) {
     if (!daysIn[d]) continue;
     const h = perDay[d] ?? 0;
+    const holiday = isPaidHolidayDate(weekIso, d, holidays);
+    if (off[d]) { payHours += holiday ? h : 0; continue; }
     payHours += h;
-    hours += isPaidHolidayDate(weekIso, d, holidays) ? 0 : h;
+    hours += holiday ? 0 : h;
   }
   return { hours, payHours };
 }

@@ -135,6 +135,8 @@ export interface BloomStockMember {
   endDate?:     string;
   // Date-bounded, toggleable replacements for standardWeeklyHours — see scheduleResolution.ts.
   scheduleRules?: ScheduleRule[];
+  // ISO dates marked off on the Time Off calendar — see EmploymentWindow.daysOff.
+  daysOff?: string[];
 }
 
 export const DEFAULT_BLOOM_STOCK_ROSTER: BloomStockMember[] = [

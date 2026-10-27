@@ -33,6 +33,8 @@ export interface DesignerRoster {
     // Date-bounded, toggleable replacements for standardWeeklyHours (e.g.
     // "Feb–May: Mon/Wed/Fri only") — see ScheduleRule in scheduleResolution.ts.
     scheduleRules?: ScheduleRule[];
+    // ISO dates marked off on the Time Off calendar — see EmploymentWindow.daysOff.
+    daysOff?: string[];
   };
 }
 
@@ -60,6 +62,8 @@ export interface TeamRoster {
     endDate?:   string;
     // Schedule rules — see DesignerRoster.
     scheduleRules?: ScheduleRule[];
+    // ISO dates marked off on the Time Off calendar — see EmploymentWindow.daysOff.
+    daysOff?: string[];
   };
 }
 

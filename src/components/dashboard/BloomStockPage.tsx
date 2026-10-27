@@ -74,7 +74,7 @@ function useBloomStock(settings: ScheduleSettings, update: (k: keyof ScheduleSet
 
   const dayHours = useCallback((m: BloomStockMember, weekIso: string, di: number) =>
     resolveDayHours(daily, `${weekIso}-${m.id}`, di, m.standardWeeklyHours,
-      { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules }, holidays), [daily, holidays]);
+      { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules, daysOff: m.daysOff }, holidays), [daily, holidays]);
   const weekHours = useCallback((m: BloomStockMember, weekIso: string, fromDay = 0) => {
     let h = 0;
     for (let di = fromDay; di < 7; di++) h += dayHours(m, weekIso, di).hours;
@@ -372,6 +372,7 @@ function ThisWeekTab({ bs, roster, canEdit, holidays }: { bs: BS; roster: BloomS
                             className={`${numInput} ${r.isOverride ? 'border-indigo-300 bg-indigo-50/50' : ''}`} />
                         ) : <span className="text-slate-700">{r.hours || '—'}</span>}
                         {r.hours > 0 && m.ratio ? <div className="text-[10px] text-slate-400 mt-0.5">{r1(bs.itemsOf(m, r.hours))} items</div> : null}
+                        {r.isDayOff && <div className="text-[9px] font-semibold text-red-500 mt-0.5" title="Marked off on the Time Off calendar — scheduled hours are 0">day off</div>}
                       </td>
                     );
                   })}
