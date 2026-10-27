@@ -8,6 +8,7 @@ import type { RipplingEmployee } from './EmployeeAutocomplete';
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { HistoricalsSection } from './HistoricalsSection';
 import { DisapprovalRateSection } from './DisapprovalRateSection';
+import { DesignKpiBars } from './DesignKpiBars';
 import {
   useKpiMetrics, getWindowsByType, selectLocation, selectDept, selectEstimated,
   fmtRatio, fmtCPO, fmtUnits, DEPT_LABELS, DEPT_PRODUCTION_UNIT,
@@ -174,15 +175,26 @@ function sumActuals(values: (number | null)[]): number | null {
 // A single person's count can open the orders behind it; team totals can't.
 interface ActualDrill { name: string; start: string; end: string; department: 'design' | 'preservation' | 'fulfillment' }
 
-function ProductionActual({ value, loading, unit, drill }: { value: number | null; loading: boolean; unit: string; drill?: ActualDrill }) {
+// Colour for an actual against its goal: green at/above goal, yellow within
+// 90% of it, red further behind. null (no colour) when there's no goal to
+// compare against — e.g. a day that hasn't happened yet.
+function actualGoalTone(value: number | null, goal: number | null | undefined): string | null {
+  if (goal == null || value === null) return null;
+  if (goal <= 0) return value > 0 ? 'text-green-600' : null;
+  const pct = value / goal;
+  return pct >= 1 ? 'text-green-600' : pct >= 0.9 ? 'text-amber-500' : 'text-red-600';
+}
+
+function ProductionActual({ value, loading, unit, drill, goal }: { value: number | null; loading: boolean; unit: string; drill?: ActualDrill; goal?: number | null }) {
   const [open, setOpen] = useState(false);
   const label = `Actual ${loading && value === null ? '…' : `${value ?? '—'}${value === null ? '' : unit}`}`;
-  const cls = 'mt-0.5 text-[10px] font-semibold text-sky-600 tabular-nums';
+  const tone = actualGoalTone(value, goal);
+  const cls = `mt-0.5 text-[10px] font-semibold ${tone ?? 'text-sky-600'} tabular-nums`;
   if (!drill || !value) return <div className={cls} title="Live assignment count from the production app">{label}</div>;
   return (
     <>
       <button type="button" onClick={() => setOpen(true)}
-        className={`${cls} block mx-auto underline decoration-dotted underline-offset-2 hover:text-sky-800 cursor-pointer`}
+        className={`${cls} block mx-auto underline decoration-dotted underline-offset-2 ${tone ? 'hover:opacity-80' : 'hover:text-sky-800'} cursor-pointer`}
         title="Live assignment count from the production app — click to see the orders">
         {label}
       </button>
@@ -191,6 +203,19 @@ function ProductionActual({ value, loading, unit, drill }: { value: number | nul
           syncedCount={value} countLabel="actual" onClose={() => setOpen(false)} />
       )}
     </>
+  );
+}
+
+// "+3f ahead" / "2f behind" for an actual against its goal so far, coloured
+// the same way as ProductionActual's goal tone.
+function AheadBehind({ actual, goal, unit }: { actual: number | null; goal: number | null; unit: string }) {
+  if (actual === null || goal === null || (goal <= 0 && actual <= 0)) return null;
+  const diff = Math.round(actual - goal);
+  const tone = actualGoalTone(actual, goal) ?? 'text-slate-500';
+  return (
+    <div className={`text-[10px] font-semibold tabular-nums ${tone}`} title={`${actual}${unit} actual vs ${Math.round(goal * 100) / 100}${unit} planned through today`}>
+      {diff > 0 ? `+${diff}${unit} ahead` : diff < 0 ? `${-diff}${unit} behind` : 'on goal'}
+    </div>
   );
 }
 
@@ -4354,7 +4379,6 @@ export function SchedulePage({
   }
 
   const avgIntake = settings.avgIntake;
-  function setAvgIntake(v: number) { update('avgIntake', v); }
 
   const [showRoster,   setShowRoster]  = useState(false);
   const [weekOffset,   setWeekOffset]  = useState(0);
@@ -5464,20 +5488,7 @@ export function SchedulePage({
       {/* ── DESIGN dept ─────────────────────────────────────────────────────── */}
       {dept === 'design' && (
         <>
-          <DeptKPIBar dept="design" location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} />
-
-          {/* Est. bouquets delivered — fallback intake estimate used when no
-              per-week estimate is set (see Queue & Turnaround); this is the
-              only summary card here that feeds a live calculation, so it
-              stays even with the pure-readout queue/capacity cards removed. */}
-          <div className="bg-white border border-slate-100 rounded-xl p-4 inline-flex items-center gap-3 w-fit">
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Est. bouquets/week delivered</p>
-              <p className="text-xs text-slate-400">fallback when no per-week estimate set</p>
-            </div>
-            <input type="number" value={avgIntake} onChange={e => setAvgIntake(parseInt(e.target.value) || 0)}
-              className="w-20 border border-slate-200 rounded px-2 py-1 text-xl font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-300" />
-          </div>
+          <DesignKpiBars location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} />
 
           {/* Roster editor */}
           <div>
@@ -5537,6 +5548,9 @@ export function SchedulePage({
           {/* ── WEEKLY SCHEDULE TAB ─────────────────────────────────────────── */}
           {activeTab === 'thisweek' && (() => {
             const days = designActualDays;
+            // Days after today have no actuals yet, so they stay uncoloured.
+            const now = new Date();
+            const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
             function getDH(id: string, di: number) {
               const weekIso = isoMonday(designThisWeekOffset);
               return resolveDayHours(designDailyHours, `${weekIso}-${id}`, di, settings.designRoster[id]?.standardWeeklyHours,
@@ -5592,6 +5606,11 @@ export function SchedulePage({
             }, 0);
             const teamDailyCost = (di: number) => designers.reduce((s, d) => s + dDailyCost(d, di), 0);
             const teamWeekFrames = days.reduce((s, _, di) => s + teamDailyFrames(di), 0);
+            // Planned frames for the days that have started — what week-to-date
+            // actuals are judged against. null when the week hasn't started.
+            const weekStarted = days.length > 0 && days[0].iso <= todayIso;
+            const plannedToDate = (perDay: (di: number) => number) =>
+              weekStarted ? days.reduce((s, day, di) => s + (day.iso <= todayIso ? perDay(di) : 0), 0) : null;
             return (
               <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
@@ -5626,14 +5645,11 @@ export function SchedulePage({
                         const isMgr = !!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager);
                         const weekFrames = days.reduce((s, _, dayIdx) => { const h = getDH(d.id, dayIdx); return s + (d.ratio > 0 && h > 0 ? h / d.ratio : 0); }, 0);
                         const weekHrs = days.reduce((s, _, dayIdx) => s + (isMgr ? getMgrTotalDH(d.id, dayIdx) : getDH(d.id, dayIdx)), 0);
-                        const weekCost = days.reduce((s, _, dayIdx) => s + dDailyCost(d, dayIdx), 0);
-                        const weekCPO = weekFrames > 0 && weekCost > 0 ? weekCost / weekFrames : null;
                         return (
                           <tr key={d.id} className={`border-b border-slate-50 ${di % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
                             <td className={`sticky left-0 z-10 ${di % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                               <div className="font-medium text-slate-700">{d.name}</div>
                               <MemberTierBadges name={d.name} location={location} dept="Design" fallbackRole={(d as {role?:string}).role} fallbackIsManager={isMgr} />
-                              <div className="text-slate-400">{d.ratio} h/f</div>
                               {d.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
                               {designActuals.unmatched.has(d.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
                             </td>
@@ -5643,7 +5659,6 @@ export function SchedulePage({
                               const totalH = isMgr ? getMgrTotalDH(d.id, dayIdx) : h;
                               const frames = d.ratio > 0 && h > 0 ? h / d.ratio : 0;
                               const cost = dDailyCost(d, dayIdx);
-                              const cpo = (!isMgr || canSeeManagerCPO(d.name)) && frames > 0 && cost > 0 ? cost / frames : null;
                               return (
                                 <td key={dayIdx} className={`px-2 py-1.5 text-center ${isHolidayDay(dayIdx) ? 'bg-amber-50/50' : dayIdx === 0 ? 'bg-indigo-50/30' : ''}`}>
                                   <input type="number"
@@ -5668,8 +5683,7 @@ export function SchedulePage({
                                   {designInputMode === 'output'
                                     ? (h > 0 && <div className="text-slate-400 mt-0.5">{round2(h)}h</div>)
                                     : (frames > 0 && <div className="text-slate-400 mt-0.5">{round2(frames)}f</div>)}
-                                  <ProductionActual value={designActuals.getCount(d.name, days[dayIdx].iso, 'design')} loading={designActuals.loading} unit="f" drill={{ name: d.name, start: days[dayIdx].iso, end: days[dayIdx].iso, department: 'design' }} />
-                                  {hasRates && cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
+                                  <ProductionActual value={designActuals.getCount(d.name, days[dayIdx].iso, 'design')} loading={designActuals.loading} unit="f" drill={{ name: d.name, start: days[dayIdx].iso, end: days[dayIdx].iso, department: 'design' }} goal={days[dayIdx].iso <= todayIso ? frames : null} />
                                   {isHolidayDay(dayIdx) && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay{hasRates && cost > 0 ? ` ${fmt$(cost)}` : ''}</div>}
                                 </td>
                               );
@@ -5683,7 +5697,11 @@ export function SchedulePage({
                                 unit="f"
                                 drill={{ name: d.name, start: days[0].iso, end: days[days.length - 1].iso, department: 'design' }}
                               />
-                              {hasRates && (!isMgr || canSeeManagerCPO(d.name)) && weekCPO !== null && <div className="text-amber-600 text-[10px]">{fmt$(weekCPO)}</div>}
+                              <AheadBehind
+                                actual={sumActuals(days.map(day => designActuals.getCount(d.name, day.iso, 'design')))}
+                                goal={plannedToDate(dayIdx => { const h = getDH(d.id, dayIdx); return d.ratio > 0 && h > 0 ? h / d.ratio : 0; })}
+                                unit="f"
+                              />
                             </td>
                           </tr>
                         );
@@ -5692,7 +5710,6 @@ export function SchedulePage({
                         <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Planned total</td>
                         {days.map((_, di) => {
                           const f = Math.round(teamDailyFrames(di) * 100) / 100; const cc = teamDailyCost(di);
-                          const cpo = f > 0 && cc > 0 ? cc / f : null;
                           // h/f ratio excludes managers entirely — neither their hours nor
                           // their frame output count toward it — while `f` above stays the
                           // full team frame total.
@@ -5709,7 +5726,6 @@ export function SchedulePage({
                             <td key={di} className={`px-2 py-2 text-center ${isHolidayDay(di) ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/50' : ''}`}>
                               <div className="text-indigo-700">{f}f</div>
                               {designDayRatio !== null && <div className="text-[10px] text-slate-500">{Math.round(designDayRatio * 100) / 100} h/f</div>}
-                              {hasRates && cpo !== null && <div className="text-[10px] text-amber-600">{fmt$(cpo)}</div>}
                               {hasRates && isHolidayDay(di) && cc > 0 && <div className="text-[10px] text-amber-600">{fmt$(cc)} paid</div>}
                             </td>
                           );
@@ -5721,12 +5737,13 @@ export function SchedulePage({
                           <div>Actual total</div>
                           <div className="text-[9px] font-normal text-sky-600">MT production</div>
                         </td>
-                        {days.map(day => (
+                        {days.map((day, di) => (
                           <td key={day.iso} className="px-2 py-2 text-center">
                             <ProductionActual
                               value={sumActuals(designers.map(designer => designActuals.getCount(designer.name, day.iso, 'design')))}
                               loading={designActuals.loading}
                               unit="f"
+                              goal={day.iso <= todayIso ? teamDailyFrames(di) : null}
                             />
                           </td>
                         ))}
@@ -5736,8 +5753,56 @@ export function SchedulePage({
                             loading={designActuals.loading}
                             unit="f"
                           />
+                          <AheadBehind
+                            actual={sumActuals(designers.flatMap(designer => days.map(day => designActuals.getCount(designer.name, day.iso, 'design'))))}
+                            goal={plannedToDate(teamDailyFrames)}
+                            unit="f"
+                          />
                         </td>
                       </tr>
+                      {/* CPO — planned (team labor cost ÷ planned frames, moved here from
+                          Planned total) and actual (÷ actual MT frames) per day; the week cell
+                          averages the days that have one. */}
+                      {hasRates && (() => {
+                        const avg = (vals: (number | null)[]) => {
+                          const v = vals.filter((c): c is number => c !== null);
+                          return v.length > 0 ? v.reduce((sum, c) => sum + c, 0) / v.length : null;
+                        };
+                        const plannedCPOs = days.map((_, di) => {
+                          const f = Math.round(teamDailyFrames(di) * 100) / 100; const cost = teamDailyCost(di);
+                          return f > 0 && cost > 0 ? cost / f : null;
+                        });
+                        const actualCPOs = days.map((day, di) => {
+                          const actual = sumActuals(designers.map(designer => designActuals.getCount(designer.name, day.iso, 'design')));
+                          const cost = teamDailyCost(di);
+                          return actual && actual > 0 && cost > 0 ? cost / actual : null;
+                        });
+                        const avgPlanned = avg(plannedCPOs);
+                        const avgActual  = avg(actualCPOs);
+                        return (
+                          <tr className="border-t border-slate-200 bg-white">
+                            <td className="sticky left-0 bg-white px-4 py-2 text-xs font-semibold text-slate-600">
+                              <div>CPO</div>
+                              <div className="text-[9px] font-normal text-slate-400">planned · actual</div>
+                            </td>
+                            {days.map((day, di) => (
+                              <td key={day.iso} className={`px-2 py-2 text-center ${isHolidayDay(di) ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/30' : ''}`}>
+                                {plannedCPOs[di] !== null
+                                  ? <div className="font-semibold text-amber-700">{fmt$(plannedCPOs[di]!)}</div>
+                                  : <div className="text-slate-300">—</div>}
+                                {actualCPOs[di] !== null && <div className="text-[10px] text-sky-700">actual {fmt$(actualCPOs[di]!)}</div>}
+                              </td>
+                            ))}
+                            <td className="px-3 py-2 text-center whitespace-nowrap">
+                              {avgPlanned !== null
+                                ? <div className="font-semibold text-amber-700">{fmt$(avgPlanned)}</div>
+                                : <div className="text-slate-300">—</div>}
+                              {avgActual !== null && <div className="text-[10px] text-sky-700">actual {fmt$(avgActual)}</div>}
+                              <div className="text-[10px] text-slate-400">day avg</div>
+                            </td>
+                          </tr>
+                        );
+                      })()}
                     </tbody>
                   </table>
                 </div>
@@ -5787,7 +5852,6 @@ export function SchedulePage({
                         <td className={`sticky left-0 z-10 ${di % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                           <div className="font-medium text-slate-700">{d.name}</div>
                           <MemberTierBadges name={d.name} location={location} dept="Design" fallbackRole={(d as {role?:string}).role} fallbackIsManager={!!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager)} />
-                          <div className="text-slate-400">{d.ratio} h/f</div>
                           {d.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
                         </td>
                         {windowWeeks.map(w => {
