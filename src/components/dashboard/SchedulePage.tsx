@@ -5613,8 +5613,6 @@ export function SchedulePage({
                         const isMgr = !!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager);
                         const weekFrames = days.reduce((s, _, dayIdx) => { const h = getDH(d.id, dayIdx); return s + (d.ratio > 0 && h > 0 ? h / d.ratio : 0); }, 0);
                         const weekHrs = days.reduce((s, _, dayIdx) => s + (isMgr ? getMgrTotalDH(d.id, dayIdx) : getDH(d.id, dayIdx)), 0);
-                        const weekCost = days.reduce((s, _, dayIdx) => s + dDailyCost(d, dayIdx), 0);
-                        const weekCPO = weekFrames > 0 && weekCost > 0 ? weekCost / weekFrames : null;
                         return (
                           <tr key={d.id} className={`border-b border-slate-50 ${di % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
                             <td className={`sticky left-0 z-10 ${di % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
@@ -5630,7 +5628,6 @@ export function SchedulePage({
                               const totalH = isMgr ? getMgrTotalDH(d.id, dayIdx) : h;
                               const frames = d.ratio > 0 && h > 0 ? h / d.ratio : 0;
                               const cost = dDailyCost(d, dayIdx);
-                              const cpo = (!isMgr || canSeeManagerCPO(d.name)) && frames > 0 && cost > 0 ? cost / frames : null;
                               return (
                                 <td key={dayIdx} className={`px-2 py-1.5 text-center ${isHolidayDay(dayIdx) ? 'bg-amber-50/50' : dayIdx === 0 ? 'bg-indigo-50/30' : ''}`}>
                                   <input type="number"
@@ -5656,7 +5653,6 @@ export function SchedulePage({
                                     ? (h > 0 && <div className="text-slate-400 mt-0.5">{round2(h)}h</div>)
                                     : (frames > 0 && <div className="text-slate-400 mt-0.5">{round2(frames)}f</div>)}
                                   <ProductionActual value={designActuals.getCount(d.name, days[dayIdx].iso, 'design')} loading={designActuals.loading} unit="f" drill={{ name: d.name, start: days[dayIdx].iso, end: days[dayIdx].iso, department: 'design' }} />
-                                  {hasRates && cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
                                   {isHolidayDay(dayIdx) && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay{hasRates && cost > 0 ? ` ${fmt$(cost)}` : ''}</div>}
                                 </td>
                               );
@@ -5670,7 +5666,6 @@ export function SchedulePage({
                                 unit="f"
                                 drill={{ name: d.name, start: days[0].iso, end: days[days.length - 1].iso, department: 'design' }}
                               />
-                              {hasRates && (!isMgr || canSeeManagerCPO(d.name)) && weekCPO !== null && <div className="text-amber-600 text-[10px]">{fmt$(weekCPO)}</div>}
                             </td>
                           </tr>
                         );
