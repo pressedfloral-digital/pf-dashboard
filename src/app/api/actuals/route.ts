@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
+import { fetchAllRows } from '@/lib/fetchAllRows';
 
 // Admin/manager Clerk user IDs — add yours here
 // You can also use Clerk organizations or roles; this is the simple approach
@@ -55,13 +56,23 @@ export async function GET(req: NextRequest) {
     }
 
     if (type === 'team' || type === 'all') {
-      const { data, error } = await supabase
-        .from('team_member_week_actuals')
-        .select('department, week_of, member_name, actual_hours, actual_orders, synced_orders, hours_source, orders_source')
-        .eq('location', location)
-        .gte('week_of', sinceIso)
-        .order('week_of', { ascending: true });
-      if (error) throw error;
+      // fetchAllRows, not a plain .select() — Utah alone is past Postgrest's
+      // silent 1000-row cap, and with week_of ascending the rows that fell
+      // off were the newest week's, so Historicals showed only part of it.
+      // The id tiebreak keeps pages stable within a week.
+      const data = await fetchAllRows<{
+        department: string; week_of: string; member_name: string; actual_hours: number;
+        actual_orders: number; synced_orders: number | null; hours_source: string; orders_source: string;
+      }>((from, to) =>
+        supabase
+          .from('team_member_week_actuals')
+          .select('department, week_of, member_name, actual_hours, actual_orders, synced_orders, hours_source, orders_source')
+          .eq('location', location)
+          .gte('week_of', sinceIso)
+          .order('week_of', { ascending: true })
+          .order('id', { ascending: true })
+          .range(from, to)
+      );
       // Orders credited to app/technology staff aren't production — hide them
       // from Historicals and every Scheduling view (see nonProductionStaff.ts).
       result.teamActuals = (data ?? []).filter(r => !isNonProductionStaff(r.member_name));
