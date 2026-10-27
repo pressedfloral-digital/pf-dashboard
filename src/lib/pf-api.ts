@@ -47,6 +47,7 @@ async function login(): Promise<string> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
+    signal: AbortSignal.timeout(30000),
     cache: 'no-store',
   });
   if (!res.ok) throw new Error(`PF API login failed → ${res.status}`);
@@ -76,10 +77,11 @@ export async function pfGet<T>(path: string, options?: { fresh?: boolean }): Pro
   return res.json();
 }
 
-export async function pfPost<T>(path: string, body: unknown): Promise<T> {
+export async function pfPost<T>(path: string, body: unknown, options?: { timeoutMs: number; retry: false }): Promise<T> {
   const { url } = getApiConfig();
   const token = await getToken();
-  const res = await fetchWithRetry(`${url}${path}`, {
+  const res = await (options?.retry === false ? fetch : fetchWithRetry)(`${url}${path}`, {
+    ...(options ? { signal: AbortSignal.timeout(options.timeoutMs) } : {}),
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
