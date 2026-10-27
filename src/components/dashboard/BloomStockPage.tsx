@@ -13,11 +13,11 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useScheduleSettings, usePaidHolidays, type ScheduleSettings } from './useScheduleSettings';
 import { isoMonday, getWeekLabel, isoMondayFromDate, getISOWeekNumber } from '@/lib/weekDates';
-import { resolveDayHours, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
+import { resolveDayHours, hoursOffOn, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { ScheduleRulesEditor } from './ScheduleRulesEditor';
-import { TimeOffCalendar, toTimeOffMember, applyDaysOff } from './TimeOffCalendar';
+import { TimeOffCalendar, toTimeOffMember } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { buildActiveMemberIds, InactiveToggle } from './memberActivity';
 import { DEPARTMENT_MANAGERS, STANDARD_WEEKLY_HOURS } from '@/lib/managers';
@@ -75,7 +75,7 @@ function useBloomStock(settings: ScheduleSettings, update: (k: keyof ScheduleSet
 
   const dayHours = useCallback((m: BloomStockMember, weekIso: string, di: number) =>
     resolveDayHours(daily, `${weekIso}-${m.id}`, di, m.standardWeeklyHours,
-      { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules, daysOff: m.daysOff }, holidays), [daily, holidays]);
+      { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules, daysOff: m.daysOff, hoursOff: m.hoursOff }, holidays), [daily, holidays]);
   const weekHours = useCallback((m: BloomStockMember, weekIso: string, fromDay = 0) => {
     let h = 0;
     for (let di = fromDay; di < 7; di++) h += dayHours(m, weekIso, di).hours;
@@ -374,6 +374,7 @@ function ThisWeekTab({ bs, roster, canEdit, holidays }: { bs: BS; roster: BloomS
                         ) : <span className="text-slate-700">{r.hours || '—'}</span>}
                         {r.hours > 0 && m.ratio ? <div className="text-[10px] text-slate-400 mt-0.5">{r1(bs.itemsOf(m, r.hours))} items</div> : null}
                         {r.isDayOff && <div className="text-[9px] font-semibold text-red-500 mt-0.5" title="Marked off on the Time Off calendar — scheduled hours are 0">day off</div>}
+                        {(hoursOffOn(di, { weekIso, hoursOff: m.hoursOff })) > 0 && <div className="text-[9px] font-semibold text-red-400 mt-0.5" title="Hours off on the Days off calendar">{hoursOffOn(di, { weekIso, hoursOff: m.hoursOff })}h off</div>}
                       </td>
                     );
                   })}
@@ -1278,7 +1279,7 @@ function RosterPanel({ bs, canEdit, holidays, visibleRoster, inactiveCount, show
             <TimeOffCalendar
               members={visibleRoster.map(m => toTimeOffMember(m.id, m.name, m))}
               dailyMap={bs.daily} holidays={holidays} canEdit={canEdit}
-              onChange={(id, dates, off) => patch(id, { daysOff: applyDaysOff(bs.roster.find(m => m.id === id)?.daysOff, dates, off) })} />
+              onChange={(id, next) => patch(id, next)} />
           </div>
         </div>
       )}

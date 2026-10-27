@@ -35,6 +35,8 @@ export interface DesignerRoster {
     scheduleRules?: ScheduleRule[];
     // ISO dates marked off on the Time Off calendar — see EmploymentWindow.daysOff.
     daysOff?: string[];
+    // ISO date → hours off that day (partial day off) — see EmploymentWindow.hoursOff.
+    hoursOff?: Record<string, number>;
   };
 }
 
@@ -64,6 +66,8 @@ export interface TeamRoster {
     scheduleRules?: ScheduleRule[];
     // ISO dates marked off on the Time Off calendar — see EmploymentWindow.daysOff.
     daysOff?: string[];
+    // ISO date → hours off that day (partial day off) — see EmploymentWindow.hoursOff.
+    hoursOff?: Record<string, number>;
   };
 }
 

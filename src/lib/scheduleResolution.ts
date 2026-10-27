@@ -26,12 +26,28 @@ export interface EmploymentWindow {
   // employment window, a day off forces production hours to 0 and outranks
   // an explicit override.
   daysOff?:   string[];
+  // ISO date → hours off that day (part of a day off). Subtracted from
+  // whatever the day otherwise resolves to, never below 0.
+  hoursOff?:  Record<string, number>;
 }
 
 // True if dayIdx of the week in `employment` is one of the member's days off.
 export function isDayOff(dayIdx: number, employment?: EmploymentWindow): boolean {
   if (!employment?.daysOff?.length) return false;
   return employment.daysOff.includes(addIsoDays(employment.weekIso, dayIdx));
+}
+
+// Hours off (partial day) for dayIdx of the week in `employment`, or 0.
+export function hoursOffOn(dayIdx: number, employment?: EmploymentWindow): number {
+  if (!employment?.hoursOff) return 0;
+  return employment.hoursOff[addIsoDays(employment.weekIso, dayIdx)] ?? 0;
+}
+
+// Applies a member's time off to an hours value for one day: a whole day off
+// zeroes it, partial hours off reduce it (never below 0).
+export function applyTimeOff(hours: number, dayIdx: number, employment?: EmploymentWindow): number {
+  if (isDayOff(dayIdx, employment)) return 0;
+  return Math.max(0, hours - hoursOffOn(dayIdx, employment));
 }
 
 // A manager-defined, date-bounded replacement for a member's standard
@@ -125,7 +141,8 @@ function isPaidHolidayDate(weekIso: string | undefined, dayIdx: number, holidays
 }
 
 // A day off (employment.daysOff) likewise forces production hours to 0 over
-// any override, template or rule. Pay follows: an unpaid 0 — except on a
+// any override, template or rule; partial hours off (employment.hoursOff)
+// are subtracted from whatever the day resolves to. Pay follows: an unpaid 0 — except on a
 // paid holiday, which still pays the member's standard day.
 //
 // employment, when passed, forces hours to 0 for any day outside the
@@ -158,8 +175,14 @@ export function resolveDayHours(
   if (isDayOff(dayIdx, employment)) {
     return { hours: 0, isOverride: false, payHours: isHoliday ? standard : 0, isHoliday, isDayOff: true };
   }
+  const partialOff = hoursOffOn(dayIdx, employment);
   if (override != null) {
-    return { hours: override, isOverride: true, payHours: isHoliday ? standard + override : override, isHoliday, isDayOff: false };
+    const worked = Math.max(0, override - partialOff);
+    return { hours: worked, isOverride: true, payHours: isHoliday ? standard + worked : worked, isHoliday, isDayOff: false };
+  }
+  if (partialOff > 0 && !isHoliday) {
+    const worked = Math.max(0, standard - partialOff);
+    return { hours: worked, isOverride: false, payHours: worked, isHoliday: false, isDayOff: false };
   }
   if (isHoliday) return { hours: 0, isOverride: false, payHours: standard, isHoliday: true, isDayOff: false };
   return { hours: standard, isOverride: false, payHours: standard, isHoliday: false, isDayOff: false };
@@ -219,7 +242,8 @@ export function resolveWeekHoursBoth(params: ResolveWeekHoursParams): { hours: n
   const daysIn = Array.from({ length: 7 }, (_, d) => isWithinEmployment(d, employment));
   const hasHoliday = !!weekIso && daysIn.some((inWindow, d) => inWindow && isPaidHolidayDate(weekIso, d, holidays));
   const off = Array.from({ length: 7 }, (_, d) => isDayOff(d, employment));
-  if (daysIn.every(Boolean) && !hasHoliday && !off.some(Boolean)) return { hours: weekTotal, payHours: weekTotal };
+  const partial = Array.from({ length: 7 }, (_, d) => hoursOffOn(d, employment));
+  if (daysIn.every(Boolean) && !hasHoliday && !off.some(Boolean) && !partial.some(h => h > 0)) return { hours: weekTotal, payHours: weekTotal };
   if (daysIn.every(v => !v)) return { hours: 0, payHours: 0 };
 
   const perDay = standardWeeklyHours ?? distributeHours(weekTotal);
@@ -229,8 +253,10 @@ export function resolveWeekHoursBoth(params: ResolveWeekHoursParams): { hours: n
     const h = perDay[d] ?? 0;
     const holiday = isPaidHolidayDate(weekIso, d, holidays);
     if (off[d]) { payHours += holiday ? h : 0; continue; }
-    payHours += h;
-    hours += holiday ? 0 : h;
+    if (holiday) { payHours += h; continue; }
+    const worked = Math.max(0, h - partial[d]);
+    payHours += worked;
+    hours += worked;
   }
   return { hours, payHours };
 }

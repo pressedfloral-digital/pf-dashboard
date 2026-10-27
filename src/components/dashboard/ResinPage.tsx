@@ -4,12 +4,12 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
 import { getMondayDate, isoMonday, getWeekLabel } from '@/lib/weekDates';
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
-import { resolveDayHours, resolveWeekHours, isDayOff, resolveWeekPayHours, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
+import { resolveDayHours, resolveWeekHours, isDayOff, applyTimeOff, hoursOffOn, resolveWeekPayHours, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
 import { HistoricalsSection } from './HistoricalsSection';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { ScheduleRulesEditor } from './ScheduleRulesEditor';
-import { TimeOffCalendar, toTimeOffMember, applyDaysOff } from './TimeOffCalendar';
+import { TimeOffCalendar, toTimeOffMember } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 
@@ -38,6 +38,8 @@ export interface ResinMember {
   scheduleRules?: ScheduleRule[];
   // ISO dates marked off on the Time Off calendar — see EmploymentWindow.daysOff.
   daysOff?: string[];
+  // ISO date → hours off that day (partial day off) — see EmploymentWindow.hoursOff.
+  hoursOff?: Record<string, number>;
 }
 
 interface CohortRow {
@@ -181,7 +183,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
       dailyMap: resinDailyHours, weekKey: `${weekIso}-${m.id}`,
       legacyWeeklyValue: hours[weekIso]?.[m.id],
       standardWeeklyHours: m.standardWeeklyHours,
-      employment: { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules, daysOff: m.daysOff },
+      employment: { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules, daysOff: m.daysOff, hoursOff: m.hoursOff },
       holidays: paidHolidays,
     };
   }
@@ -346,7 +348,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules, daysOff: m?.daysOff }, paidHolidays).hours;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules, daysOff: m?.daysOff, hoursOff: m?.hoursOff }, paidHolidays).hours;
   }
 
   // Guaranteed-pay basis for the day — see resolveDayHours' payHours.
@@ -354,25 +356,25 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules, daysOff: m?.daysOff }, paidHolidays).payHours;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules, daysOff: m?.daysOff, hoursOff: m?.hoursOff }, paidHolidays).payHours;
   }
 
   function isDHOverride(memberId: string, weekIdx: number, di: number): boolean {
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules, daysOff: m?.daysOff }, paidHolidays).isOverride;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules, daysOff: m?.daysOff, hoursOff: m?.hoursOff }, paidHolidays).isOverride;
   }
 
   function isDHDayOff(memberId: string, weekIdx: number, di: number): boolean {
     const m = roster.find(m => m.id === memberId);
-    return isDayOff(di, { weekIso: isoMonday(weekIdx), daysOff: m?.daysOff });
+    return isDayOff(di, { weekIso: isoMonday(weekIdx), daysOff: m?.daysOff, hoursOff: m?.hoursOff });
   }
   function isDHHoliday(memberId: string, weekIdx: number, di: number): boolean {
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules, daysOff: m?.daysOff }, paidHolidays).isHoliday;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules, daysOff: m?.daysOff, hoursOff: m?.hoursOff }, paidHolidays).isHoliday;
   }
 
   // Member-agnostic holiday check for a whole day column (header, Day total
@@ -398,7 +400,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     const override = mgrTotalDailyHours[`${isoMonday(weekIdx)}-${m.id}`]?.[di];
     if (override != null) return override;
     if (m.standardTotalWeeklyHours) {
-      return isDayOff(di, { weekIso: isoMonday(weekIdx), daysOff: m.daysOff }) ? 0 : m.standardTotalWeeklyHours[di] ?? 0;
+      return applyTimeOff(m.standardTotalWeeklyHours[di] ?? 0, di, { weekIso: isoMonday(weekIdx), daysOff: m.daysOff, hoursOff: m.hoursOff });
     }
     return getDHPay(m.id, weekIdx, di);
   }
@@ -745,7 +747,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
               <TimeOffCalendar
                 members={roster.map(m => toTimeOffMember(m.id, m.name, m))}
                 dailyMap={resinDailyHours} holidays={paidHolidays} canEdit
-                onChange={(id, dates, off) => setRoster(roster.map(m => m.id === id ? { ...m, daysOff: applyDaysOff(m.daysOff, dates, off) } : m))} />
+                onChange={(id, next) => setRoster(roster.map(m => m.id === id ? { ...m, ...next } : m))} />
             </div>
           </div>
         )}
@@ -858,6 +860,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                             {hasRates && cpo !== null && <div className="text-[10px] text-purple-500">${cpo.toFixed(2)}</div>}
                             {isHoliday && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay</div>}
                             {isDHDayOff(m.id, thisWeekOffset, di) && <div className="text-[9px] font-semibold text-red-500 mt-0.5" title="Marked off on the Time Off calendar — scheduled hours are 0">day off</div>}
+                            {(hoursOffOn(di, { weekIso: isoMonday(thisWeekOffset), hoursOff: m.hoursOff })) > 0 && <div className="text-[9px] font-semibold text-red-400 mt-0.5" title="Hours off on the Days off calendar">{hoursOffOn(di, { weekIso: isoMonday(thisWeekOffset), hoursOff: m.hoursOff })}h off</div>}
                           </td>
                         );
                       })}

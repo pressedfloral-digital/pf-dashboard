@@ -28,8 +28,8 @@ export function normalizeRole(role: unknown): RatioTier {
 //   ffRoster:     { [id]: { ratio, rate, name, payType?, annualSalary? } }
 //   designHours / presHours / ffHours: { [memberId]: { [isoMonday]: hours } }
 
-export interface DesignRosterEntry  { ratio: number; payType?: string; hourlyRate?: number; annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[]; standardWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[] }
-export interface PresRosterEntry    { ratio: number; rate?: number;    payType?: string;    annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[]; standardWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[] }
+export interface DesignRosterEntry  { ratio: number; payType?: string; hourlyRate?: number; annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[]; standardWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }
+export interface PresRosterEntry    { ratio: number; rate?: number;    payType?: string;    annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[]; standardWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }
 export interface HoursMap           { [memberId: string]: Record<string, number> }
 export interface DailyHoursMap      { [weekOfMemberKey: string]: number[] }  // "${isoMonday}-${memberId}" -> [mon..fri]
 
@@ -59,7 +59,7 @@ function resolveMemberWeekHours(
     weekKey:              `${weekOf}-${memberId}`,
     legacyWeeklyValue:    hours[memberId]?.[weekOf],
     standardWeeklyHours:  member.standardWeeklyHours,
-    employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate, rules: member.scheduleRules, daysOff: member.daysOff },
+    employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate, rules: member.scheduleRules, daysOff: member.daysOff, hoursOff: member.hoursOff },
     holidays,
   });
 }
@@ -83,7 +83,7 @@ function resolveMemberWeekPayHours(
     weekKey:              `${weekOf}-${memberId}`,
     legacyWeeklyValue:    hours[memberId]?.[weekOf],
     standardWeeklyHours:  member.standardWeeklyHours,
-    employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate, rules: member.scheduleRules, daysOff: member.daysOff },
+    employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate, rules: member.scheduleRules, daysOff: member.daysOff, hoursOff: member.hoursOff },
     holidays,
   });
 }

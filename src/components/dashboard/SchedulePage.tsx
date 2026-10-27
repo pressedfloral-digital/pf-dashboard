@@ -17,11 +17,11 @@ import {
 import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
 import { getMondayDate, isoMonday, isoMondayFromDate, getWeekLabel, getMonthKey, getISOWeekNumber } from '@/lib/weekDates';
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
-import { distributeHours, resolveDayHours, resolveWeekHours, resolveWeekHoursBoth, isWithinEmployment, isDayOff, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
+import { distributeHours, resolveDayHours, resolveWeekHours, resolveWeekHoursBoth, isWithinEmployment, applyTimeOff, hoursOffOn, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
 import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './BloomUpdateModal';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { ScheduleRulesEditor } from './ScheduleRulesEditor';
-import { TimeOffCalendar, toTimeOffMember, applyDaysOff } from './TimeOffCalendar';
+import { TimeOffCalendar, toTimeOffMember, type TimeOffPatch } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { useVisibleManagerCPO } from '@/hooks/useVisibleManagerCPO';
 import {
@@ -401,7 +401,7 @@ function RosterEditor({ designers, onChange, onAdd, onRemove, onReorder, locatio
   onResetToTemplate?: (id: string) => void;
   standardTotalWeeklyHoursById?: Record<string, number[] | undefined>;
   onTotalTemplateChange?: (id: string, dayIdx: number, value: number) => void;
-  employmentById: Record<string, { startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[] } | undefined>;
+  employmentById: Record<string, { startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> } | undefined>;
   onEmploymentChange: (id: string, field: 'startDate' | 'endDate', value: string) => void;
   onRulesChange: (id: string, rules: ScheduleRule[]) => void;
 }) {
@@ -1481,7 +1481,7 @@ function useDraggableOrder<T extends { id: string }>(
 // ─── PresRosterEditor ─────────────────────────────────────────────────────────
 function PresRosterEditor({ team, presRoster, onUpdateRoster, onRemove, onReorder, onRefreshRatio, deptLocation, employeeRates = {}, onTemplateChange, onResetToTemplate, onTotalTemplateChange, onRulesChange }: {
   team: (Omit<PresTeamMember, 'hours'> & { hours: unknown })[];
-  presRoster: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; role?: string; _removed?: boolean; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[] }>;
+  presRoster: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; role?: string; _removed?: boolean; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }>;
   onUpdateRoster: (id: string, field: 'ratio' | 'rate' | 'name' | 'payType' | 'annualSalary' | 'role' | 'excludeFromCost' | 'startDate' | 'endDate', val: string | number | boolean) => void;
   onRemove: (id: string) => void;
   onReorder: (newOrder: string[]) => void;
@@ -1627,7 +1627,7 @@ function PresRosterEditor({ team, presRoster, onUpdateRoster, onRemove, onReorde
 // ─── FfRosterEditor ────────────────────────────────────────────────────────────
 function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove, onReorder, onRefreshRatio, deptLocation, onTemplateChange, onResetToTemplate, onTotalTemplateChange, onRulesChange }: {
   team: (Omit<FfTeamMember, 'hours'> & { hours: unknown })[];
-  ffRoster: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[] }>;
+  ffRoster: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }>;
   employeeRates?:       Record<string, { hourlyRate: number; annualSalary: number; payType: 'hourly'|'salary' }>;
   onUpdateName: (id: string, name: string) => void;
   onUpdateRoster: (mi: number, field: 'ratio' | 'rate' | 'payType' | 'annualSalary' | 'role' | 'startDate' | 'endDate', val: number | string) => void;
@@ -1768,13 +1768,13 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   presCheckHours:        DailyHoursMap;
   onPresDailyHoursChange:(h: DailyHoursMap) => void;
   onPresCheckHoursChange:(h: DailyHoursMap) => void;
-  presRoster:            Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[] }>;
+  presRoster:            Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }>;
   employeeRates?:         Record<string, { hourlyRate: number; annualSalary: number; payType: 'hourly'|'salary' }>;
   presSettings:          { dateFrom?: string; dateTo?: string; weekOverrides?: Record<string, { ut: number; ga: number }>; dayPcts?: number[]; dayOverrides?: Record<string, { ut: number; ga: number }>; dailyReceived?: Record<string, number>; checkSettings?: { c1Min?: number; c1Max?: number; c2Min?: number; c2Max?: number; c3Min?: number; c3Max?: number; c1Mins?: number; c2Mins?: number; c3Mins?: number } };
   mgrTotalHours:         Record<string, Record<string, number>>;
   mgrTotalDailyHours:    DailyHoursMap;
   onPresHoursChange:     (h: Record<string, Record<string, number>>) => void;
-  onPresRosterChange:    (r: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[] }>) => void;
+  onPresRosterChange:    (r: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }>) => void;
   onPresSettingsChange:  (s: { dateFrom?: string; dateTo?: string; weekOverrides?: Record<string, { ut: number; ga: number }>; dayPcts?: number[]; dayOverrides?: Record<string, { ut: number; ga: number }>; dailyReceived?: Record<string, number>; checkSettings?: { c1Min?: number; c1Max?: number; c2Min?: number; c2Max?: number; c3Min?: number; c3Max?: number; c1Mins?: number; c2Mins?: number; c3Mins?: number } }) => void;
   onMgrTotalHoursChange: (h: Record<string, Record<string, number>>) => void;
   onMgrTotalDailyHoursChange: (h: DailyHoursMap) => void;
@@ -2017,7 +2017,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
         legacyWeeklyValue: presHours[m.id]?.[weekIso],
         standardWeeklyHours: presRoster[m.id]?.standardWeeklyHours,
         hardcodedDefault: m.defaultHrs,
-        employment: { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff }, holidays: paidHolidays,
+        employment: { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }, holidays: paidHolidays,
       });
       totalOrders += m.ratio > 0 ? prodH / m.ratio : 0;
       totalHours  += prodH;
@@ -2070,7 +2070,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   function resolvePresMgrTotalWeekHours(weekIdx: number, memberId: string, payHrs: number): number {
     const weekIso = isoMonday(weekIdx);
     const weekKey = `${weekIso}-${memberId}`;
-    const employment = { weekIso, startDate: presRoster[memberId]?.startDate, endDate: presRoster[memberId]?.endDate, rules: presRoster[memberId]?.scheduleRules, daysOff: presRoster[memberId]?.daysOff };
+    const employment = { weekIso, startDate: presRoster[memberId]?.startDate, endDate: presRoster[memberId]?.endDate, rules: presRoster[memberId]?.scheduleRules, daysOff: presRoster[memberId]?.daysOff, hoursOff: presRoster[memberId]?.hoursOff };
     const totalTemplate = presRoster[memberId]?.standardTotalWeeklyHours;
     const dailyOverrides = mgrTotalDailyHours[weekKey];
     if (dailyOverrides !== undefined) {
@@ -2078,7 +2078,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
       for (let day = 0; day < 7; day++) {
         const override = dailyOverrides[day];
         sum += override != null ? override
-          : totalTemplate ? (isDayOff(day, employment) ? 0 : totalTemplate[day] ?? 0)
+          : totalTemplate ? applyTimeOff(totalTemplate[day] ?? 0, day, employment)
           : resolveDayHours(presDailyHours, `${weekIso}-${memberId}`, day, presRoster[memberId]?.standardWeeklyHours, employment, paidHolidays).payHours;
       }
       return sum;
@@ -2177,7 +2177,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
     const weekIso = isoMonday(presThisWeekOffset);
     return team.reduce((s, m) => s + (m.ratio > 0
       ? resolveDayHours(presDailyHours, `${weekIso}-${m.id}`, di, presRoster[m.id]?.standardWeeklyHours,
-          { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff }, paidHolidays).hours / m.ratio
+          { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }, paidHolidays).hours / m.ratio
       : 0), 0);
   });
   // Total check hours scheduled per day — no standard template for checks
@@ -2194,7 +2194,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
       legacyWeeklyValue: m.hours[weekIso],
       standardWeeklyHours: presRoster[m.id]?.standardWeeklyHours,
       hardcodedDefault: m.defaultHrs,
-      employment: { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff }, holidays: paidHolidays,
+      employment: { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }, holidays: paidHolidays,
     }) / m.ratio : 0), 0);
   });
 
@@ -2257,10 +2257,10 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
               <TimeOffCalendar
                 members={team.map(m => toTimeOffMember(m.id, m.name, presRoster[m.id]))}
                 dailyMap={presDailyHours} holidays={paidHolidays} canEdit={userRole !== 'viewer'}
-                onChange={(id, dates, off) => {
+                onChange={(id, next) => {
                   const m = team.find(x => x.id === id);
                   const existing = presRoster[id] ?? { ratio: m?.ratio ?? 1, rate: m?.rate ?? 0, name: m?.name ?? '', payType: 'hourly' as const, annualSalary: 0 };
-                  onPresRosterChange({ ...presRoster, [id]: { ...existing, daysOff: applyDaysOff(existing.daysOff, dates, off) } });
+                  onPresRosterChange({ ...presRoster, [id]: { ...existing, ...next } });
                 }} />
             </div>
           </div>
@@ -2371,7 +2371,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           const weekIso = isoMonday(presThisWeekOffset);
                           const dailyKey = `${weekIso}-${m.id}`;
                           const { hours: prodH, isOverride, payHours: payH, isHoliday, isDayOff: dayOff } = resolveDayHours(presDailyHours, dailyKey, di, presRoster[m.id]?.standardWeeklyHours,
-                            { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff }, paidHolidays);
+                            { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }, paidHolidays);
                           const checkH = presCheckHours[dailyKey]?.[di] ?? 0;
                           // Paid hours: on a holiday payH keeps the standard day even
                           // though production (prodH) is 0.
@@ -2426,6 +2426,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                               {cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
                               {isHoliday && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay{hasRates && cost > 0 ? ` ${fmt$(cost)}` : ''}</div>}
                               {dayOff && <div className="text-[9px] font-semibold text-red-500 mt-0.5" title="Marked off on the Time Off calendar — scheduled hours are 0">day off</div>}
+                              {(hoursOffOn(di, { weekIso, hoursOff: presRoster[m.id]?.hoursOff })) > 0 && <div className="text-[9px] font-semibold text-red-400 mt-0.5" title="Hours off on the Days off calendar">{hoursOffOn(di, { weekIso, hoursOff: presRoster[m.id]?.hoursOff })}h off</div>}
                             </td>
                           );
                         })}
@@ -2441,7 +2442,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           const weekIso = isoMonday(presThisWeekOffset);
                           const dailyKey = `${weekIso}-${m.id}`;
                           const payH = resolveDayHours(presDailyHours, dailyKey, di, presRoster[m.id]?.standardWeeklyHours,
-                            { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff }, paidHolidays).payHours;
+                            { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }, paidHolidays).payHours;
                           const chkH  = presCheckHours[dailyKey]?.[di] ?? 0;
                           const capTotalTemplate = presRoster[m.id]?.standardTotalWeeklyHours;
                           const totalH = m.isManager
@@ -2458,7 +2459,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           if (m.isManager) return;
                           const weekIso = isoMonday(presThisWeekOffset);
                           const h = resolveDayHours(presDailyHours, `${weekIso}-${m.id}`, di, presRoster[m.id]?.standardWeeklyHours,
-                            { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff }, paidHolidays).hours;
+                            { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }, paidHolidays).hours;
                           dayRatioHours += h;
                           dayRatioCap += m.ratio > 0 ? h / m.ratio : 0;
                         });
@@ -2629,7 +2630,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                               legacyWeeklyValue: m.hours[weekIso],
                               standardWeeklyHours: presRoster[m.id]?.standardWeeklyHours,
                               hardcodedDefault: m.defaultHrs,
-                              employment: { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff }, holidays: paidHolidays,
+                              employment: { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }, holidays: paidHolidays,
                             });
                             const totalH = m.isManager ? resolvePresMgrTotalWeekHours(w, m.id, payH) : payH;
                             const orders = m.ratio > 0 ? prodH / m.ratio : 0;
@@ -2663,7 +2664,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                               legacyWeeklyValue: m.hours[weekIso],
                               standardWeeklyHours: presRoster[m.id]?.standardWeeklyHours,
                               hardcodedDefault: m.defaultHrs,
-                              employment: { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff }, holidays: paidHolidays,
+                              employment: { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }, holidays: paidHolidays,
                             });
                             const totalH = m.isManager ? resolvePresMgrTotalWeekHours(w, m.id, payH) : payH;
                             return s + (m.payType === 'salary' ? m.annualSalary / 52 : totalH * m.rate);
@@ -2883,11 +2884,11 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   teamActuals:     { department: string; week_of: string; member_name: string; actual_hours: number; actual_orders: number }[];
   onActualsSaved:  () => void;
   ffHours:              Record<string, Record<string, number>>;
-  ffRoster:             Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[] }>;
+  ffRoster:             Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }>;
   mgrTotalHours:        Record<string, Record<string, number>>;
   mgrTotalDailyHours:   DailyHoursMap;
   onFfHoursChange:      (h: Record<string, Record<string, number>>) => void;
-  onFfRosterChange:     (r: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[] }>) => void;
+  onFfRosterChange:     (r: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }>) => void;
   onMgrTotalHoursChange:(h: Record<string, Record<string, number>>) => void;
   onMgrTotalDailyHoursChange: (h: DailyHoursMap) => void;
   employeeRates?:        Record<string, { hourlyRate: number; annualSalary: number; payType: 'hourly'|'salary' }>;
@@ -3024,7 +3025,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   function resolveFfMgrTotalWeekHours(weekIdx: number, memberId: string, payHrs: number): number {
     const weekIso = isoMonday(weekIdx);
     const weekKey = `${weekIso}-${memberId}`;
-    const employment = { weekIso, startDate: ffRoster[memberId]?.startDate, endDate: ffRoster[memberId]?.endDate, rules: ffRoster[memberId]?.scheduleRules, daysOff: ffRoster[memberId]?.daysOff };
+    const employment = { weekIso, startDate: ffRoster[memberId]?.startDate, endDate: ffRoster[memberId]?.endDate, rules: ffRoster[memberId]?.scheduleRules, daysOff: ffRoster[memberId]?.daysOff, hoursOff: ffRoster[memberId]?.hoursOff };
     const totalTemplate = ffRoster[memberId]?.standardTotalWeeklyHours;
     const dailyOverrides = mgrTotalDailyHours[weekKey];
     if (dailyOverrides !== undefined) {
@@ -3032,7 +3033,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
       for (let day = 0; day < 7; day++) {
         const override = dailyOverrides[day];
         sum += override != null ? override
-          : totalTemplate ? (isDayOff(day, employment) ? 0 : totalTemplate[day] ?? 0)
+          : totalTemplate ? applyTimeOff(totalTemplate[day] ?? 0, day, employment)
           : resolveDayHours(ffDailyHours, `${weekIso}-${memberId}`, day, ffRoster[memberId]?.standardWeeklyHours, employment, paidHolidays).payHours;
       }
       return sum;
@@ -3159,10 +3160,10 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
               <TimeOffCalendar
                 members={team.map(m => toTimeOffMember(m.id, m.name, ffRoster[m.id]))}
                 dailyMap={ffDailyHours} holidays={paidHolidays} canEdit={userRole !== 'viewer'}
-                onChange={(id, dates, off) => {
+                onChange={(id, next) => {
                   const m = team.find(x => x.id === id);
                   const existing = ffRoster[id] ?? { ratio: m?.ratio ?? 1, rate: m?.rate ?? 0, name: m?.name ?? '', payType: 'hourly' as const, annualSalary: 0 };
-                  onFfRosterChange({ ...ffRoster, [id]: { ...existing, daysOff: applyDaysOff(existing.daysOff, dates, off) } });
+                  onFfRosterChange({ ...ffRoster, [id]: { ...existing, ...next } });
                 }} />
             </div>
           </div>
@@ -3183,20 +3184,20 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
         function getFFH(id: string, di: number) {
           const weekIso = isoMonday(ffThisWeekOffset);
           return resolveDayHours(ffDailyHours, `${weekIso}-${id}`, di, ffRoster[id]?.standardWeeklyHours,
-            { weekIso, startDate: ffRoster[id]?.startDate, endDate: ffRoster[id]?.endDate, rules: ffRoster[id]?.scheduleRules, daysOff: ffRoster[id]?.daysOff }, paidHolidays).hours;
+            { weekIso, startDate: ffRoster[id]?.startDate, endDate: ffRoster[id]?.endDate, rules: ffRoster[id]?.scheduleRules, daysOff: ffRoster[id]?.daysOff, hoursOff: ffRoster[id]?.hoursOff }, paidHolidays).hours;
         }
         // Guaranteed-pay hours — same as getFFH except on a paid holiday,
         // where production is 0 but the standard day is still paid.
         function getPayFFH(id: string, di: number) {
           const weekIso = isoMonday(ffThisWeekOffset);
           return resolveDayHours(ffDailyHours, `${weekIso}-${id}`, di, ffRoster[id]?.standardWeeklyHours,
-            { weekIso, startDate: ffRoster[id]?.startDate, endDate: ffRoster[id]?.endDate, rules: ffRoster[id]?.scheduleRules, daysOff: ffRoster[id]?.daysOff }, paidHolidays).payHours;
+            { weekIso, startDate: ffRoster[id]?.startDate, endDate: ffRoster[id]?.endDate, rules: ffRoster[id]?.scheduleRules, daysOff: ffRoster[id]?.daysOff, hoursOff: ffRoster[id]?.hoursOff }, paidHolidays).payHours;
         }
         const isHolidayDay = (di: number) => paidHolidays.includes(days[di]?.iso ?? '');
         function isFFHOverride(id: string, di: number) {
           const weekIso = isoMonday(ffThisWeekOffset);
           return resolveDayHours(ffDailyHours, `${weekIso}-${id}`, di, ffRoster[id]?.standardWeeklyHours,
-            { weekIso, startDate: ffRoster[id]?.startDate, endDate: ffRoster[id]?.endDate, rules: ffRoster[id]?.scheduleRules, daysOff: ffRoster[id]?.daysOff }, paidHolidays).isOverride;
+            { weekIso, startDate: ffRoster[id]?.startDate, endDate: ffRoster[id]?.endDate, rules: ffRoster[id]?.scheduleRules, daysOff: ffRoster[id]?.daysOff, hoursOff: ffRoster[id]?.hoursOff }, paidHolidays).isOverride;
         }
         function setFFH(id: string, di: number, val: number) {
           const weekIso = isoMonday(ffThisWeekOffset);
@@ -3213,8 +3214,8 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
           if (override != null) return override;
           const totalTemplate = ffRoster[id]?.standardTotalWeeklyHours;
           if (totalTemplate) {
-            const employment = { weekIso, startDate: ffRoster[id]?.startDate, endDate: ffRoster[id]?.endDate, rules: ffRoster[id]?.scheduleRules, daysOff: ffRoster[id]?.daysOff };
-            return isWithinEmployment(di, employment) && !isDayOff(di, employment) ? (totalTemplate[di] ?? 0) : 0;
+            const employment = { weekIso, startDate: ffRoster[id]?.startDate, endDate: ffRoster[id]?.endDate, rules: ffRoster[id]?.scheduleRules, daysOff: ffRoster[id]?.daysOff, hoursOff: ffRoster[id]?.hoursOff };
+            return isWithinEmployment(di, employment) ? applyTimeOff(totalTemplate[di] ?? 0, di, employment) : 0;
           }
           return getPayFFH(id, di);
         }
@@ -3313,6 +3314,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                               {ffHasRates && cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
                               {isHolidayDay(dayIdx) && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay{ffHasRates && cost > 0 ? ` ${fmt$(cost)}` : ''}</div>}
                               {ffRoster[m.id]?.daysOff?.includes(days[dayIdx]?.iso ?? '') && <div className="text-[9px] font-semibold text-red-500 mt-0.5" title="Marked off on the Time Off calendar — scheduled hours are 0">day off</div>}
+                              {(ffRoster[m.id]?.hoursOff?.[days[dayIdx]?.iso ?? ''] ?? 0) > 0 && <div className="text-[9px] font-semibold text-red-400 mt-0.5" title="Hours off on the Days off calendar">{ffRoster[m.id]?.hoursOff?.[days[dayIdx]?.iso ?? ''] ?? 0}h off</div>}
                             </td>
                           );
                         })}
@@ -3428,7 +3430,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                           legacyWeeklyValue: ffHours[m.id]?.[weekIso],
                           standardWeeklyHours: ffRoster[m.id]?.standardWeeklyHours,
                           hardcodedDefault: m.defaultHrs,
-                          employment: { weekIso, startDate: ffRoster[m.id]?.startDate, endDate: ffRoster[m.id]?.endDate, rules: ffRoster[m.id]?.scheduleRules, daysOff: ffRoster[m.id]?.daysOff }, holidays: paidHolidays,
+                          employment: { weekIso, startDate: ffRoster[m.id]?.startDate, endDate: ffRoster[m.id]?.endDate, rules: ffRoster[m.id]?.scheduleRules, daysOff: ffRoster[m.id]?.daysOff, hoursOff: ffRoster[m.id]?.hoursOff }, holidays: paidHolidays,
                         });
                         const totalH = m.isManager ? resolveFfMgrTotalWeekHours(w, m.id, payH) : payH;
                         const o = m.ratio > 0 ? prodH / m.ratio : 0;
@@ -3460,7 +3462,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         legacyWeeklyValue: ffHours[m.id]?.[weekIso],
                         standardWeeklyHours: ffRoster[m.id]?.standardWeeklyHours,
                         hardcodedDefault: m.defaultHrs,
-                        employment: { weekIso, startDate: ffRoster[m.id]?.startDate, endDate: ffRoster[m.id]?.endDate, rules: ffRoster[m.id]?.scheduleRules, daysOff: ffRoster[m.id]?.daysOff }, holidays: paidHolidays,
+                        employment: { weekIso, startDate: ffRoster[m.id]?.startDate, endDate: ffRoster[m.id]?.endDate, rules: ffRoster[m.id]?.scheduleRules, daysOff: ffRoster[m.id]?.daysOff, hoursOff: ffRoster[m.id]?.hoursOff }, holidays: paidHolidays,
                       });
                       const c = team.reduce((s, m) => s + (m.ratio > 0 ? weekHours(m).hours / m.ratio : 0), 0);
                       const cost = team.reduce((s, m) => {
@@ -3818,8 +3820,8 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
   ffHours:              Record<string, Record<string, number>>;
   resinHours:           Record<string, Record<string, number>>;
   designRoster:         Record<string, { ratio: number; name: string }>;
-  presRoster:           Record<string, { ratio: number; name: string; standardWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[] }>;
-  ffRoster:             Record<string, { ratio: number; name: string; standardWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[] }>;
+  presRoster:           Record<string, { ratio: number; name: string; standardWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }>;
+  ffRoster:             Record<string, { ratio: number; name: string; standardWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }>;
   ffDailyHours:         DailyHoursMap;
   presDailyHours:       DailyHoursMap;
   resinRoster:          ResinMember[];
@@ -3847,14 +3849,14 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
       dailyMap: presDailyHours, weekKey: `${weekIso}-${person.id}`,
       legacyWeeklyValue: presHours[person.id]?.[weekIso],
       standardWeeklyHours: pMember?.standardWeeklyHours,
-      employment: { weekIso, startDate: pMember?.startDate, endDate: pMember?.endDate, rules: pMember?.scheduleRules, daysOff: pMember?.daysOff }, holidays: paidHolidays,
+      employment: { weekIso, startDate: pMember?.startDate, endDate: pMember?.endDate, rules: pMember?.scheduleRules, daysOff: pMember?.daysOff, hoursOff: pMember?.hoursOff }, holidays: paidHolidays,
     });
     const fMember = ffRoster[person.id];
     const fHrs = resolveWeekHours({
       dailyMap: ffDailyHours, weekKey: `${weekIso}-${person.id}`,
       legacyWeeklyValue: ffHours[person.id]?.[weekIso],
       standardWeeklyHours: fMember?.standardWeeklyHours,
-      employment: { weekIso, startDate: fMember?.startDate, endDate: fMember?.endDate, rules: fMember?.scheduleRules, daysOff: fMember?.daysOff }, holidays: paidHolidays,
+      employment: { weekIso, startDate: fMember?.startDate, endDate: fMember?.endDate, rules: fMember?.scheduleRules, daysOff: fMember?.daysOff, hoursOff: fMember?.hoursOff }, holidays: paidHolidays,
     });
     // Resin: This Week overrides -> standard template -> legacy weekly value
     // (stored week-of-first, opposite nesting from design/ff)
@@ -3863,7 +3865,7 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
       dailyMap: resinDailyHours, weekKey: `${weekIso}-${person.id}`,
       legacyWeeklyValue: resinHours[weekIso]?.[person.id],
       standardWeeklyHours: rMember?.standardWeeklyHours,
-      employment: { weekIso, startDate: rMember?.startDate, endDate: rMember?.endDate, rules: rMember?.scheduleRules, daysOff: rMember?.daysOff }, holidays: paidHolidays,
+      employment: { weekIso, startDate: rMember?.startDate, endDate: rMember?.endDate, rules: rMember?.scheduleRules, daysOff: rMember?.daysOff, hoursOff: rMember?.hoursOff }, holidays: paidHolidays,
     });
     return { design: dHrs, preservation: pHrs, fulfillment: fHrs, resin: rHrs, total: dHrs + pHrs + fHrs + rHrs };
   }
@@ -4318,7 +4320,7 @@ export function SchedulePage({
         legacyWeeklyValue: settings.designHours[d.id]?.[weekKey],
         standardWeeklyHours: settings.designRoster[d.id]?.standardWeeklyHours,
         hardcodedDefault: defaultSchedule[w]?.[d.id] ?? 0,
-        employment: { weekIso: weekKey, startDate: settings.designRoster[d.id]?.startDate, endDate: settings.designRoster[d.id]?.endDate, rules: settings.designRoster[d.id]?.scheduleRules, daysOff: settings.designRoster[d.id]?.daysOff }, holidays: paidHolidays,
+        employment: { weekIso: weekKey, startDate: settings.designRoster[d.id]?.startDate, endDate: settings.designRoster[d.id]?.endDate, rules: settings.designRoster[d.id]?.scheduleRules, daysOff: settings.designRoster[d.id]?.daysOff, hoursOff: settings.designRoster[d.id]?.hoursOff }, holidays: paidHolidays,
       });
       weekObj[d.id] = both.hours;
       payObj[d.id] = both.payHours;
@@ -4612,7 +4614,7 @@ export function SchedulePage({
   function resolveMgrTotalWeekHours(weekIdx: number, designerId: string, payHrs: number): number {
     const weekIso = isoMonday(weekIdx);
     const weekKey = `${weekIso}-${designerId}`;
-    const employment = { weekIso, startDate: settings.designRoster[designerId]?.startDate, endDate: settings.designRoster[designerId]?.endDate, rules: settings.designRoster[designerId]?.scheduleRules, daysOff: settings.designRoster[designerId]?.daysOff };
+    const employment = { weekIso, startDate: settings.designRoster[designerId]?.startDate, endDate: settings.designRoster[designerId]?.endDate, rules: settings.designRoster[designerId]?.scheduleRules, daysOff: settings.designRoster[designerId]?.daysOff, hoursOff: settings.designRoster[designerId]?.hoursOff };
     const totalTemplate = settings.designRoster[designerId]?.standardTotalWeeklyHours;
     const dailyOverrides = settings.mgrTotalDailyHours[weekKey];
     if (dailyOverrides !== undefined) {
@@ -4620,7 +4622,7 @@ export function SchedulePage({
       for (let day = 0; day < 7; day++) {
         const override = dailyOverrides[day];
         sum += override != null ? override
-          : totalTemplate ? (isDayOff(day, employment) ? 0 : totalTemplate[day] ?? 0)
+          : totalTemplate ? applyTimeOff(totalTemplate[day] ?? 0, day, employment)
           : resolveDayHours(designDailyHours, `${weekIso}-${designerId}`, day, settings.designRoster[designerId]?.standardWeeklyHours, employment, paidHolidays).payHours;
       }
       return sum;
@@ -5134,7 +5136,7 @@ export function SchedulePage({
         legacyWeeklyValue: settings.ffHours[m.id]?.[weekIso],
         standardWeeklyHours: settings.ffRoster[m.id]?.standardWeeklyHours,
         hardcodedDefault: m.defaultHrs,
-        employment: { weekIso, startDate: settings.ffRoster[m.id]?.startDate, endDate: settings.ffRoster[m.id]?.endDate, rules: settings.ffRoster[m.id]?.scheduleRules, daysOff: settings.ffRoster[m.id]?.daysOff }, holidays: paidHolidays,
+        employment: { weekIso, startDate: settings.ffRoster[m.id]?.startDate, endDate: settings.ffRoster[m.id]?.endDate, rules: settings.ffRoster[m.id]?.scheduleRules, daysOff: settings.ffRoster[m.id]?.daysOff, hoursOff: settings.ffRoster[m.id]?.hoursOff }, holidays: paidHolidays,
       });
       if (m.ratio > 0) { totalOrders += prodH / m.ratio; totalHours += prodH; }
     });
@@ -5395,10 +5397,10 @@ export function SchedulePage({
     return mustDesign;
   }, [historicalRemaining, designPromises, designCapacityByWeek]);
 
-  function handleDesignerDaysOff(id: string, dates: string[], off: boolean) {
+  function handleDesignerTimeOff(id: string, next: TimeOffPatch) {
     const currentRoster = { ...settings.designRoster };
     const existing = currentRoster[id] ?? designers.find(d => d.id === id) ?? {};
-    currentRoster[id] = { ...existing, daysOff: applyDaysOff((existing as { daysOff?: string[] }).daysOff, dates, off) } as typeof currentRoster[string];
+    currentRoster[id] = { ...existing, ...next } as typeof currentRoster[string];
     update('designRoster', currentRoster);
   }
 
@@ -5599,7 +5601,7 @@ export function SchedulePage({
                   <TimeOffCalendar
                     members={designers.map(d => toTimeOffMember(d.id, d.name, settings.designRoster[d.id]))}
                     dailyMap={designDailyHours} holidays={paidHolidays} canEdit={canEditCurrent}
-                    onChange={handleDesignerDaysOff} />
+                    onChange={handleDesignerTimeOff} />
                 </div>
               </div>
             )}
@@ -5637,20 +5639,20 @@ export function SchedulePage({
             function getDH(id: string, di: number) {
               const weekIso = isoMonday(designThisWeekOffset);
               return resolveDayHours(designDailyHours, `${weekIso}-${id}`, di, settings.designRoster[id]?.standardWeeklyHours,
-                { weekIso, startDate: settings.designRoster[id]?.startDate, endDate: settings.designRoster[id]?.endDate, rules: settings.designRoster[id]?.scheduleRules, daysOff: settings.designRoster[id]?.daysOff }, paidHolidays).hours;
+                { weekIso, startDate: settings.designRoster[id]?.startDate, endDate: settings.designRoster[id]?.endDate, rules: settings.designRoster[id]?.scheduleRules, daysOff: settings.designRoster[id]?.daysOff, hoursOff: settings.designRoster[id]?.hoursOff }, paidHolidays).hours;
             }
             // Guaranteed-pay hours — same as getDH except on a paid holiday,
             // where production is 0 but the standard day is still paid.
             function getPayDH(id: string, di: number) {
               const weekIso = isoMonday(designThisWeekOffset);
               return resolveDayHours(designDailyHours, `${weekIso}-${id}`, di, settings.designRoster[id]?.standardWeeklyHours,
-                { weekIso, startDate: settings.designRoster[id]?.startDate, endDate: settings.designRoster[id]?.endDate, rules: settings.designRoster[id]?.scheduleRules, daysOff: settings.designRoster[id]?.daysOff }, paidHolidays).payHours;
+                { weekIso, startDate: settings.designRoster[id]?.startDate, endDate: settings.designRoster[id]?.endDate, rules: settings.designRoster[id]?.scheduleRules, daysOff: settings.designRoster[id]?.daysOff, hoursOff: settings.designRoster[id]?.hoursOff }, paidHolidays).payHours;
             }
             const isHolidayDay = (di: number) => paidHolidays.includes(days[di]?.iso ?? '');
             function isDHOverride(id: string, di: number) {
               const weekIso = isoMonday(designThisWeekOffset);
               return resolveDayHours(designDailyHours, `${weekIso}-${id}`, di, settings.designRoster[id]?.standardWeeklyHours,
-                { weekIso, startDate: settings.designRoster[id]?.startDate, endDate: settings.designRoster[id]?.endDate, rules: settings.designRoster[id]?.scheduleRules, daysOff: settings.designRoster[id]?.daysOff }, paidHolidays).isOverride;
+                { weekIso, startDate: settings.designRoster[id]?.startDate, endDate: settings.designRoster[id]?.endDate, rules: settings.designRoster[id]?.scheduleRules, daysOff: settings.designRoster[id]?.daysOff, hoursOff: settings.designRoster[id]?.hoursOff }, paidHolidays).isOverride;
             }
             function setDH(id: string, di: number, val: number) {
               const weekIso = isoMonday(designThisWeekOffset);
@@ -5667,8 +5669,8 @@ export function SchedulePage({
               if (override != null) return override;
               const totalTemplate = settings.designRoster[id]?.standardTotalWeeklyHours;
               if (totalTemplate) {
-                const employment = { weekIso, startDate: settings.designRoster[id]?.startDate, endDate: settings.designRoster[id]?.endDate, rules: settings.designRoster[id]?.scheduleRules, daysOff: settings.designRoster[id]?.daysOff };
-                return isWithinEmployment(di, employment) && !isDayOff(di, employment) ? (totalTemplate[di] ?? 0) : 0;
+                const employment = { weekIso, startDate: settings.designRoster[id]?.startDate, endDate: settings.designRoster[id]?.endDate, rules: settings.designRoster[id]?.scheduleRules, daysOff: settings.designRoster[id]?.daysOff, hoursOff: settings.designRoster[id]?.hoursOff };
+                return isWithinEmployment(di, employment) ? applyTimeOff(totalTemplate[di] ?? 0, di, employment) : 0;
               }
               return getPayDH(id, di);
             }
@@ -5769,6 +5771,7 @@ export function SchedulePage({
                                   <ProductionActual value={designActuals.getCount(d.name, days[dayIdx].iso, 'design')} loading={designActuals.loading} unit="f" drill={{ name: d.name, start: days[dayIdx].iso, end: days[dayIdx].iso, department: 'design' }} goal={days[dayIdx].iso <= todayIso ? frames : null} />
                                   {isHolidayDay(dayIdx) && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay{hasRates && cost > 0 ? ` ${fmt$(cost)}` : ''}</div>}
                                   {settings.designRoster[d.id]?.daysOff?.includes(days[dayIdx].iso) && <div className="text-[9px] font-semibold text-red-500 mt-0.5" title="Marked off on the Time Off calendar — scheduled hours are 0">day off</div>}
+                                  {(settings.designRoster[d.id]?.hoursOff?.[days[dayIdx].iso] ?? 0) > 0 && <div className="text-[9px] font-semibold text-red-400 mt-0.5" title="Hours off on the Days off calendar">{settings.designRoster[d.id]?.hoursOff?.[days[dayIdx].iso] ?? 0}h off</div>}
                                 </td>
                               );
                             })}
