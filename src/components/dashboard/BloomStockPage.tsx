@@ -16,6 +16,7 @@ import { isoMonday, getWeekLabel, isoMondayFromDate, getISOWeekNumber } from '@/
 import { resolveDayHours, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
+import { ScheduleRulesEditor } from './ScheduleRulesEditor';
 import { MemberTierBadges } from './MemberTierBadge';
 import { buildActiveMemberIds, InactiveToggle } from './memberActivity';
 import { DEPARTMENT_MANAGERS, STANDARD_WEEKLY_HOURS } from '@/lib/managers';
@@ -73,7 +74,7 @@ function useBloomStock(settings: ScheduleSettings, update: (k: keyof ScheduleSet
 
   const dayHours = useCallback((m: BloomStockMember, weekIso: string, di: number) =>
     resolveDayHours(daily, `${weekIso}-${m.id}`, di, m.standardWeeklyHours,
-      { weekIso, startDate: m.startDate, endDate: m.endDate }, holidays), [daily, holidays]);
+      { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules }, holidays), [daily, holidays]);
   const weekHours = useCallback((m: BloomStockMember, weekIso: string, fromDay = 0) => {
     let h = 0;
     for (let di = fromDay; di < 7; di++) h += dayHours(m, weekIso, di).hours;
@@ -1256,6 +1257,11 @@ function RosterPanel({ bs, canEdit, visibleRoster, inactiveCount, showInactive, 
                   <EmploymentDatesEditor startDate={m.startDate} endDate={m.endDate}
                     onStartDateChange={v => patch(m.id, { startDate: v || undefined })}
                     onEndDateChange={v => patch(m.id, { endDate: v || undefined })} />
+                </div>
+                <div className="flex items-start gap-1.5 pl-1">
+                  <span className="text-[10px] text-slate-400 w-32 shrink-0 pt-0.5">Schedule rules</span>
+                  <ScheduleRulesEditor rules={m.scheduleRules} standardWeeklyHours={m.standardWeeklyHours}
+                    onChange={rules => patch(m.id, { scheduleRules: rules })} />
                 </div>
               </div>
             ))}

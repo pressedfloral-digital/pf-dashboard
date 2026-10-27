@@ -18,6 +18,63 @@ export interface EmploymentWindow {
   weekIso:    string;
   startDate?: string;
   endDate?:   string;
+  // The member's schedule rules (see ScheduleRule) — carried here rather than
+  // as a separate param because every caller already builds this object per
+  // member+week, and rules need that same weekIso to know which dates apply.
+  rules?:     ScheduleRule[];
+}
+
+// A manager-defined, date-bounded replacement for a member's standard
+// schedule — e.g. "Feb 1 – May 31: Mon/Wed/Fri 8h only". For every day that
+// falls inside [startDate, endDate] (inclusive, either bound optional) of an
+// enabled rule, hours[dayIdx] REPLACES the standard template for that
+// weekday; a null entry leaves the standard template in place for that day.
+// When several enabled rules cover the same date, the later one in the list
+// wins.
+//
+// Rules only ever stand in for the TEMPLATE — an explicit day override from
+// "This Week" still outranks them, so hand-entered hours (and anything
+// already recorded for a past week) are never rewritten. Actuals live in
+// team_member_week_actuals and never read the schedule at all.
+export interface ScheduleRule {
+  id:         string;
+  label?:     string;
+  enabled:    boolean;
+  startDate?: string;
+  endDate?:   string;
+  hours:      (number | null)[];
+}
+
+// The rule (if any) that governs dayIdx of the week in `employment`.
+export function activeRuleForDay(dayIdx: number, employment?: EmploymentWindow): ScheduleRule | undefined {
+  const rules = employment?.rules;
+  if (!rules || rules.length === 0 || !employment) return undefined;
+  const date = addIsoDays(employment.weekIso, dayIdx);
+  let match: ScheduleRule | undefined;
+  for (const r of rules) {
+    if (!r.enabled || r.hours[dayIdx] == null) continue;
+    if (r.startDate && date < r.startDate) continue;
+    if (r.endDate && date > r.endDate) continue;
+    match = r;
+  }
+  return match;
+}
+
+// The standard template with any active rules applied for the week in
+// `employment`. Returns the template untouched (same reference, possibly
+// undefined) when no rule covers any day of the week, so a member with no
+// template and no applicable rule still falls through to the legacy /
+// hardcoded-default branches of resolveWeekHoursBoth.
+export function effectiveTemplate(standardWeeklyHours: number[] | undefined, employment?: EmploymentWindow): number[] | undefined {
+  if (!employment?.rules?.length) return standardWeeklyHours;
+  let out: number[] | undefined;
+  for (let d = 0; d < 7; d++) {
+    const rule = activeRuleForDay(d, employment);
+    if (!rule) continue;
+    out ??= Array.from({ length: 7 }, (_, j) => standardWeeklyHours?.[j] ?? 0);
+    out[d] = rule.hours[d] ?? 0;
+  }
+  return out ?? standardWeeklyHours;
 }
 
 function addIsoDays(iso: string, days: number): string {
@@ -83,7 +140,7 @@ export function resolveDayHours(
   if (!isWithinEmployment(dayIdx, employment)) return { hours: 0, isOverride: true, payHours: 0, isHoliday: false };
   const isHoliday = isPaidHolidayDate(employment?.weekIso, dayIdx, holidays);
   const override = dailyMap[weekKey]?.[dayIdx];
-  const standard = standardWeeklyHours?.[dayIdx] ?? 0;
+  const standard = activeRuleForDay(dayIdx, employment)?.hours[dayIdx] ?? standardWeeklyHours?.[dayIdx] ?? 0;
   if (override != null) {
     return { hours: override, isOverride: true, payHours: isHoliday ? standard + override : override, isHoliday };
   }
@@ -104,7 +161,8 @@ export interface ResolveWeekHoursParams {
 // Full per-member-per-week fallback chain, highest to lowest priority:
 //   1. Daily entries exist for this member+week -> sum of resolveDayHours (0-6)
 //   2. No daily entries yet, but a legacy (pre-cutover) weekly value exists -> that value, as-is
-//   3. Standard weekly template set on the roster -> sum(standardWeeklyHours)
+//   3. Standard weekly template set on the roster, with any active schedule
+//      rules applied (see effectiveTemplate) -> its sum
 //   4. Hardcoded per-member/week default (e.g. onboarding/offboarding ramps) -> that value
 //   5. else 0
 // employment (see resolveDayHours) is applied on top of whichever branch
@@ -118,7 +176,8 @@ export interface ResolveWeekHoursParams {
 // so most callers (capacity/turnaround math, which only ever wanted
 // production hours) don't need to change at all beyond passing `holidays`.
 export function resolveWeekHoursBoth(params: ResolveWeekHoursParams): { hours: number; payHours: number } {
-  const { dailyMap, weekKey, legacyWeeklyValue, standardWeeklyHours, hardcodedDefault, employment, holidays } = params;
+  const { dailyMap, weekKey, legacyWeeklyValue, hardcodedDefault, employment, holidays } = params;
+  const standardWeeklyHours = effectiveTemplate(params.standardWeeklyHours, employment);
   const daily = dailyMap[weekKey];
   if (daily !== undefined) {
     let hours = 0, payHours = 0;

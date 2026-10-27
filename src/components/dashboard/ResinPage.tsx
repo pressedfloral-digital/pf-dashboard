@@ -4,10 +4,11 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
 import { getMondayDate, isoMonday, getWeekLabel } from '@/lib/weekDates';
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
-import { resolveDayHours, resolveWeekHours, resolveWeekPayHours, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
+import { resolveDayHours, resolveWeekHours, resolveWeekPayHours, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
 import { HistoricalsSection } from './HistoricalsSection';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
+import { ScheduleRulesEditor } from './ScheduleRulesEditor';
 import { MemberTierBadges } from './MemberTierBadge';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 
@@ -32,6 +33,8 @@ export interface ResinMember {
   // Employment window, both ISO 'YYYY-MM-DD' and inclusive — see scheduleResolution.ts.
   startDate?: string;
   endDate?:   string;
+  // Date-bounded, toggleable replacements for standardWeeklyHours — see scheduleResolution.ts.
+  scheduleRules?: ScheduleRule[];
 }
 
 interface CohortRow {
@@ -175,7 +178,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
       dailyMap: resinDailyHours, weekKey: `${weekIso}-${m.id}`,
       legacyWeeklyValue: hours[weekIso]?.[m.id],
       standardWeeklyHours: m.standardWeeklyHours,
-      employment: { weekIso, startDate: m.startDate, endDate: m.endDate },
+      employment: { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules },
       holidays: paidHolidays,
     };
   }
@@ -340,7 +343,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate }, paidHolidays).hours;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules }, paidHolidays).hours;
   }
 
   // Guaranteed-pay basis for the day — see resolveDayHours' payHours.
@@ -348,21 +351,21 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate }, paidHolidays).payHours;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules }, paidHolidays).payHours;
   }
 
   function isDHOverride(memberId: string, weekIdx: number, di: number): boolean {
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate }, paidHolidays).isOverride;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules }, paidHolidays).isOverride;
   }
 
   function isDHHoliday(memberId: string, weekIdx: number, di: number): boolean {
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate }, paidHolidays).isHoliday;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules }, paidHolidays).isHoliday;
   }
 
   // Member-agnostic holiday check for a whole day column (header, Day total
@@ -711,6 +714,14 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                     endDate={m.endDate}
                     onStartDateChange={val => updateRosterField(m.id, 'startDate', val)}
                     onEndDateChange={val => updateRosterField(m.id, 'endDate', val)}
+                  />
+                </div>
+                <div className="flex items-start gap-1.5 pl-1">
+                  <span className="text-[10px] text-slate-400 w-32 shrink-0 pt-0.5">Schedule rules</span>
+                  <ScheduleRulesEditor
+                    rules={m.scheduleRules}
+                    standardWeeklyHours={m.standardWeeklyHours}
+                    onChange={rules => setRoster(roster.map(x => x.id === m.id ? { ...x, scheduleRules: rules } : x))}
                   />
                 </div>
                 </div>
