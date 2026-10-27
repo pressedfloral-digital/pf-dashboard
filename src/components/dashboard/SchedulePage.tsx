@@ -14,14 +14,15 @@ import {
   fmtRatio, fmtCPO, fmtUnits, DEPT_LABELS, DEPT_PRODUCTION_UNIT,
   type KpiDept, type KpiLocation, type KpiState,
 } from '@/hooks/useKpiMetrics';
-import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
+import { useScheduleSettings, usePaidHolidays, type ScheduleSettings, type TeamRoster } from './useScheduleSettings';
 import { getMondayDate, isoMonday, isoMondayFromDate, getWeekLabel, getMonthKey, getISOWeekNumber } from '@/lib/weekDates';
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
 import { distributeHours, resolveDayHours, resolveWeekHours, resolveWeekHoursBoth, isWithinEmployment, applyTimeOff, hoursOffOn, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
 import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './BloomUpdateModal';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { ScheduleRulesEditor } from './ScheduleRulesEditor';
-import { TimeOffCalendar, toTimeOffMember, type TimeOffPatch } from './TimeOffCalendar';
+import { TimeOffCalendar, toTimeOffMember, type TimeOffPatch, type TimeOffSection } from './TimeOffCalendar';
+import { DEFAULT_BLOOM_STOCK_ROSTER, type BloomStockMember } from '@/lib/bloomStock';
 import { MemberTierBadges } from './MemberTierBadge';
 import { useVisibleManagerCPO } from '@/hooks/useVisibleManagerCPO';
 import {
@@ -5404,6 +5405,56 @@ export function SchedulePage({
     update('designRoster', currentRoster);
   }
 
+  // ── Master Schedule: days off across every department ─────────────────────
+  // Built from the live rosters (not the Master Schedule's fixed staff list),
+  // one section per department; each row edits only that roster entry, the
+  // same as the calendar under that department's roster.
+  const teamTimeOff = (defaults: { id: string; name: string }[], roster: TeamRoster) => {
+    const out = defaults.filter(m => !roster[m.id]?._removed).map(m => toTimeOffMember(m.id, roster[m.id]?.name ?? m.name, roster[m.id]));
+    Object.entries(roster).forEach(([id, r]) => {
+      if (!defaults.some(m => m.id === id) && !r._removed) out.push(toTimeOffMember(id, r.name, r));
+    });
+    return out.filter(m => !isNonProductionStaff(m.name));
+  };
+  const teamTimeOffChange = (key: 'presRoster' | 'ffRoster', defaults: (PresTeamMember | FfTeamMember)[]) =>
+    (id: string, next: TimeOffPatch) => {
+      const roster = settings[key];
+      const def = defaults.find(m => m.id === id);
+      const existing = roster[id] ?? { ratio: def?.ratio ?? 1, rate: def?.rate ?? 0, name: def?.name ?? '', payType: 'hourly' as const, annualSalary: 0 };
+      update(key, { ...roster, [id]: { ...existing, ...next } });
+    };
+  // Resin and Bloom Stock pages keep their own copy of the Utah settings, so
+  // this page's copy can be behind edits made there. Re-read the roster just
+  // before writing so marking a day off here never undoes those edits.
+  const freshArrayTimeOffChange = <M extends { id: string }>(key: 'resinRoster' | 'bloomStockRoster', fallback: M[]) =>
+    async (id: string, next: TimeOffPatch) => {
+      let latest: M[] = Array.isArray(settings[key]) ? settings[key] as M[] : fallback;
+      try {
+        const res = await fetch('/api/schedule-settings?location=Utah');
+        const data = await res.json() as Partial<ScheduleSettings>;
+        if (Array.isArray(data[key])) latest = data[key] as M[];
+      } catch { /* fall back to this page's copy */ }
+      update(key, latest.map(m => (m.id === id ? { ...m, ...next } : m)) as unknown);
+    };
+  const presDefaults = location === 'Utah' ? UTAH_PRESERVATION_TEAM : GEORGIA_PRESERVATION_TEAM;
+  const ffDefaults   = location === 'Utah' ? UTAH_FULFILLMENT_TEAM : GEORGIA_FULFILLMENT_TEAM;
+  const resinList: ResinMember[] = Array.isArray(settings.resinRoster) ? settings.resinRoster as ResinMember[] : DEFAULT_RESIN_ROSTER;
+  const bloomList: BloomStockMember[] = Array.isArray(settings.bloomStockRoster) ? settings.bloomStockRoster as BloomStockMember[] : DEFAULT_BLOOM_STOCK_ROSTER;
+  const masterTimeOffSections: TimeOffSection[] = [
+    { key: 'design', label: 'Design', dailyMap: designDailyHours, onChange: handleDesignerTimeOff,
+      members: designers.map(d => toTimeOffMember(d.id, d.name, settings.designRoster[d.id])) },
+    { key: 'preservation', label: 'Preservation', dailyMap: settings.presDailyHours ?? {}, onChange: teamTimeOffChange('presRoster', presDefaults),
+      members: teamTimeOff(presDefaults, settings.presRoster) },
+    { key: 'fulfillment', label: 'Fulfillment', dailyMap: settings.ffDailyHours ?? {}, onChange: teamTimeOffChange('ffRoster', ffDefaults),
+      members: teamTimeOff(ffDefaults, settings.ffRoster) },
+    ...(location === 'Utah' ? [
+      { key: 'resin', label: 'Resin', dailyMap: settings.resinDailyHours ?? {}, onChange: freshArrayTimeOffChange('resinRoster', DEFAULT_RESIN_ROSTER),
+        members: resinList.filter(m => !isNonProductionStaff(m.name)).map(m => toTimeOffMember(m.id, m.name, m)) },
+      { key: 'bloomstock', label: 'Bloom Stock Products', dailyMap: settings.bloomStockDailyHours ?? {}, onChange: freshArrayTimeOffChange('bloomStockRoster', DEFAULT_BLOOM_STOCK_ROSTER),
+        members: bloomList.map(m => toTimeOffMember(m.id, m.name, m)) },
+    ] : []),
+  ];
+
   const windowWeeks = Array.from({ length: WINDOW }, (_, i) => i + weekOffset).filter(i => i < WEEKS);
   const hasRates    = canViewCPO && designers.some(d =>
     (d.payType === 'hourly' && d.hourlyRate > 0) ||
@@ -6631,6 +6682,10 @@ export function SchedulePage({
           resinRoster={Array.isArray(settings.resinRoster) ? settings.resinRoster as ResinMember[] : DEFAULT_RESIN_ROSTER}
           resinDailyHours={settings.resinDailyHours}
         />
+        <div className="bg-white border border-slate-100 rounded-xl p-4">
+          <TimeOffCalendar sections={masterTimeOffSections} title="Days off — all departments"
+            holidays={paidHolidays} canEdit={canEditCurrent} />
+        </div>
         </>
       )}
 

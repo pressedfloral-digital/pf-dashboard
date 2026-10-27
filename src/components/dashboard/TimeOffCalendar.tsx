@@ -26,8 +26,21 @@ export interface TimeOffMember {
 
 export type TimeOffPatch = { daysOff?: string[]; hoursOff?: Record<string, number> };
 
+// One department's rows. The Master Schedule passes several; a roster
+// passes its own members/dailyMap/onChange, wrapped as a single section.
+export interface TimeOffSection {
+  key:      string;
+  label:    string;
+  members:  TimeOffMember[];
+  // The department's "This Week" daily map, keyed `${weekIso}-${memberId}`,
+  // used for the scheduled hours shown on hover.
+  dailyMap: DailyHoursMap;
+  // The member's new daysOff/hoursOff — merge onto their roster entry.
+  onChange: (memberId: string, next: TimeOffPatch) => void;
+}
+
 type View = 'month' | 'week';
-type Paint = { memberId: string; off: boolean; dates: Set<string> };
+type Paint = { section: string; memberId: string; off: boolean; dates: Set<string> };
 
 function addDays(iso: string, n: number): string {
   const d = new Date(iso + 'T12:00:00');
@@ -46,16 +59,18 @@ function fmt(iso: string, opts: Intl.DateTimeFormatOptions): string {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', opts);
 }
 
-export function TimeOffCalendar({ members, dailyMap, holidays, canEdit, onChange }: {
-  members:  TimeOffMember[];
-  // The department's "This Week" daily map, keyed `${weekIso}-${memberId}`,
-  // used for the scheduled hours shown on hover.
-  dailyMap: DailyHoursMap;
-  holidays: string[];
-  canEdit:  boolean;
-  // The member's new daysOff/hoursOff — merge onto their roster entry.
-  onChange: (memberId: string, next: TimeOffPatch) => void;
+export function TimeOffCalendar({ members, dailyMap, onChange, sections, title: dropdownTitle = 'Days off', holidays, canEdit }: {
+  members?:  TimeOffMember[];
+  dailyMap?: DailyHoursMap;
+  onChange?: (memberId: string, next: TimeOffPatch) => void;
+  // Several departments at once, each under its own heading (Master Schedule).
+  sections?: TimeOffSection[];
+  title?:    string;
+  holidays:  string[];
+  canEdit:   boolean;
 }) {
+  const groups: TimeOffSection[] = sections
+    ?? [{ key: '', label: '', members: members ?? [], dailyMap: dailyMap ?? {}, onChange: onChange ?? (() => {}) }];
   const today = localTodayIso();
   const [open, setOpen]     = useState(false);
   const [view, setView]     = useState<View>('month');
@@ -68,14 +83,15 @@ export function TimeOffCalendar({ members, dailyMap, holidays, canEdit, onChange
   // whether the drag marks days off or clears them.
   const [paint, setPaint] = useState<Paint | null>(null);
   const paintRef = useRef(paint);
-  const membersRef = useRef(members);
-  useEffect(() => { paintRef.current = paint; membersRef.current = members; }, [paint, members]);
+  const groupsRef = useRef(groups);
+  useEffect(() => { paintRef.current = paint; groupsRef.current = groups; });
 
   // Whole days off and partial hours off never overlap on one date: setting
   // either clears the other for that date.
-  function setTimeOff(memberId: string, dates: string[], value: 'day' | number | null) {
-    const m = membersRef.current.find(x => x.id === memberId);
-    if (!m) return;
+  function setTimeOff(section: string, memberId: string, dates: string[], value: 'day' | number | null) {
+    const g = groupsRef.current.find(x => x.key === section);
+    const m = g?.members.find(x => x.id === memberId);
+    if (!g || !m) return;
     const days = new Set(m.daysOff ?? []);
     const hrsOff = { ...(m.hoursOff ?? {}) };
     for (const d of dates) {
@@ -84,7 +100,7 @@ export function TimeOffCalendar({ members, dailyMap, holidays, canEdit, onChange
       if (value === 'day') days.add(d);
       else if (typeof value === 'number' && value > 0) hrsOff[d] = value;
     }
-    onChange(memberId, {
+    g.onChange(memberId, {
       daysOff:  days.size ? [...days].sort() : undefined,
       hoursOff: Object.keys(hrsOff).length ? hrsOff : undefined,
     });
@@ -96,14 +112,14 @@ export function TimeOffCalendar({ members, dailyMap, holidays, canEdit, onChange
       const p = paintRef.current;
       if (!p) return;
       setPaint(null);
-      if (p.dates.size) setTimeOffRef.current(p.memberId, [...p.dates], p.off ? 'day' : null);
+      if (p.dates.size) setTimeOffRef.current(p.section, p.memberId, [...p.dates], p.off ? 'day' : null);
     }
     window.addEventListener('mouseup', finish);
     return () => window.removeEventListener('mouseup', finish);
   }, []);
 
   // Right-click menu for taking part of a day off.
-  const [menu, setMenu] = useState<{ memberId: string; name: string; iso: string; scheduled: number; value: string; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ section: string; memberId: string; name: string; iso: string; scheduled: number; value: string; x: number; y: number } | null>(null);
   useEffect(() => {
     if (!menu) return;
     const close = (e: MouseEvent | KeyboardEvent) => {
@@ -138,7 +154,7 @@ export function TimeOffCalendar({ members, dailyMap, holidays, canEdit, onChange
 
   // `hours` is what the day is scheduled for ignoring the day off (the same
   // resolution This Week uses), so an off day can say what it removes.
-  function cellState(m: TimeOffMember, iso: string): { state: 'off' | 'partial' | 'open' | 'unemployed'; hours: number; partial: number } {
+  function cellState(m: TimeOffMember, iso: string, dailyMap: DailyHoursMap): { state: 'off' | 'partial' | 'open' | 'unemployed'; hours: number; partial: number } {
     const weekIso = mondayOf(iso);
     const di = (new Date(iso + 'T12:00:00').getDay() + 6) % 7;
     const employment = { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules };
@@ -149,26 +165,28 @@ export function TimeOffCalendar({ members, dailyMap, holidays, canEdit, onChange
   }
   const hrs = (h: number) => `${Math.round(h * 100) / 100}h`;
 
-  const upcomingOff = members.reduce((n, m) =>
+  const allMembers = groups.flatMap(g => g.members);
+  const upcomingOff = allMembers.reduce((n, m) =>
     n + (m.daysOff ?? []).filter(d => d >= today).length + Object.keys(m.hoursOff ?? {}).filter(d => d >= today).length, 0);
   if (!open) {
     return (
       <button onClick={() => setOpen(true)} className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">
-        ▼ Days off{upcomingOff > 0 && <span className="ml-1.5 text-xs font-normal text-red-500">{upcomingOff} upcoming</span>}
+        ▼ {dropdownTitle}{upcomingOff > 0 && <span className="ml-1.5 text-xs font-normal text-red-500">{upcomingOff} upcoming</span>}
       </button>
     );
   }
 
   const compact = view === 'month';
   const cellW = compact ? 'min-w-[28px] w-[28px]' : 'min-w-[64px]';
-  const offCount = (iso: string) => members.filter(m => m.daysOff?.includes(iso)).length;
+  // Someone on two rosters counts once.
+  const offCount = (iso: string) => new Set(allMembers.filter(m => m.daysOff?.includes(iso)).map(m => m.name.trim().toLowerCase())).size;
 
   return (
     <div className="border border-slate-100 rounded-xl">
       <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
         <div>
           <button onClick={() => { setOpen(false); setTip(null); }} className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">
-            ▲ Days off
+            ▲ {dropdownTitle}
           </button>
           <p className="text-[11px] text-slate-400 mt-0.5">
             {canEdit ? 'Click a day to mark it off, drag across a row to mark several, or right-click to take some hours off. Hover a day to see its scheduled hours. ' : 'Hover a day to see its scheduled hours. '}
@@ -214,17 +232,24 @@ export function TimeOffCalendar({ members, dailyMap, holidays, canEdit, onChange
             </tr>
           </thead>
           <tbody>
-            {members.map(m => {
+            {groups.filter(g => g.members.length > 0).flatMap(g => [
+              g.label ? (
+                <tr key={`h-${g.key}`}>
+                  <td colSpan={dates.length + 1} className="sticky left-0 bg-slate-50/80 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">{g.label}</td>
+                </tr>
+              ) : null,
+              ...g.members.map(m => {
               const offInView = dates.filter(iso => m.daysOff?.includes(iso)).length;
               return (
-                <tr key={m.id} className="border-t border-slate-50">
+                <tr key={`${g.key}:${m.id}`} className="border-t border-slate-50">
                   <td className="sticky left-0 z-10 bg-white px-3 py-1 text-slate-700 whitespace-nowrap">
                     {m.name}
                     {offInView > 0 && <span className="ml-1.5 text-[10px] text-red-500">{offInView} off</span>}
                   </td>
                   {dates.map(iso => {
-                    const { state: saved, hours, partial } = cellState(m, iso);
-                    const painting = paint?.memberId === m.id && paint.dates.has(iso);
+                    const { state: saved, hours, partial } = cellState(m, iso, g.dailyMap);
+                    const sameRow = paint?.section === g.key && paint.memberId === m.id;
+                    const painting = sameRow && paint!.dates.has(iso);
                     // While dragging, preview the result of the drag.
                     const state = painting ? (paint!.off ? 'off' : 'open') : saved;
                     const employed = state !== 'unemployed';
@@ -246,21 +271,21 @@ export function TimeOffCalendar({ members, dailyMap, holidays, canEdit, onChange
                           if (!canEdit || !employed) return;
                           e.preventDefault();
                           setTip(null);
-                          setMenu({ memberId: m.id, name: m.name, iso, scheduled: hours, value: partial ? String(partial) : '',
+                          setMenu({ section: g.key, memberId: m.id, name: m.name, iso, scheduled: hours, value: partial ? String(partial) : '',
                             x: Math.min(e.clientX, window.innerWidth - 240), y: Math.min(e.clientY, window.innerHeight - 170) });
                         }}>
                         <button type="button" disabled={!canEdit || !employed} aria-label={label} aria-pressed={state === 'off'}
                           onMouseDown={e => {
                             if (e.button !== 0) return;
                             e.preventDefault();
-                            setPaint({ memberId: m.id, off: saved !== 'off', dates: new Set([iso]) });
+                            setPaint({ section: g.key, memberId: m.id, off: saved !== 'off', dates: new Set([iso]) });
                           }}
                           onMouseEnter={() => {
-                            if (paint?.memberId !== m.id || paint.dates.has(iso)) return;
-                            setPaint({ ...paint, dates: new Set([...paint.dates, iso]) });
+                            if (!sameRow || paint!.dates.has(iso)) return;
+                            setPaint({ ...paint!, dates: new Set([...paint!.dates, iso]) });
                           }}
                           onKeyDown={e => {
-                            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTimeOff(m.id, [iso], saved === 'off' ? null : 'day'); }
+                            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTimeOff(g.key, m.id, [iso], saved === 'off' ? null : 'day'); }
                           }}
                           className={`w-full ${compact ? 'h-6' : 'h-8'} rounded text-[10px] leading-none transition-colors border ${
                             state === 'unemployed' ? 'bg-slate-100 border-transparent cursor-not-allowed'
@@ -275,7 +300,8 @@ export function TimeOffCalendar({ members, dailyMap, holidays, canEdit, onChange
                   })}
                 </tr>
               );
-            })}
+              }),
+            ])}
             <tr className="border-t border-slate-200">
               <td className="sticky left-0 z-10 bg-white px-3 py-1.5 text-[10px] font-medium text-slate-400">People off</td>
               {dates.map(iso => {
@@ -296,7 +322,7 @@ export function TimeOffCalendar({ members, dailyMap, holidays, canEdit, onChange
       {menu && (() => {
         const n = parseFloat(menu.value);
         const valid = n > 0;
-        const save = () => { if (valid) { setTimeOff(menu.memberId, [menu.iso], n); setMenu(null); } };
+        const save = () => { if (valid) { setTimeOff(menu.section, menu.memberId, [menu.iso], n); setMenu(null); } };
         return (
           <div data-timeoff-menu style={{ left: menu.x, top: menu.y }}
             className="fixed z-50 w-56 rounded-lg border border-slate-200 bg-white p-3 shadow-lg text-xs">
@@ -314,9 +340,9 @@ export function TimeOffCalendar({ members, dailyMap, holidays, canEdit, onChange
                 className="px-2 py-1 rounded bg-indigo-600 text-white disabled:opacity-40">Save</button>
             </label>
             <div className="flex gap-2">
-              <button onClick={() => { setTimeOff(menu.memberId, [menu.iso], 'day'); setMenu(null); }}
+              <button onClick={() => { setTimeOff(menu.section, menu.memberId, [menu.iso], 'day'); setMenu(null); }}
                 className="flex-1 px-2 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50">Whole day off</button>
-              <button onClick={() => { setTimeOff(menu.memberId, [menu.iso], null); setMenu(null); }}
+              <button onClick={() => { setTimeOff(menu.section, menu.memberId, [menu.iso], null); setMenu(null); }}
                 className="flex-1 px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50">Clear</button>
             </div>
           </div>
