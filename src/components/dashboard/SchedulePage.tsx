@@ -5720,6 +5720,47 @@ export function SchedulePage({
                           />
                         </td>
                       </tr>
+                      {/* Actual vs planned — the two rows above side by side, per day and for the week */}
+                      {(() => {
+                        const cell = (actual: number | null, planned: number) => {
+                          const pct = planned > 0 && actual !== null ? Math.round(actual / planned * 100) : null;
+                          const color = pct === null ? 'text-slate-400' : pct >= 100 ? 'text-green-600' : pct >= 90 ? 'text-amber-600' : 'text-slate-600';
+                          return { pct, color };
+                        };
+                        const weekActual = sumActuals(designers.flatMap(designer => days.map(day => designActuals.getCount(designer.name, day.iso, 'design'))));
+                        const week = cell(weekActual, teamWeekFrames);
+                        return (
+                          <tr className="border-t border-slate-200 bg-white">
+                            <td className="sticky left-0 bg-white px-4 py-2 text-xs font-semibold text-slate-600">
+                              <div>Actual vs planned</div>
+                              <div className="text-[9px] font-normal text-slate-400">% of plan hit</div>
+                            </td>
+                            {days.map((day, di) => {
+                              const planned = Math.round(teamDailyFrames(di) * 100) / 100;
+                              const actual = sumActuals(designers.map(designer => designActuals.getCount(designer.name, day.iso, 'design')));
+                              const { pct, color } = cell(actual, planned);
+                              return (
+                                <td key={day.iso} className={`px-2 py-2 text-center ${isHolidayDay(di) ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/30' : ''}`}>
+                                  {designActuals.loading && actual === null ? <span className="text-slate-300">…</span> : planned > 0 || (actual ?? 0) > 0 ? (
+                                    <>
+                                      <div className="text-slate-700">{actual ?? 0} / {Math.round(planned)}f</div>
+                                      {pct !== null && <div className={`text-[10px] font-semibold ${color}`}>{pct}%</div>}
+                                    </>
+                                  ) : <span className="text-slate-300">—</span>}
+                                </td>
+                              );
+                            })}
+                            <td className="px-3 py-2 text-center whitespace-nowrap">
+                              {designActuals.loading && weekActual === null ? <span className="text-slate-300">…</span> : (
+                                <>
+                                  <div className="font-semibold text-slate-800">{weekActual ?? 0}f <span className="font-normal text-slate-400">of {Math.round(teamWeekFrames)}f</span></div>
+                                  {week.pct !== null && <div className={`text-[10px] font-semibold ${week.color}`}>{week.pct}% of plan</div>}
+                                </>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })()}
                     </tbody>
                   </table>
                 </div>
