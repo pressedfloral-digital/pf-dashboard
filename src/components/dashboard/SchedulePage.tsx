@@ -4384,9 +4384,10 @@ export function SchedulePage({
   const { companyMultipliers, distributionPct } = useGrowthSettings();
   const { estimates: distributionEstimates, getSuggestedUtPct } = useDistributionEstimate();
 
-  // Design delivery promises — "weeks until designed" locked in for clients,
-  // see the "Send biweekly bloom update" button on the Queue & Turnaround tab.
-  // Keyed by intake week.
+  // Design delivery promises — the "weeks until designed" in the most recent
+  // biweekly bloom update emailed to clients (buffers included), see the
+  // "Send biweekly bloom update" button on the Queue & Turnaround tab. Keyed by
+  // intake week; cohorts that weren't in that email have no promise.
   const [designPromises, setDesignPromises] = useState<Record<string, {
     promisedByDate: string; promisedWeeks: number; lastConfirmedWeeks: number; lastConfirmedAt: string;
   }>>({});
@@ -4396,18 +4397,24 @@ export function SchedulePage({
   const [bloomHistoryLoading, setBloomHistoryLoading] = useState(false);
 
   function loadDesignPromises() {
-    fetch(`/api/design-promises?location=${location}`)
+    fetch(`/api/bloom-updates?location=${location}`)
       .then(r => r.json())
-      .then((d: { promises?: { week_of: string; promised_by_date: string; promised_weeks: number; last_confirmed_weeks: number; last_confirmed_at: string }[] }) => {
+      .then((d: { updates?: { id: number; sent_at: string; rows: BloomUpdateRow[] }[] }) => {
         const map: Record<string, { promisedByDate: string; promisedWeeks: number; lastConfirmedWeeks: number; lastConfirmedAt: string }> = {};
-        (d.promises ?? []).forEach(row => {
-          map[row.week_of] = {
-            promisedByDate:    row.promised_by_date,
-            promisedWeeks:     row.promised_weeks,
-            lastConfirmedWeeks: row.last_confirmed_weeks,
-            lastConfirmedAt:   row.last_confirmed_at,
-          };
-        });
+        const latest = d.updates?.[0]; // API returns newest first
+        if (latest) {
+          // Weeks are counted from the Monday of the week it was sent, same as
+          // when the update was locked in.
+          const sentMonday = isoMondayFromDate(new Date(latest.sent_at));
+          latest.rows.forEach(row => {
+            map[row.weekOf] = {
+              promisedByDate:     addDays(sentMonday, row.weeksUntilDesigned * 7),
+              promisedWeeks:      row.weeksUntilDesigned,
+              lastConfirmedWeeks: row.weeksUntilDesigned,
+              lastConfirmedAt:    latest.sent_at,
+            };
+          });
+        }
         setDesignPromises(map);
       })
       .catch(() => {});
@@ -5362,7 +5369,7 @@ export function SchedulePage({
   }, [ffHistoricalRemainingForPipeline, historicalRemaining, hiringPlan.scheduledTurnaround, hiringPlan.planTurnaround, bouquetsReceivedByWeek, ffScheduledTurnaroundForPipeline, ffPlanTurnaroundForPipeline, ffEntryWeekByCohortForPipeline]);
 
   // ── Must design ───────────────────────────────────────────────────────────────
-  // Minimum output each schedule week needs so no locked-in client promise
+  // Minimum output each schedule week needs so no client promise from the latest bloom update
   // (from designPromises) gets missed. Each active cohort's `remaining` count
   // becomes "due" in the earliest schedule week on/after its promised_by_date;
   // due amounts accumulate, and each week's minimum is whatever's needed on top
@@ -5979,7 +5986,7 @@ export function SchedulePage({
                       })}
                     </tr>
                     {/* Must design row — the minimum this week needs to hit so no client
-                        promise locked in via "Send biweekly bloom update" (Queue & Turnaround
+                        promise in the most recent "Send biweekly bloom update" email (Queue & Turnaround
                         tab) gets missed. Compares against actual output for weeks that have
                         Historicals actuals logged, scheduled capacity otherwise (see
                         designCapacityByWeek) — never below that; a short week just raises
@@ -6125,7 +6132,7 @@ export function SchedulePage({
                         .sort()
                         .pop();
                       return lastSentAt ? (
-                        <span className="text-[10px] text-slate-400 whitespace-nowrap" title="Most recent time a biweekly bloom update was locked in and sent">
+                        <span className="text-[10px] text-slate-400 whitespace-nowrap" title="Most recent biweekly bloom update emailed to clients — turnaround goals follow this one">
                           Last sent: {new Date(lastSentAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                         </span>
                       ) : null;
@@ -6136,7 +6143,7 @@ export function SchedulePage({
                     </button>
                     <button onClick={() => setBloomModalOpen(true)}
                       className="text-xs px-2.5 py-1 border border-indigo-200 bg-indigo-50 rounded text-indigo-700 hover:bg-indigo-100 whitespace-nowrap"
-                      title="Preview today's biweekly bloom update — locking it in makes it the client-facing promise. A promise can only get tighter over time, never later.">
+                      title="Preview today's biweekly bloom update — locking it in makes it the client-facing promise, and the newest one sent is what turnaround goals follow.">
                       Send biweekly bloom update
                     </button>
                     {(() => {
@@ -6255,7 +6262,7 @@ export function SchedulePage({
                                 {notYetIn && <span className="ml-2 text-[10px] bg-slate-100 text-slate-400 rounded px-1 py-px">est.</span>}
                                 {atRisk && (
                                   <span className="ml-2 text-[10px] bg-red-100 text-red-700 rounded px-1 py-px"
-                                    title={`Promised by ${fmtDate(promise!.promisedByDate)} (~${promise!.promisedWeeks} wks when locked in) — currently trending later than that.`}>
+                                    title={`Promised by ${fmtDate(promise!.promisedByDate)} (~${promise!.promisedWeeks} wks in the last bloom update) — currently trending later than that.`}>
                                     behind promise
                                   </span>
                                 )}
@@ -6450,6 +6457,7 @@ export function SchedulePage({
               loading={bloomHistoryLoading}
               location={location}
               onClose={() => setBloomHistoryOpen(false)}
+              onDeleted={loadDesignPromises}
             />
           )}
 

@@ -239,7 +239,7 @@ function BloomEmailExportPanel({ rows, buffers: liftedBuffers, setBuffers: setLi
     <div className="border border-slate-200 rounded-lg p-3 space-y-3 bg-slate-50">
       <div>
         <label className="text-[11px] font-medium text-slate-500">
-          Buffer per week <span className="text-slate-400 font-normal">— changes what clients see (email, image, and sent history); the ops dashboard&apos;s production goals stay set to the real promise</span>
+          Buffer per week <span className="text-slate-400 font-normal">— changes what clients see (email, image, and sent history); the ops dashboard&apos;s production goals follow what clients see, buffers included</span>
         </label>
         <div className="mt-1 max-h-40 overflow-y-auto border border-slate-200 rounded divide-y divide-slate-100 bg-white">
           {rows.map(row => (
@@ -385,7 +385,7 @@ export function BloomUpdateModal({ rows, location, onClose, onConfirmed }: {
             {stage === 'locked' ? 'Biweekly bloom update sent' : 'Send biweekly bloom update'}
           </h3>
           <p className="text-xs text-slate-400 mt-0.5">
-            {stage === 'preview' && `This is exactly what clients in ${location} will see${Object.values(buffers).some(Boolean) ? ' (buffers included — ops goals stay at the real promise)' : ''}.`}
+            {stage === 'preview' && `This is exactly what clients in ${location} will see${Object.values(buffers).some(Boolean) ? ' (buffers included — ops goals will follow these numbers)' : ''}.`}
             {stage === 'locking' && 'Locking in…'}
             {stage === 'locked' && 'Locked in and saved to history — download the image to send to clients.'}
             {stage === 'error' && errorMsg}
@@ -414,7 +414,7 @@ export function BloomUpdateModal({ rows, location, onClose, onConfirmed }: {
         <div className="px-5 pb-4 flex items-center justify-end gap-2">
           {stage === 'preview' && showEmailExport && (
             <>
-              <span className="text-[11px] text-slate-400 mr-auto">Locking in sets the ops dashboard&apos;s production goals to these promises — without the buffers added for the client email.</span>
+              <span className="text-[11px] text-slate-400 mr-auto">Locking in sets the ops dashboard&apos;s production goals to what this email tells clients — buffers included.</span>
               <button onClick={() => setShowEmailExport(false)} className="text-xs px-3 py-1.5 border border-slate-200 rounded text-slate-600 hover:bg-slate-50">
                 ← Back to review &amp; confirm
               </button>
@@ -448,11 +448,12 @@ export function BloomUpdateModal({ rows, location, onClose, onConfirmed }: {
 }
 
 // ─── History of everything ever sent ─────────────────────────────────────────────
-export function BloomHistoryModal({ updates, loading, location, onClose }: {
+export function BloomHistoryModal({ updates, loading, location, onClose, onDeleted }: {
   updates: { id: number; sent_at: string; rows: BloomUpdateRow[] }[];
   loading: boolean;
   location: string;
   onClose: () => void;
+  onDeleted?: () => void;
 }) {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [deletedIds, setDeletedIds] = useState<Set<number>>(new Set());
@@ -460,12 +461,13 @@ export function BloomHistoryModal({ updates, loading, location, onClose }: {
   const visibleUpdates = updates.filter(u => !deletedIds.has(u.id));
 
   async function handleDelete(u: { id: number; sent_at: string }) {
-    if (!window.confirm(`Delete the ${fmtLongDate(u.sent_at)} bloom update from history? This can't be undone. Locked-in production goals won't change.`)) return;
+    if (!window.confirm(`Delete the ${fmtLongDate(u.sent_at)} bloom update from history? This can't be undone. If it's the most recent one, production goals go back to the update before it.`)) return;
     setDeletingId(u.id);
     try {
       const res = await fetch(`/api/bloom-updates?id=${u.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Delete failed');
       setDeletedIds(prev => new Set(prev).add(u.id));
+      onDeleted?.();
     } catch (e) {
       window.alert(e instanceof Error ? e.message : String(e));
     } finally {
