@@ -10,7 +10,7 @@ import { getWeekMondays } from '@/lib/weekDates';
 // First month whose missed frame goal can roll forward. Months before this
 // never carry anything, so an old shortfall from before the rollover rule
 // existed can't snowball into today's goal.
-export const FRAME_ROLLOVER_START = '2026-09-01';
+export const FRAME_ROLLOVER_START = '2026-10-01';
 
 type Status = 'green' | 'yellow' | 'red' | 'none';
 
