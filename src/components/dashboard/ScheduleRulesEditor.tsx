@@ -21,15 +21,6 @@ function isActiveToday(r: ScheduleRule): boolean {
   return r.enabled && (!r.startDate || r.startDate <= t) && (!r.endDate || r.endDate >= t);
 }
 
-// Quick picks for the common "only these days" case — each sets the chosen
-// days to follow the standard schedule (blank) and every other day to 0.
-const PRESETS: { label: string; days: number[] }[] = [
-  { label: 'M/W/F',  days: [0, 2, 4] },
-  { label: 'T/Th',   days: [1, 3] },
-  { label: 'M–Th',   days: [0, 1, 2, 3] },
-  { label: 'Off',    days: [] },
-];
-
 export function ScheduleRulesEditor({ rules, standardWeeklyHours, onChange }: {
   rules?: ScheduleRule[];
   standardWeeklyHours?: number[];
@@ -99,17 +90,12 @@ export function ScheduleRulesEditor({ rules, standardWeeklyHours, onChange }: {
                 );
               })}
             </div>
-            <div className="flex items-center gap-1">
-              <span className="text-[9px] text-slate-400">Only</span>
-              {PRESETS.map(p => (
-                <button key={p.label} type="button"
-                  onClick={() => patch(r.id, { hours: Array.from({ length: 7 }, (_, j) => (p.days.includes(j) ? null : 0)) })}
-                  title={p.days.length ? `Work ${p.label} on the standard hours, every other day off` : 'Every day off for this date range'}
-                  className="text-[10px] px-1.5 py-0.5 rounded border border-slate-200 text-slate-500 bg-white hover:border-indigo-300 hover:text-indigo-600">
-                  {p.label}
-                </button>
-              ))}
-            </div>
+            <button type="button"
+              onClick={() => patch(r.id, { hours: [0, 0, 0, 0, 0, 0, 0] })}
+              title="Every day off for this date range"
+              className="text-[10px] px-1.5 py-0.5 rounded border border-slate-200 text-slate-500 bg-white hover:border-indigo-300 hover:text-indigo-600">
+              Off
+            </button>
             {active && <span className="text-[9px] font-medium text-emerald-600 bg-emerald-50 rounded px-1">active now</span>}
             <button onClick={() => onChange(list.filter(x => x.id !== r.id))}
               title="Delete this rule" className="ml-auto text-slate-300 hover:text-red-400 text-sm leading-none px-0.5">×</button>
