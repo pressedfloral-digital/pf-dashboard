@@ -8,6 +8,7 @@ import type { RipplingEmployee } from './EmployeeAutocomplete';
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { HistoricalsSection } from './HistoricalsSection';
 import { DisapprovalRateSection } from './DisapprovalRateSection';
+import { DesignKpiBars } from './DesignKpiBars';
 import {
   useKpiMetrics, getWindowsByType, selectLocation, selectDept, selectEstimated,
   fmtRatio, fmtCPO, fmtUnits, DEPT_LABELS, DEPT_PRODUCTION_UNIT,
@@ -4354,7 +4355,6 @@ export function SchedulePage({
   }
 
   const avgIntake = settings.avgIntake;
-  function setAvgIntake(v: number) { update('avgIntake', v); }
 
   const [showRoster,   setShowRoster]  = useState(false);
   const [weekOffset,   setWeekOffset]  = useState(0);
@@ -5464,20 +5464,7 @@ export function SchedulePage({
       {/* ── DESIGN dept ─────────────────────────────────────────────────────── */}
       {dept === 'design' && (
         <>
-          <DeptKPIBar dept="design" location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} />
-
-          {/* Est. bouquets delivered — fallback intake estimate used when no
-              per-week estimate is set (see Queue & Turnaround); this is the
-              only summary card here that feeds a live calculation, so it
-              stays even with the pure-readout queue/capacity cards removed. */}
-          <div className="bg-white border border-slate-100 rounded-xl p-4 inline-flex items-center gap-3 w-fit">
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Est. bouquets/week delivered</p>
-              <p className="text-xs text-slate-400">fallback when no per-week estimate set</p>
-            </div>
-            <input type="number" value={avgIntake} onChange={e => setAvgIntake(parseInt(e.target.value) || 0)}
-              className="w-20 border border-slate-200 rounded px-2 py-1 text-xl font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-300" />
-          </div>
+          <DesignKpiBars location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} />
 
           {/* Roster editor */}
           <div>
