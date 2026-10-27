@@ -5809,7 +5809,6 @@ export function SchedulePage({
                         <td className={`sticky left-0 z-10 ${di % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
                           <div className="font-medium text-slate-700">{d.name}</div>
                           <MemberTierBadges name={d.name} location={location} dept="Design" fallbackRole={(d as {role?:string}).role} fallbackIsManager={!!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager)} />
-                          <div className="text-slate-400">{d.ratio} h/f</div>
                           {d.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
                         </td>
                         {windowWeeks.map(w => {
