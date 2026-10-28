@@ -13,7 +13,7 @@ import MyDashboardClient from './MyDashboardClient';
 import LaborCostPage from './LaborCostPage';
 import InventoryPage from './InventoryPage';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
-import { HelpTip, HelpTipProvider } from './HelpTip';
+import { HelpTip, HelpTipProvider, HelpToggle } from './HelpTip';
 
 interface PipelineCount {
   status: string;
@@ -119,6 +119,7 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
             <HelpTip id={`tab.${id}`}>{label}</HelpTip>
           </button>
         ))}
+        <HelpToggle />
       </div>
 
       {/* ── DASHBOARD TAB ────────────────────────────────────────────────────── */}
