@@ -39,6 +39,11 @@ create table ratio_sheet_backfill (
   primary key (week_of, location, department)
 );
 
+-- Server-only, like every dashboard table (see
+-- restrict_dashboard_data_api): the dashboard reads it with service_role.
+alter table ratio_sheet_backfill enable row level security;
+revoke all on ratio_sheet_backfill from public, anon, authenticated;
+
 insert into ratio_sheet_backfill (week_of, location, department, ratio_hours, ratio_production) values
   ('2024-01-01', 'Utah', 'Preservation', 75.47, 45),
   ('2024-01-08', 'Utah', 'Preservation', 132.98, 54),
