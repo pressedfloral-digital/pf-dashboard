@@ -6,6 +6,7 @@ import {
   type KpiDept, type KpiLocation, type KpiState,
 } from '@/hooks/useKpiMetrics';
 import { getWeekMondays } from '@/lib/weekDates';
+import { HelpTip } from './HelpTip';
 
 // First month whose missed production goal can roll forward. Months before this
 // never carry anything, so an old shortfall from before the rollover rule
@@ -58,7 +59,7 @@ function MetricPaceBar({ label, actual, goal, expected, fmt, plain }: {
   return (
     <div className="flex-1 min-w-[220px]">
       <div className="flex items-baseline justify-between mb-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label} · month to date</span>
+        <HelpTip id="sched.kpi" className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label} · month to date</HelpTip>
         {!plain && <span className={`text-[10px] font-semibold rounded px-1.5 py-px ${s.chip}`}>{s.label}</span>}
       </div>
       <div className="flex items-center gap-3">

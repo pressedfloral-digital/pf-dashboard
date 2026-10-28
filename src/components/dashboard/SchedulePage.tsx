@@ -33,6 +33,7 @@ import { useDistributionEstimate } from '@/hooks/useDistributionEstimate';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
 import { SyncedOrdersPopover } from './SyncedOrdersPopover';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
+import { HelpTip } from './HelpTip';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -681,7 +682,7 @@ function HistoricalsTab({ designers, location, teamActuals, onActualsSaved, canV
       <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-slate-700">Week of {fmtDate(selectedWeek)}</h3>
+            <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.weekActuals">Week of {fmtDate(selectedWeek)}</HelpTip></h3>
             <p className="text-xs text-slate-400 mt-0.5">Enter actual frames completed and hours worked. Saved to shared database.</p>
           </div>
         </div>
@@ -745,7 +746,7 @@ function HistoricalsTab({ designers, location, teamActuals, onActualsSaved, canV
       {/* All-weeks overview */}
       <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-100">
-          <h3 className="text-sm font-semibold text-slate-700">All weeks overview</h3>
+          <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.allWeeks">All weeks overview</HelpTip></h3>
           <p className="text-xs text-slate-400 mt-0.5">Populated as you save each week. Shared across all logged-in users.</p>
         </div>
         <div className="overflow-x-auto">
@@ -789,7 +790,7 @@ function HistoricalsTab({ designers, location, teamActuals, onActualsSaved, canV
       {Object.keys(monthlyByDesigner).length > 0 && (
         <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-slate-100">
-            <h3 className="text-sm font-semibold text-slate-700">Monthly actuals summary</h3>
+            <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.monthlySummary">Monthly actuals summary</HelpTip></h3>
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full text-xs">
@@ -1307,7 +1308,7 @@ function DeptHistoricalsTab({ department, location, teamMembers, teamActuals, on
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <h3 className="text-sm font-semibold text-slate-700">Historicals — {department} · {location}</h3>
+          <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.historicals">Historicals — {department} · {location}</HelpTip></h3>
           <p className="text-xs text-slate-400 mt-0.5">Edit any cell — saves automatically. Shows last {displayWeeks.length} weeks.</p>
         </div>
         <div className="flex items-center gap-2">
@@ -1359,7 +1360,7 @@ function DeptHistoricalsTab({ department, location, teamMembers, teamActuals, on
       {/* All weeks inline-editable grid */}
       <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-100">
-          <h3 className="text-sm font-semibold text-slate-700">All weeks overview</h3>
+          <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.allWeeks">All weeks overview</HelpTip></h3>
           <p className="text-xs text-slate-400 mt-0.5">Click any number to edit. Top = {ordersLabel}, bottom = hours. Saves automatically.</p>
         </div>
         <div className="overflow-x-auto">
@@ -2387,7 +2388,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
             <button key={t} onClick={() => setPresTab(t)}
               className={`px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
                 presTab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}>{t === 'thisweek' ? 'This Week' : t === 'schedule' ? 'Weekly Schedule' : t === 'queue' ? 'Queue & Turnaround' : 'Historicals'}</button>
+              }`}><HelpTip id={`sched.tab.${t}`}>{t === 'thisweek' ? 'This Week' : t === 'schedule' ? 'Weekly Schedule' : t === 'queue' ? 'Queue & Turnaround' : 'Historicals'}</HelpTip></button>
           ))}
         </div>
       )}
@@ -2733,7 +2734,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
           <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 flex-wrap gap-2">
                   <div className="flex items-center gap-3">
-                    <h3 className="text-sm font-semibold text-slate-700">Hours per team member per week</h3>
+                    <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.hoursPerMember">Hours per team member per week</HelpTip></h3>
                     {weeklyShopifyLoading && <span className="text-xs text-slate-400 italic">Loading event data…</span>}
                   </div>
                   <div className="flex items-center gap-2">
@@ -2909,7 +2910,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
         <div className="space-y-6">
           <div className="bg-white border border-slate-100 rounded-xl p-5">
             <div className="flex items-start justify-between gap-2 flex-wrap mb-1">
-              <h2 className="text-sm font-semibold text-slate-700">Weekly staffing check — are we staffed for what&apos;s arriving?</h2>
+              <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.staffingCheck">Weekly staffing check — are we staffed for what&apos;s arriving?</HelpTip></h2>
             </div>
             <p className="text-xs text-slate-400 mb-4">
               Preservation shouldn&apos;t carry a backlog — whatever&apos;s estimated to arrive in a week should get preserved that same week.
@@ -2921,7 +2922,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                 <thead>
                   <tr className="text-slate-400">
                     <th className="text-left font-medium px-2 py-1.5 sticky left-0 bg-white whitespace-nowrap">Week</th>
-                    <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Bouquets received (est.)</th>
+                    <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap"><HelpTip id="sched.bouquetsEst">Bouquets received (est.)</HelpTip></th>
                     <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">On-call support</th>
                     <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Preservation hours</th>
                     <th className="text-left font-medium px-2 py-1.5 min-w-[220px]">Staffing</th>
@@ -3324,7 +3325,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
           <button key={t} onClick={() => setFfTab(t)}
             className={`px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
               ffTab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}>{t === 'thisweek' ? 'This Week' : t === 'schedule' ? 'Weekly Schedule' : t === 'queue' ? 'Queue & Turnaround' : 'Historicals'}</button>
+            }`}><HelpTip id={`sched.tab.${t}`}>{t === 'thisweek' ? 'This Week' : t === 'schedule' ? 'Weekly Schedule' : t === 'queue' ? 'Queue & Turnaround' : 'Historicals'}</HelpTip></button>
         ))}
       </div>
 
@@ -3590,7 +3591,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
         <>
           <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 flex-wrap gap-2">
-              <h3 className="text-sm font-semibold text-slate-700">Hours per team member per week</h3>
+              <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.hoursPerMember">Hours per team member per week</HelpTip></h3>
               <div className="flex items-center gap-2">
                 <InputModeToggle mode={ffInputMode} onChange={setFfInputMode} unitLabel="Frames" />
                 <button onClick={() => setWeekOffset(Math.max(0, weekOffset - WINDOW))} disabled={weekOffset === 0}
@@ -3714,7 +3715,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
         <div className="space-y-6">
           <div className="bg-white border border-slate-100 rounded-xl p-5">
             <div className="flex items-start justify-between gap-2 flex-wrap mb-1">
-              <h2 className="text-sm font-semibold text-slate-700">Hiring plan — hypothetical new hires</h2>
+              <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.hiring">Hiring plan — hypothetical new hires</HelpTip></h2>
             </div>
             <p className="text-xs text-slate-400 mb-3">
               Hours/wk a hypothetical new hire starting that week would average. Affects the Planned column below for every
@@ -3751,7 +3752,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
           <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
             <div className="px-5 py-3 border-b border-slate-100 flex items-start justify-between gap-3 flex-wrap">
               <div>
-                <h2 className="text-sm font-semibold text-slate-700">Queue &amp; turnaround — every intake week, oldest first</h2>
+                <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.queueTurnaround">Queue &amp; turnaround — every intake week, oldest first</HelpTip></h2>
                 <p className="text-xs text-slate-400 mt-0.5">
                   Every intake week, received or not: estimated weeks from today until that cohort ships, chaining Design&apos;s own queue estimate
                   into Fulfillment&apos;s for whatever hasn&apos;t reached Fulfillment yet. Target is {FF_TARGET_WEEKS} weeks or less. Based on {location} fulfillment
@@ -3776,7 +3777,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                     <th className="px-4 py-2 text-left font-medium text-slate-500 whitespace-nowrap">Intake week</th>
                     <th className="px-3 py-2 text-right font-medium text-slate-500">Orders</th>
                     <th className="px-3 py-2 text-right font-medium text-slate-500">Status</th>
-                    <th className="px-3 py-2 text-left font-medium text-slate-500 min-w-[160px]">Weeks until fulfilled</th>
+                    <th className="px-3 py-2 text-left font-medium text-slate-500 min-w-[160px]"><HelpTip id="sched.weeksUntilFulfilled">Weeks until fulfilled</HelpTip></th>
                     <th className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap">Total to fulfill</th>
                     <th className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap" title={`Total time in the Fulfillment stage, start to finish — actual + remaining for orders already there, projected for orders still upstream. Red if over ${FF_TARGET_WEEKS} weeks.`}>Time in Fulfillment</th>
                   </tr>
@@ -4145,7 +4146,7 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-slate-700">{location} master schedule</h2>
+          <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.masterSchedule">{location} master schedule</HelpTip></h2>
           <p className="text-xs text-slate-400 mt-0.5">
             Everyone&apos;s week by day, coloured by department. Click a default or availability to edit it.
             <span className="ml-2 text-red-500 font-medium">Red ⚠ = over-scheduled</span>
@@ -5618,7 +5619,7 @@ export function SchedulePage({
                     ? 'bg-indigo-600 text-white'
                     : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
                 }`}>
-                {label}
+                <HelpTip id={`sched.dept.${id}`}>{label}</HelpTip>
               </button>
             ))}
           </div>
@@ -5813,7 +5814,7 @@ export function SchedulePage({
                     ? 'border-indigo-600 text-indigo-600'
                     : 'border-transparent text-slate-500 hover:text-slate-700'
                 }`}>
-                {label}
+                <HelpTip id={`sched.tab.${id}`}>{label}</HelpTip>
               </button>
             ))}
           </div>
@@ -6087,7 +6088,7 @@ export function SchedulePage({
             <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
               <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 flex-wrap gap-2">
                 <div className="flex items-center gap-4">
-                  <h2 className="text-sm font-semibold text-slate-700">Hours per designer per week</h2>
+                  <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.hoursPerMember">Hours per designer per week</HelpTip></h2>
                   {hasRates && (
                     <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer">
                       <input type="checkbox" checked={showCPO} onChange={e => setShowCPO(e.target.checked)} className="rounded" />
@@ -6203,7 +6204,7 @@ export function SchedulePage({
             <div className="space-y-6">
               <div className="bg-white border border-slate-100 rounded-xl p-5">
                 <div className="flex items-start justify-between gap-2 flex-wrap mb-1">
-                  <h2 className="text-sm font-semibold text-slate-700">Hiring plan — hypothetical new hires</h2>
+                  <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.hiring">Hiring plan — hypothetical new hires</HelpTip></h2>
                 </div>
                 <p className="text-xs text-slate-400 mb-3">
                   Hours/wk a hypothetical new hire starting that week would average. Affects the Planned column below for that
@@ -6240,7 +6241,7 @@ export function SchedulePage({
               <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
                 <div className="px-5 py-3 border-b border-slate-100 flex items-start justify-between gap-3 flex-wrap">
                   <div>
-                    <h2 className="text-sm font-semibold text-slate-700">Queue &amp; turnaround — every intake week, oldest first</h2>
+                    <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.queueTurnaround">Queue &amp; turnaround — every intake week, oldest first</HelpTip></h2>
                     <p className="text-xs text-slate-400 mt-0.5">
                       One flow from oldest intake to newest, mixing actual (already-received) cohorts with estimated (not-yet-received)
                       weeks — the underlying math is the same either way. Based on {location} design backlog of{' '}
@@ -6344,7 +6345,7 @@ export function SchedulePage({
                           <th className="px-4 py-2 text-left font-medium text-slate-500 whitespace-nowrap">Intake week</th>
                           <th className="px-3 py-2 text-right font-medium text-slate-500">Bouquets received</th>
                           <th className="px-3 py-2 text-right font-medium text-slate-500">Status</th>
-                          <th className="px-3 py-2 text-left font-medium text-slate-500 min-w-[160px]">Weeks until designed</th>
+                          <th className="px-3 py-2 text-left font-medium text-slate-500 min-w-[160px]"><HelpTip id="sched.weeksUntilDesigned">Weeks until designed</HelpTip></th>
                           <th className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap">Total to design</th>
                           <th className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap">Total w/ fulfillment</th>
                         </tr>
@@ -6645,7 +6646,7 @@ export function SchedulePage({
             <div className="space-y-6">
               <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
                 <div className="px-5 py-3 border-b border-slate-100">
-                  <h2 className="text-sm font-semibold text-slate-700">Monthly summary</h2>
+                  <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.monthlySummary">Monthly summary</HelpTip></h2>
                   <p className="text-xs text-slate-400 mt-0.5">Each week attributed to the month of its Monday. Monthly ratio = total hours ÷ total frames.</p>
                 </div>
                 <div className="overflow-x-auto">
@@ -6685,7 +6686,7 @@ export function SchedulePage({
 
               <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
                 <div className="px-5 py-3 border-b border-slate-100">
-                  <h2 className="text-sm font-semibold text-slate-700">Per-designer monthly breakdown</h2>
+                  <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.perDesigner">Per-designer monthly breakdown</HelpTip></h2>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-xs">
@@ -6754,7 +6755,7 @@ export function SchedulePage({
       {dept === 'payroll' && (
         <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-100">
-            <h3 className="text-sm font-semibold text-slate-700">Rippling Payroll Upload</h3>
+            <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.rippling">Rippling Payroll Upload</HelpTip></h3>
             <p className="text-xs text-slate-400 mt-0.5">Upload the &quot;Payroll Cost by Location and Department&quot; report from Rippling every two weeks. Data is stored securely and used only for accurate CPO calculations — pay details are never shown to team members.</p>
           </div>
           <div className="p-5">

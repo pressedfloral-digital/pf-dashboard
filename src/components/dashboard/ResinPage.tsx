@@ -12,6 +12,7 @@ import { ScheduleRulesEditor } from './ScheduleRulesEditor';
 import { TimeOffCalendar, toTimeOffMember } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
+import { HelpTip } from './HelpTip';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -564,7 +565,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-purple-500" />
-          <h2 className="text-sm font-semibold text-slate-700">Resin Scheduling</h2>
+          <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="resin.title">Resin Scheduling</HelpTip></h2>
           {saveState === 'saving' && <span className="text-xs text-slate-400">Saving…</span>}
           {saveState === 'saved'  && <span className="text-xs text-emerald-500">Saved</span>}
           {saveState === 'error'  && <span className="text-xs text-red-500">Save failed</span>}
@@ -766,7 +767,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              {label}
+              <HelpTip id={id === 'schedule' ? 'resin.tab.schedule' : `sched.tab.${id}`}>{label}</HelpTip>
             </button>
           ))}
         </div>
@@ -923,7 +924,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
         <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 flex-wrap gap-2">
             <div className="flex items-center gap-4">
-              <h3 className="text-sm font-semibold text-slate-700">Hours per team member per week</h3>
+              <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.hoursPerMember">Hours per team member per week</HelpTip></h3>
               {hasRates && (
                 <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer">
                   <input type="checkbox" checked={showCPO} onChange={e => setShowCPO(e.target.checked)} className="rounded" />
@@ -1063,7 +1064,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
           <div className="bg-white border border-slate-100 rounded-xl p-5">
             <div className="flex items-start justify-between gap-4 flex-wrap mb-1">
               <h3 className="text-sm font-semibold text-slate-700">
-                Turnaround — by event-date intake week
+                <HelpTip id="resin.turnaround">Turnaround — by event-date intake week</HelpTip>
               </h3>
               <label className="flex items-center gap-1.5 text-xs text-slate-500 shrink-0">
                 Currently designing as of
@@ -1235,7 +1236,7 @@ function ResinQueueTable({ queueFrontWeek }: { queueFrontWeek: string | null }) 
   return (
     <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
       <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
-        <h3 className="text-sm font-semibold text-slate-700">Queue — all {total.toLocaleString()} units</h3>
+        <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="resin.queue">Queue — all {total.toLocaleString()} units</HelpTip></h3>
         <div className="flex items-center gap-2 text-xs text-slate-400">
           <button onClick={() => { setPage(p => Math.max(1, p - 1)); fetchPage(Math.max(1, page - 1)); }}
             disabled={page === 1} className="disabled:opacity-30 hover:text-slate-600">← Prev</button>
