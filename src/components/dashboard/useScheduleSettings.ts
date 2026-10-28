@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { DailyHoursMap, ScheduleRule } from '@/lib/scheduleResolution';
+import type { UnavailabilityEntry } from './Unavailability';
 export type { DailyHoursMap, ScheduleRule };
 
 export interface DesignerRoster {
@@ -14,6 +15,8 @@ export interface DesignerRoster {
     // grid, future editing) while keeping their historical scheduled hours
     // intact for past-period goal/CPO calculations.
     _removed?: boolean;
+    // Row position on the schedule grids (drag to reorder); unset sorts last.
+    _order?: number;
     // Standard Mon-Sun hours (index 0=Monday..6=Sunday) — the base "This Week"
     // falls back to wherever no explicit daily override exists. See
     // src/lib/scheduleResolution.ts.
@@ -54,7 +57,7 @@ export interface PresSettings {
 export interface TeamRoster {
   [memberId: string]: {
     ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number;
-    isManager?: boolean; role?: 'specialist'|'senior'|'master'; _removed?: boolean;
+    isManager?: boolean; role?: 'specialist'|'senior'|'master'; _removed?: boolean; _order?: number;
     // Standard Mon-Sun hours (index 0=Monday..6=Sunday) — see DesignerRoster.
     standardWeeklyHours?: number[];
     // Manager-only standard Mon-Sun TOTAL hours — see DesignerRoster.
@@ -110,6 +113,9 @@ export interface ScheduleSettings {
   designDailyHours:   DailyHoursMap;
   presDailyHours:     DailyHoursMap;
   presCheckHours:     DailyHoursMap;
+  // Per-person check counts on the Preservation This Week grid, keyed like
+  // presCheckHours; null = take the automatic share of that day's checks.
+  presCheckCounts:    DailyHoursMap;
   ffDailyHours:       DailyHoursMap;
   // Resin scheduling
   resinRoster:        unknown;
@@ -143,6 +149,9 @@ export interface ScheduleSettings {
   // setWeekLogged is how much design output setWeek had already logged at
   // that moment, so only output logged afterward advances the front.
   designQueueFront: { weekOf: string; remaining: number; setWeek: string; setWeekLogged: number } | null;
+  // Unavailability / preferred-hours markers for the schedule grids — visual
+  // only, never changes scheduled hours or pay. See Unavailability.tsx.
+  unavailability: UnavailabilityEntry[];
 }
 
 const DEFAULTS: ScheduleSettings = {
@@ -162,6 +171,7 @@ const DEFAULTS: ScheduleSettings = {
   designDailyHours: {},
   presDailyHours: {},
   presCheckHours: {},
+  presCheckCounts: {},
   ffDailyHours: {},
   resinRoster: null,
   resinHours: {},
@@ -174,15 +184,16 @@ const DEFAULTS: ScheduleSettings = {
   bloomStockScenarios: [],
   bloomStockDeadline: null,
   designQueueFront: null,
+  unavailability: [],
 };
 
 const KEYS: (keyof ScheduleSettings)[] = [
   'designHours','designRoster','presHours','presRoster','presSettings',
   'ffHours','ffRoster','masterAvailability','avgIntake','newHireHours','ffNewHireHours','presNewHireHours','weeklyEstimates','weeklyMultipliers',
-  'mgrTotalHours','mgrTotalDailyHours','designDailyHours','ffDailyHours','presDailyHours','presCheckHours',
+  'mgrTotalHours','mgrTotalDailyHours','designDailyHours','ffDailyHours','presDailyHours','presCheckHours','presCheckCounts',
   'resinRoster','resinHours','resinDailyHours','resinQueueFrontWeek',
   'bloomStockRoster','bloomStockDailyHours','bloomStockRatio','bloomStockWeeklyEstimates','bloomStockScenarios','bloomStockDeadline',
-  'designQueueFront',
+  'designQueueFront','unavailability',
 ];
 
 export function useScheduleSettings(location: 'Utah' | 'Georgia') {

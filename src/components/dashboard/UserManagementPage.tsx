@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { useRouter } from "next/navigation";
 import { TeamMemberSelect } from "./TeamMemberSelect";
+import { HelpTip } from "./HelpTip";
 
 type UserRole = "admin" | "general_manager" | "manager" | "user";
 
@@ -149,7 +150,7 @@ export default function UserManagementPage() {
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Team Access</h1>
+          <h1 className="text-2xl font-semibold text-gray-900"><HelpTip id="team.title">Team Access</HelpTip></h1>
           <p className="text-sm text-gray-500 mt-1">{users.length} registered user{users.length !== 1 ? "s" : ""}</p>
         </div>
         <button
@@ -175,7 +176,7 @@ export default function UserManagementPage() {
       {/* Invite Form */}
       {showInviteForm && (
         <div className="mb-6 p-5 bg-white border border-gray-200 rounded-xl shadow-sm">
-          <h2 className="text-base font-semibold text-gray-900 mb-4">Invite New User</h2>
+          <h2 className="text-base font-semibold text-gray-900 mb-4"><HelpTip id="team.invite">Invite New User</HelpTip></h2>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Full Name *</label>
@@ -359,11 +360,11 @@ export default function UserManagementPage() {
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50">
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide">Name</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide">Role</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide">Location</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide"><HelpTip id="team.role">Role</HelpTip></th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide"><HelpTip id="team.location">Location</HelpTip></th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide">Department</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide">Manager</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide">Schedule Name</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide"><HelpTip id="team.manager">Manager</HelpTip></th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide"><HelpTip id="team.scheduleName">Schedule Name</HelpTip></th>
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>

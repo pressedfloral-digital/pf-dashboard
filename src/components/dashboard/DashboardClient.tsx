@@ -13,6 +13,7 @@ import MyDashboardClient from './MyDashboardClient';
 import LaborCostPage from './LaborCostPage';
 import InventoryPage from './InventoryPage';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { HelpTip, HelpTipProvider } from './HelpTip';
 
 interface PipelineCount {
   status: string;
@@ -91,6 +92,7 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
   }
 
   return (
+    <HelpTipProvider>
     <div className="space-y-6">
 
       {/* ── Top-level tab bar ─────────────────────────────────────────────────── */}
@@ -114,7 +116,7 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
                 : 'border-transparent text-slate-500 hover:text-slate-700'
             }`}
           >
-            {label}
+            <HelpTip id={`tab.${id}`}>{label}</HelpTip>
           </button>
         ))}
       </div>
@@ -123,7 +125,7 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
       {mainTab === 'dashboard' && (
         <div className="space-y-8">
           <div className="flex items-center gap-3">
-            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Location</span>
+            <HelpTip id="dash.location" className="text-xs font-semibold uppercase tracking-wide text-slate-500">Location</HelpTip>
             <div className="flex gap-1.5 flex-wrap">
               {locations.map(loc => (
                 <button
@@ -179,5 +181,6 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
       )}
 
     </div>
+    </HelpTipProvider>
   );
 }

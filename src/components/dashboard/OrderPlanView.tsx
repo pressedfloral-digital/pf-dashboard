@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { applyEdits, type OrderEdits, type OrderPlan, type PlanRow } from '@/lib/katanaPlan';
 import { mondayOf, addWeeks as addWeeksIso } from '@/lib/designInventory';
 import SupplierPoCard, { OrderByBadge, fmtWeek, label, urgency, weeksUntilShort, type EditAction } from './SupplierPoCard';
+import { HelpTip } from './HelpTip';
 
 function fmtQty(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -131,7 +132,7 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-slate-700">What to order — Katana stock vs. the Design schedule</h2>
+          <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="inv.plan.title">What to order — Katana stock vs. the Design schedule</HelpTip></h2>
           <p className="text-xs text-slate-500 mt-1 max-w-3xl">
             Each scheduled order (frame, backing and glass) is broken into its Katana recipe. Each week&apos;s components are
             taken out of {plan.location}&apos;s Katana stock plus what&apos;s already on order, in schedule order. The number shown
@@ -184,7 +185,7 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
           lateCount ? 'border-rose-200 bg-rose-50 text-rose-900' : 'border-amber-200 bg-amber-50 text-amber-900'
         }`}>
           <span className="font-semibold">
-            Order now: {dueNow.length} item{dueNow.length === 1 ? '' : 's'}
+            <HelpTip id="inv.orderNow">Order now: {dueNow.length} item{dueNow.length === 1 ? '' : 's'}</HelpTip>
             {lateCount > 0 && <> ({lateCount} already past their order-by date{shortNowCount > 0 ? `, ${shortNowCount} short now` : ''})</>}
           </span>
           <span className="text-xs">from {dueSuppliers.join(', ')}</span>
@@ -192,7 +193,7 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
             Lead times: Border and Square 6 wks, InLine Ovals 8 wks, everyone else 6 wks before the Monday it&apos;s needed. Ernest Packaging items aren&apos;t counted.
           </span>
           {groupBy !== 'supplier' && (
-            <button onClick={() => setGroupBy('supplier')} className="ml-auto text-xs underline">Create POs by supplier</button>
+            <button onClick={() => setGroupBy('supplier')} className="ml-auto text-xs underline"><HelpTip id="inv.createPos">Create POs by supplier</HelpTip></button>
           )}
         </div>
       )}
@@ -309,7 +310,7 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
                     <thead className="text-slate-400">
                       <tr>
                         <th className="px-4 py-1.5 text-left font-medium">Component</th>
-                        <th className="px-2 py-1.5 text-right font-medium">Needed this wk</th>
+                        <th className="px-2 py-1.5 text-right font-medium"><HelpTip id="inv.col.neededWk">Needed this wk</HelpTip></th>
                         <th className="px-4 py-1.5 text-right font-medium">Order</th>
                       </tr>
                     </thead>
@@ -346,15 +347,15 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
             <thead className="bg-slate-50 text-slate-500">
               <tr>
                 <th className="sticky left-0 bg-slate-50 px-3 py-2 text-left font-medium">Component</th>
-                <th className="px-3 py-2 text-left font-medium">Supplier</th>
-                <th className="px-2 py-2 text-left font-medium">Order by</th>
-                <th className="px-2 py-2 text-right font-medium">In stock</th>
-                <th className="px-2 py-2 text-right font-medium">On order</th>
-                <th className="px-2 py-2 text-right font-medium whitespace-nowrap">Needed thru {thruShort}</th>
+                <th className="px-3 py-2 text-left font-medium"><HelpTip id="inv.col.supplier">Supplier</HelpTip></th>
+                <th className="px-2 py-2 text-left font-medium"><HelpTip id="inv.col.orderBy">Order by</HelpTip></th>
+                <th className="px-2 py-2 text-right font-medium"><HelpTip id="inv.col.inStock">In stock</HelpTip></th>
+                <th className="px-2 py-2 text-right font-medium"><HelpTip id="inv.col.onOrder">On order</HelpTip></th>
+                <th className="px-2 py-2 text-right font-medium whitespace-nowrap"><HelpTip id="inv.col.neededThru">Needed thru {thruShort}</HelpTip></th>
                 {weeks.map(w => (
                   <th key={w} className="px-2 py-2 text-center font-medium whitespace-nowrap">{fmtWeek(w)}</th>
                 ))}
-                <th className="px-3 py-2 text-center font-medium whitespace-nowrap">To order</th>
+                <th className="px-3 py-2 text-center font-medium whitespace-nowrap"><HelpTip id="inv.col.toOrder">To order</HelpTip></th>
               </tr>
             </thead>
             <tbody>

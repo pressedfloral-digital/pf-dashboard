@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { qtyDueBy, type PlanRow } from '@/lib/katanaPlan';
 import { addWeeks } from '@/lib/designInventory';
+import { HelpTip } from './HelpTip';
 
 // "Oct 26", or "Feb 1, 2027" when the date isn't in the current year.
 export function fmtWeek(iso: string): string {
@@ -315,8 +316,8 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
           <tr>
             <th className="w-6 pl-4 py-1.5" />
             <th className="px-2 py-1.5 text-left font-medium">Component</th>
-            <th className="px-2 py-1.5 text-left font-medium">Order by</th>
-            <th className="px-4 py-1.5 text-right font-medium">PO qty</th>
+            <th className="px-2 py-1.5 text-left font-medium"><HelpTip id="inv.col.orderBy">Order by</HelpTip></th>
+            <th className="px-4 py-1.5 text-right font-medium"><HelpTip id="inv.col.poQty">PO qty</HelpTip></th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-50">
@@ -453,11 +454,11 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
                 <thead className="text-slate-400">
                   <tr>
                     <th className="py-1 text-left font-medium">Component</th>
-                    <th className="px-2 py-1 text-right font-medium">In stock</th>
-                    <th className="px-2 py-1 text-right font-medium">On order</th>
-                    <th className="px-2 py-1 text-right font-medium">Use / wk</th>
-                    <th className="px-2 py-1 text-right font-medium">Covered until</th>
-                    <th className="pl-2 py-1 text-right font-medium">Order by</th>
+                    <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.inStock">In stock</HelpTip></th>
+                    <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.onOrder">On order</HelpTip></th>
+                    <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.usePerWk">Use / wk</HelpTip></th>
+                    <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.coveredUntil">Covered until</HelpTip></th>
+                    <th className="pl-2 py-1 text-right font-medium"><HelpTip id="inv.col.orderBy">Order by</HelpTip></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
