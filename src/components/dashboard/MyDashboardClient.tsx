@@ -1,5 +1,6 @@
 'use client';
 import { useState, useEffect } from "react";
+import { getWeekLabel } from "@/lib/weekDates";
 
 type UserProfile = {
   clerk_user_id: string;
@@ -35,6 +36,13 @@ interface UpcomingWeek {
   crossDept?: { dept: string; hours: number }[];
 }
 
+interface DeptSchedule {
+  dept: string;
+  isHome: boolean;
+  ratio: number | null;
+  weeks: { weekOf: string; hours: number }[];
+}
+
 interface DashboardData {
   dailyHours: number[];
   memberName: string;
@@ -43,6 +51,7 @@ interface DashboardData {
   thisWeek: ThisWeek | null;
   historicals: HistoricalRow[];
   upcomingWeeks: UpcomingWeek[];
+  deptSchedules?: DeptSchedule[];
   avgHours: number | null;
   avgOrders: number | null;
   homeDepartment?: string | null;
@@ -156,32 +165,7 @@ export default function MyDashboardClient({ profile }: { profile: UserProfile })
 
           {/* 52-Week Planner */}
           {tab === "52-Week Planner" && (
-            <div className="bg-white rounded-xl border border-gray-200 p-6">
-              <h2 className="text-sm font-semibold text-gray-700 mb-2">Your Tentative Schedule</h2>
-              <p className="text-sm text-gray-400 mb-6">Forward-looking schedule based on current planning.</p>
-              <div className="space-y-2">
-                {(data?.upcomingWeeks ?? []).map((w, i) => {
-                  const crossTotal = (w.crossDept ?? []).reduce((s, cd) => s + cd.hours, 0);
-                  const homeHours = w.scheduledHours !== null ? Math.round((w.scheduledHours - crossTotal) * 10) / 10 : 0;
-                  const breakdown: string[] = [];
-                  if (homeHours > 0) breakdown.push(`${homeHours}h ${data?.homeDepartment ?? ''}`);
-                  (w.crossDept ?? []).forEach(cd => breakdown.push(`${cd.hours}h ${cd.dept}`));
-                  return (
-                    <div key={i} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
-                      <span className="text-sm text-gray-600">Week of {fmtDate(w.weekOf)}</span>
-                      <div className="flex flex-col items-end gap-0.5">
-                        <span className="text-sm text-gray-700 font-medium">
-                          {w.scheduledHours !== null ? `${w.scheduledHours} hrs total` : "— hrs scheduled"}
-                        </span>
-                        {breakdown.length > 0 && (
-                          <span className="text-xs text-gray-400 capitalize">{breakdown.join(', ')}</span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            <MyWeeklySchedule deptSchedules={data?.deptSchedules ?? []} />
           )}
 
           {/* My Historicals */}
@@ -281,6 +265,103 @@ function buildMonthlyRollup(historicals: HistoricalRow[]) {
     ratio:  d.hours > 0 && d.orders > 0 ? Math.round((d.hours / d.orders) * 100) / 100 : null,
     orders: d.orders,
   }));
+}
+
+const UNIT_SHORT: Record<string, string> = { design: "f", resin: "units" };
+const WEEKS = 52;
+const WINDOW = 8;
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+// The team member's own rows from each department's Weekly Schedule —
+// same weeks-across layout, one row per department they're scheduled in.
+function MyWeeklySchedule({ deptSchedules }: { deptSchedules: DeptSchedule[] }) {
+  const [weekOffset, setWeekOffset] = useState(0);
+  const windowWeeks = Array.from({ length: WINDOW }, (_, i) => weekOffset + i);
+  const multiDept = deptSchedules.length > 1;
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 flex-wrap gap-2">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-700">Your Weekly Schedule</h2>
+          <p className="text-xs text-gray-400 mt-0.5">Hours you're scheduled per week, by department. Future weeks are tentative.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setWeekOffset(Math.max(0, weekOffset - WINDOW))} disabled={weekOffset === 0}
+            className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">← Prev</button>
+          <span className="text-xs text-slate-400">
+            {getWeekLabel(weekOffset)} – {getWeekLabel(weekOffset + WINDOW - 1)}
+          </span>
+          <button onClick={() => setWeekOffset(Math.min(WEEKS - WINDOW, weekOffset + WINDOW))} disabled={weekOffset + WINDOW >= WEEKS}
+            className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">Next →</button>
+        </div>
+      </div>
+      {deptSchedules.length === 0 ? (
+        <p className="text-sm text-gray-400 px-5 py-6">No scheduled shifts found.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-xs">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-100">
+                <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 whitespace-nowrap min-w-[140px]">Department</th>
+                {windowWeeks.map(w => (
+                  <th key={w} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[90px]">
+                    {getWeekLabel(w)}
+                    {w === 0 && <span className="ml-1 text-[10px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {deptSchedules.map((d, di) => {
+                const unit = UNIT_SHORT[d.dept] ?? "ord";
+                return (
+                  <tr key={d.dept} className={`border-b border-slate-50 ${di % 2 === 0 ? "" : "bg-slate-50/40"}`}>
+                    <td className={`sticky left-0 z-10 ${di % 2 === 0 ? "bg-white" : "bg-slate-50"} px-4 py-2 whitespace-nowrap`}>
+                      <div className={`font-medium capitalize ${d.isHome ? "text-slate-700" : "text-amber-700"}`}>{d.dept}</div>
+                      {d.ratio ? <div className="text-slate-400">{d.ratio} h/{unit === "units" ? "unit" : unit === "f" ? "frame" : "ord"}</div> : null}
+                    </td>
+                    {windowWeeks.map(w => {
+                      const hours = d.weeks[w]?.hours ?? 0;
+                      const output = d.ratio && d.ratio > 0 ? hours / d.ratio : 0;
+                      return (
+                        <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? "bg-indigo-50/30" : ""}`}>
+                          {hours > 0 ? (
+                            <>
+                              <div className="text-slate-700 font-medium">{round1(hours)}h</div>
+                              {output > 0 && <div className="text-slate-400 mt-0.5">{round1(output)}{unit === "f" ? "f" : ` ${unit}`}</div>}
+                            </>
+                          ) : (
+                            <div className="text-slate-300">—</div>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+              {multiDept && (
+                <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
+                  <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Week total</td>
+                  {windowWeeks.map(w => {
+                    const total = deptSchedules.reduce((s, d) => s + (d.weeks[w]?.hours ?? 0), 0);
+                    return (
+                      <td key={w} className={`px-2 py-2 text-center ${w === 0 ? "bg-indigo-50/50" : ""}`}>
+                        <div className="text-indigo-700">{total > 0 ? `${round1(total)}h` : "—"}</div>
+                      </td>
+                    );
+                  })}
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function StatCard({ label, value, sub }: { label: string; value: string; sub: string }) {
