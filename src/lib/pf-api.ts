@@ -1,3 +1,4 @@
+import { reportingFetch } from '@/lib/pf-budget';
 /**
  * Pressed Floral API client
  * All calls are server-side only — credentials never reach the browser.
@@ -23,19 +24,6 @@ function getApiConfig(): ApiConfig {
   return { url, email, password };
 }
 
-// The API (Azure App Service) answers 503/429 when a burst of parallel
-// requests overloads it; those are worth a short wait and another try.
-const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
-const RETRY_DELAYS_MS = [500, 1500, 4000];
-
-async function fetchWithRetry(input: string, init: RequestInit): Promise<Response> {
-  for (let attempt = 0; ; attempt++) {
-    const res = await fetch(input, init);
-    if (res.ok || !RETRYABLE_STATUSES.has(res.status) || attempt >= RETRY_DELAYS_MS.length) return res;
-    await new Promise(r => setTimeout(r, RETRY_DELAYS_MS[attempt]));
-  }
-}
-
 let cachedToken: { token: string; expiresAt: number } | null = null;
 // Requests that start before the first login finishes wait on it instead of
 // each logging in (a page load can fire dozens at once).
@@ -43,7 +31,7 @@ let pendingLogin: Promise<string> | null = null;
 
 async function login(): Promise<string> {
   const { url, email, password } = getApiConfig();
-  const res = await fetchWithRetry(`${url}/Authentication/Login`, {
+  const res = await reportingFetch(`${url}/Authentication/Login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
@@ -66,10 +54,20 @@ async function getToken(): Promise<string> {
   return pendingLogin;
 }
 
-export async function pfGet<T>(path: string, options?: { fresh?: boolean }): Promise<T> {
+const pendingReads = new Map<string, Promise<unknown>>();
+export function pfGet<T>(path: string, options?: { fresh?: boolean }): Promise<T> {
+  const key = `${options?.fresh ? 'fresh' : 'cached'}:${path}`;
+  const pending = pendingReads.get(key);
+  if (pending) return pending as Promise<T>;
+  if (pendingReads.size >= 128) return Promise.reject(new Error('PF reporting is busy.'));
+  const request = loadPfGet<T>(path, options).finally(() => pendingReads.delete(key));
+  pendingReads.set(key, request);
+  return request;
+}
+async function loadPfGet<T>(path: string, options?: { fresh?: boolean }): Promise<T> {
   const { url } = getApiConfig();
   const token = await getToken();
-  const res = await fetchWithRetry(`${url}${path}`, {
+  const res = await reportingFetch(`${url}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
     ...(options?.fresh ? { cache: "no-store" as const } : { next: { revalidate: 300 } }), // corrections must be visible immediately
   });
@@ -80,7 +78,7 @@ export async function pfGet<T>(path: string, options?: { fresh?: boolean }): Pro
 export async function pfPost<T>(path: string, body: unknown, options?: { timeoutMs: number; retry: false }): Promise<T> {
   const { url } = getApiConfig();
   const token = await getToken();
-  const res = await (options?.retry === false ? fetch : fetchWithRetry)(`${url}${path}`, {
+  const res = await reportingFetch(`${url}${path}`, {
     ...(options ? { signal: AbortSignal.timeout(options.timeoutMs) } : {}),
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -91,21 +89,9 @@ export async function pfPost<T>(path: string, body: unknown, options?: { timeout
   return res.json();
 }
 
-/** Fetch multiple URLs in parallel (like GAS fetchAll). A path that still
- *  fails after retries comes back as null. */
+/** Failed reports reject as a whole; unavailable data must not become zero. */
 export async function pfGetAll<T>(paths: string[]): Promise<(T | null)[]> {
-  const { url } = getApiConfig();
-  const token = await getToken();
-  return Promise.all(
-    paths.map(path =>
-      fetchWithRetry(`${url}${path}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        next: { revalidate: 300 },
-      })
-        .then(r => r.ok ? r.json() as Promise<T> : null)
-        .catch(() => null)
-    )
-  );
+  return Promise.all(paths.map(path => pfGet<T>(path)));
 }
 
 /** Format a Date as YYYY-MM-DD */
