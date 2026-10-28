@@ -10,6 +10,7 @@ import { useGrowthSettings } from '@/hooks/useGrowthSettings';
 import { useDistributionEstimate } from '@/hooks/useDistributionEstimate';
 import { useKpiMetrics, getWindowsByType, selectLocation, fmtCPO } from '@/hooks/useKpiMetrics';
 import { estimateShippingCost } from '@/lib/shippingCost';
+import { HelpTip } from './HelpTip';
 
 function weeksBetween(fromIso: string, toIso: string): number {
   return Math.round((new Date(toIso + 'T12:00:00').getTime() - new Date(fromIso + 'T12:00:00').getTime()) / (7 * 24 * 60 * 60 * 1000));
@@ -381,7 +382,7 @@ export function GrowthDistributionPage() {
 
       {/* ── Company Total ─────────────────────────────────────────────────── */}
       <div>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-3">Company Total &amp; Distribution</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-3"><HelpTip id="gr.companyTotal">Company Total &amp; Distribution</HelpTip></h2>
         <div ref={companyTableScrollRef} className="overflow-x-auto border border-slate-200 rounded-lg">
           <table className="text-sm border-collapse min-w-[900px]">
             <thead>
@@ -406,11 +407,11 @@ export function GrowthDistributionPage() {
             </thead>
             <tbody>
               <tr className="border-b border-slate-100">
-                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap">Last Year</td>
+                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap"><HelpTip id="gr.lastYear">Last Year</HelpTip></td>
                 {weeklyRows.map(r => <td key={r.weekOf} className="px-3 py-2 text-right text-slate-600">{fmtNum(r.lastYear)}</td>)}
               </tr>
               <tr className="border-b border-slate-100 bg-amber-50/40">
-                <td className="sticky left-0 bg-amber-50 px-3 py-2 font-medium text-slate-700 whitespace-nowrap">Est. Change Multiplier</td>
+                <td className="sticky left-0 bg-amber-50 px-3 py-2 font-medium text-slate-700 whitespace-nowrap"><HelpTip id="gr.estMult">Est. Change Multiplier</HelpTip></td>
                 {weeklyRows.map(r => (
                   <td key={r.weekOf} className="px-2 py-1.5 text-right">
                     <input
@@ -423,15 +424,15 @@ export function GrowthDistributionPage() {
                 ))}
               </tr>
               <tr className="border-b border-slate-100">
-                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap">Estimated Received</td>
+                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap"><HelpTip id="gr.estReceived">Estimated Received</HelpTip></td>
                 {weeklyRows.map(r => <td key={r.weekOf} className="px-3 py-2 text-right text-slate-600">{fmtNum(r.estimatedReceived)}</td>)}
               </tr>
               <tr className="border-b border-slate-100">
-                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap">Actual Received</td>
+                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap"><HelpTip id="gr.actReceived">Actual Received</HelpTip></td>
                 {weeklyRows.map(r => <td key={r.weekOf} className="px-3 py-2 text-right font-medium text-indigo-600">{fmtNum(r.actualReceived)}</td>)}
               </tr>
               <tr className="border-b border-slate-200">
-                <td className="sticky left-0 bg-white px-3 py-0.5 text-[10px] text-slate-400 whitespace-nowrap">Variance</td>
+                <td className="sticky left-0 bg-white px-3 py-0.5 text-[10px] text-slate-400 whitespace-nowrap"><HelpTip id="gr.variance">Variance</HelpTip></td>
                 {weeklyRows.map(r => (
                   <td key={r.weekOf} className={`px-3 py-0.5 text-[10px] text-right ${r.variance === undefined ? 'text-slate-300' : r.variance >= 0 ? 'text-green-600' : 'text-red-500'}`}>
                     {fmtSigned(r.variance)}
@@ -439,14 +440,14 @@ export function GrowthDistributionPage() {
                 ))}
               </tr>
               <tr className="border-b border-slate-200">
-                <td className="sticky left-0 bg-white px-3 py-2 text-slate-400 whitespace-nowrap">Actual Change Multiplier</td>
+                <td className="sticky left-0 bg-white px-3 py-2 text-slate-400 whitespace-nowrap"><HelpTip id="gr.actMult">Actual Change Multiplier</HelpTip></td>
                 {weeklyRows.map(r => (
                   <td key={r.weekOf} className="px-3 py-2 text-right text-slate-400">{r.actualMultiplier !== undefined ? `×${r.actualMultiplier.toFixed(2)}` : '—'}</td>
                 ))}
               </tr>
 
               <tr className="border-b border-indigo-100 bg-indigo-50/40">
-                <td className="sticky left-0 bg-indigo-50 px-3 py-2 font-medium text-slate-700 whitespace-nowrap">Utah % Distribution</td>
+                <td className="sticky left-0 bg-indigo-50 px-3 py-2 font-medium text-slate-700 whitespace-nowrap"><HelpTip id="gr.utPct">Utah % Distribution</HelpTip></td>
                 {weeklyRows.map(r => (
                   <td key={r.weekOf} className="px-2 py-1.5 text-right">
                     <div className="flex items-center justify-end gap-1">
@@ -464,7 +465,7 @@ export function GrowthDistributionPage() {
                 ))}
               </tr>
               <tr className="border-b border-slate-100">
-                <td className="sticky left-0 bg-white px-3 py-2 text-slate-400 whitespace-nowrap">Georgia % Distribution</td>
+                <td className="sticky left-0 bg-white px-3 py-2 text-slate-400 whitespace-nowrap"><HelpTip id="gr.gaPct">Georgia % Distribution</HelpTip></td>
                 {weeklyRows.map(r => <td key={r.weekOf} className="px-3 py-2 text-right text-slate-400">{fmtPct(r.gaPct)}</td>)}
               </tr>
 
@@ -473,15 +474,15 @@ export function GrowthDistributionPage() {
                 {weeklyRows.map(r => <td key={r.weekOf} className="px-3 py-2 pt-4" />)}
               </tr>
               <tr className="border-b border-slate-100">
-                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap">Estimated Received</td>
+                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap"><HelpTip id="gr.estReceived">Estimated Received</HelpTip></td>
                 {weeklyRows.map(r => <td key={r.weekOf} className="px-3 py-2 text-right text-slate-600">{fmtNum(r.utEstimated)}</td>)}
               </tr>
               <tr className="border-b border-slate-100">
-                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap">Actual Received</td>
+                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap"><HelpTip id="gr.actReceived">Actual Received</HelpTip></td>
                 {weeklyRows.map(r => <td key={r.weekOf} className="px-3 py-2 text-right font-medium text-blue-600">{fmtNum(r.utActual)}</td>)}
               </tr>
               <tr className="border-b border-slate-200">
-                <td className="sticky left-0 bg-white px-3 py-0.5 text-[10px] text-slate-400 whitespace-nowrap">Variance</td>
+                <td className="sticky left-0 bg-white px-3 py-0.5 text-[10px] text-slate-400 whitespace-nowrap"><HelpTip id="gr.variance">Variance</HelpTip></td>
                 {weeklyRows.map(r => (
                   <td key={r.weekOf} className={`px-3 py-0.5 text-[10px] text-right ${r.utVariance === undefined ? 'text-slate-300' : r.utVariance >= 0 ? 'text-green-600' : 'text-red-500'}`}>
                     {fmtSigned(r.utVariance)}
@@ -494,15 +495,15 @@ export function GrowthDistributionPage() {
                 {weeklyRows.map(r => <td key={r.weekOf} className="px-3 py-2 pt-4" />)}
               </tr>
               <tr className="border-b border-slate-100">
-                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap">Estimated Received</td>
+                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap"><HelpTip id="gr.estReceived">Estimated Received</HelpTip></td>
                 {weeklyRows.map(r => <td key={r.weekOf} className="px-3 py-2 text-right text-slate-600">{fmtNum(r.gaEstimated)}</td>)}
               </tr>
               <tr className="border-b border-slate-100">
-                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap">Actual Received</td>
+                <td className="sticky left-0 bg-white px-3 py-2 text-slate-500 whitespace-nowrap"><HelpTip id="gr.actReceived">Actual Received</HelpTip></td>
                 {weeklyRows.map(r => <td key={r.weekOf} className="px-3 py-2 text-right font-medium text-emerald-600">{fmtNum(r.gaActual)}</td>)}
               </tr>
               <tr className="border-b border-slate-200">
-                <td className="sticky left-0 bg-white px-3 py-0.5 text-[10px] text-slate-400 whitespace-nowrap">Variance</td>
+                <td className="sticky left-0 bg-white px-3 py-0.5 text-[10px] text-slate-400 whitespace-nowrap"><HelpTip id="gr.variance">Variance</HelpTip></td>
                 {weeklyRows.map(r => (
                   <td key={r.weekOf} className={`px-3 py-0.5 text-[10px] text-right ${r.gaVariance === undefined ? 'text-slate-300' : r.gaVariance >= 0 ? 'text-green-600' : 'text-red-500'}`}>
                     {fmtSigned(r.gaVariance)}
@@ -511,7 +512,7 @@ export function GrowthDistributionPage() {
               </tr>
 
               <tr>
-                <td className="sticky left-0 bg-white px-3 py-2 pt-4 font-medium text-slate-500 whitespace-nowrap">Actual Distribution</td>
+                <td className="sticky left-0 bg-white px-3 py-2 pt-4 font-medium text-slate-500 whitespace-nowrap"><HelpTip id="gr.actualDist">Actual Distribution</HelpTip></td>
                 {weeklyRows.map(r => <td key={r.weekOf} className="px-3 py-2 pt-4" />)}
               </tr>
               <tr>
@@ -532,7 +533,7 @@ export function GrowthDistributionPage() {
 
       {/* ── State Routing ──────────────────────────────────────────────────── */}
       <div>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-1">State Routing</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-1"><HelpTip id="gr.routing">State Routing</HelpTip></h2>
         <p className="text-xs text-slate-400 mb-3">
           Sarah&apos;s own planning record of which state currently routes to which location. Editing this here does <span className="font-medium">not</span> change live Shopify/PF order routing — it&apos;s for simulating a reassignment below.
         </p>
@@ -574,7 +575,7 @@ export function GrowthDistributionPage() {
 
       {/* ── Plan a Reassignment ──────────────────────────────────────────────── */}
       <div>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-1">Plan a Reassignment</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-1"><HelpTip id="gr.plan">Plan a Reassignment</HelpTip></h2>
         <p className="text-xs text-slate-400 mb-3">
           Pick a state and a date it would start shipping from the other location. This reshapes the Company Total table&apos;s Estimated Received above for every week from that date forward (and, through the same numbers, Queue &amp; Turnaround&apos;s turnaround-time projections for each location) — using {yearsOfHistory > 0 ? `${yearsOfHistory} year${yearsOfHistory === 1 ? '' : 's'} of real Shopify seasonality (which states run heavier in which week/month of year)` : 'a flat 50/50 split until enough Shopify history is synced'} to guess that state&apos;s share, applied on top of wherever it moved to. It does <span className="font-medium">not</span> change the state&apos;s current location above — once the move is actually live, click <span className="font-medium">Mark implemented</span> below to flip the current location too and record it as done.
         </p>
@@ -636,7 +637,7 @@ export function GrowthDistributionPage() {
 
       {/* ── Shipping & CPO Impact ──────────────────────────────────────────── */}
       <div>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-1">Shipping &amp; CPO Impact if Reassigned</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-1"><HelpTip id="gr.shipping">Shipping &amp; CPO Impact if Reassigned</HelpTip></h2>
         <p className="text-xs text-slate-400 mb-3">
           Estimated FedEx Standard Overnight cost (15lb DIM, {`your 78.44% discount`}) is a formula-based approximation, not a live rate lookup — see the code comment in <code className="text-[11px] bg-slate-100 rounded px-1">shippingCost.ts</code>. Net $/order nets that against the last 3 months&apos; average company-wide blended CPO gap (incl. GM) — currently {cpoDeltaMoveToUtah === null ? '—' : cpoDeltaMoveToUtah >= 0 ? `Utah is ${fmtCPO(cpoDeltaMoveToUtah)} cheaper per order` : `Georgia is ${fmtCPO(-cpoDeltaMoveToUtah)} cheaper per order`}, company-wide — not a state-specific figure, and it flips period to period. Order volume is real Shopify shipping-state data from {salesMonthsWithData > 0 ? `the last ${salesMonthsWithData} month${salesMonthsWithData === 1 ? '' : 's'}` : 'no data synced yet'}. Only the column for the location a state <span className="italic">isn&apos;t</span> currently at is shown — sorted by total $ opportunity (order-volume-weighted) so the biggest real, unrealized opportunities (green) are at the top; states already sitting at the cheaper location (gray) are at the bottom.
         </p>
@@ -651,12 +652,12 @@ export function GrowthDistributionPage() {
               <tr className="border-b border-slate-200 bg-slate-50 text-left">
                 <th className="px-3 py-2 font-medium text-slate-500">State</th>
                 <th className="px-3 py-2 font-medium text-slate-500">Currently</th>
-                <th className="px-3 py-2 font-medium text-slate-500 text-right">Orders ({salesMonthsWithData}mo)</th>
-                <th className="px-3 py-2 font-medium text-slate-500 text-right">Ship from UT</th>
-                <th className="px-3 py-2 font-medium text-slate-500 text-right">Ship from GA</th>
+                <th className="px-3 py-2 font-medium text-slate-500 text-right"><HelpTip id="gr.colOrders">Orders ({salesMonthsWithData}mo)</HelpTip></th>
+                <th className="px-3 py-2 font-medium text-slate-500 text-right"><HelpTip id="gr.colShipUt">Ship from UT</HelpTip></th>
+                <th className="px-3 py-2 font-medium text-slate-500 text-right"><HelpTip id="gr.colShipGa">Ship from GA</HelpTip></th>
                 <th className="px-3 py-2 font-medium text-slate-500 text-right">Shipping Δ (UT−GA)</th>
-                <th className="px-3 py-2 font-medium text-slate-500 text-right">Net $/order if moved to UT</th>
-                <th className="px-3 py-2 font-medium text-slate-500 text-right">Net $/order if moved to GA</th>
+                <th className="px-3 py-2 font-medium text-slate-500 text-right"><HelpTip id="gr.colNetUt">Net $/order if moved to UT</HelpTip></th>
+                <th className="px-3 py-2 font-medium text-slate-500 text-right"><HelpTip id="gr.colNetGa">Net $/order if moved to GA</HelpTip></th>
                 <th className="px-3 py-2 font-medium text-slate-500 text-right">$ Opportunity ({salesMonthsWithData}mo)</th>
                 <th className="px-3 py-2 font-medium text-slate-500 text-right">Utah share shift if moved</th>
               </tr>

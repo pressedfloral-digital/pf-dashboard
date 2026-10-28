@@ -6,6 +6,7 @@ import {
   type KpiDept, type KpiLocation, type KpiState,
 } from '@/hooks/useKpiMetrics';
 import { getWeekMondays } from '@/lib/weekDates';
+import { HelpTip } from './HelpTip';
 
 // First month whose missed production goal can roll forward. Months before this
 // never carry anything, so an old shortfall from before the rollover rule
@@ -42,14 +43,15 @@ function Tick({ pct, label, color }: { pct: number; label: string; color: string
   );
 }
 
-function MetricPaceBar({ label, actual, goal, expected, fmt }: {
+function MetricPaceBar({ label, actual, goal, expected, fmt, plain }: {
   label:    string;
+  plain:    boolean;
   actual:   number | null;
   goal:     number | null;
   expected: number | null;
   fmt:      (n: number | null) => string;
 }) {
-  const status = lowerIsBetterStatus(actual, goal, expected);
+  const status = plain ? 'none' : lowerIsBetterStatus(actual, goal, expected);
   const s = STATUS_STYLE[status];
   const max = Math.max(actual ?? 0, goal ?? 0, expected ?? 0) * 1.2 || 1;
   const pct = (n: number) => Math.min(100, (n / max) * 100);
@@ -57,11 +59,11 @@ function MetricPaceBar({ label, actual, goal, expected, fmt }: {
   return (
     <div className="flex-1 min-w-[220px]">
       <div className="flex items-baseline justify-between mb-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label} · month to date</span>
-        <span className={`text-[10px] font-semibold rounded px-1.5 py-px ${s.chip}`}>{s.label}</span>
+        <HelpTip id="sched.kpi" className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label} · month to date</HelpTip>
+        {!plain && <span className={`text-[10px] font-semibold rounded px-1.5 py-px ${s.chip}`}>{s.label}</span>}
       </div>
       <div className="flex items-center gap-3">
-        <span className={`text-lg font-semibold tabular-nums ${s.text}`}>{fmt(actual)}</span>
+        <span className={`text-lg font-semibold tabular-nums ${plain ? 'text-slate-800' : s.text}`}>{fmt(actual)}</span>
         <div className="relative flex-1 h-2.5 bg-slate-100 rounded-full">
           {actual != null && (
             <div className={`absolute inset-y-0 left-0 rounded-full ${s.bar}`} style={{ width: `${pct(actual)}%` }} />
@@ -129,7 +131,9 @@ export function computeProductionRollover(kpiState: KpiState, location: KpiLocat
 }
 
 // Production vs. this month's goal plus whatever last month missed.
-function MonthlyProductionGoalBar({ dept, kpiState, location }: { dept: KpiDept; kpiState: KpiState; location: KpiLocation }) {
+// `plain` drops the red/yellow/green bar and pace chip — just the actuals,
+// with the goal/pace details underneath.
+function MonthlyProductionGoalBar({ dept, kpiState, location, plain }: { dept: KpiDept; kpiState: KpiState; location: KpiLocation; plain: boolean }) {
   const mtdWindow  = getWindowsByType(kpiState.windows, 'mtd')[0];
   const actual     = mtdWindow ? selectDept(selectLocation(mtdWindow, location), dept).production : 0;
   const goalPeriod = selectEstimated(kpiState.estimated?.current, location, 'goal');
@@ -163,22 +167,24 @@ function MonthlyProductionGoalBar({ dept, kpiState, location }: { dept: KpiDept;
         <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
           {unit} · {kpiState.estimated?.current?.label.replace(/^Est\.\s*/, '') ?? 'this month'} goal
         </span>
-        <span className={`text-[10px] font-semibold rounded px-1.5 py-px ${s.chip}`}>
-          {status === 'none' ? s.label : pacingGap >= 0 ? `${fmtUnits(pacingGap)} ahead of pace` : `${fmtUnits(-pacingGap)} behind pace`}
-        </span>
+        {!plain && (
+          <span className={`text-[10px] font-semibold rounded px-1.5 py-px ${s.chip}`}>
+            {status === 'none' ? s.label : pacingGap >= 0 ? `${fmtUnits(pacingGap)} ahead of pace` : `${fmtUnits(-pacingGap)} behind pace`}
+          </span>
+        )}
       </div>
       <div className="flex items-center gap-3">
         <span className="text-lg font-semibold tabular-nums text-slate-800">
           {fmtUnits(actual)}<span className="text-xs font-normal text-slate-400"> / {fmtUnits(target)}</span>
         </span>
-        <div className="relative flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
+        {!plain && <div className="relative flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
           {/* Rolled-over units sit on top of this month's own goal */}
           {carriedIn > 0 && (
             <div className="absolute inset-y-0 bg-red-100" style={{ left: `${goalPct}%`, width: `${pct(target) - goalPct}%` }} />
           )}
           <div className={`absolute inset-y-0 left-0 rounded-full ${s.bar}`} style={{ width: `${pct(actual)}%` }} />
           {target > 0 && <Tick pct={pct(paceTarget)} label={`Pace today: ${fmtUnits(paceTarget)}`} color="bg-slate-700" />}
-        </div>
+        </div>}
       </div>
       <div className="flex flex-wrap gap-x-3 mt-1 text-[10px] text-slate-400">
         <span>Goal {fmtUnits(monthGoal)}</span>
@@ -187,7 +193,7 @@ function MonthlyProductionGoalBar({ dept, kpiState, location }: { dept: KpiDept;
             + {fmtUnits(carriedIn)} rolled over from {last.monthLabel}
           </span>
         )}
-        <span><span className="inline-block w-0.5 h-2 bg-slate-700 mr-1 align-middle" />Pace today {fmtUnits(paceTarget)}</span>
+        <span>{!plain && <span className="inline-block w-0.5 h-2 bg-slate-700 mr-1 align-middle" />}Pace today {fmtUnits(paceTarget)}</span>
         <span>{fmtUnits(remaining)} to go</span>
       </div>
     </div>
@@ -197,12 +203,14 @@ function MonthlyProductionGoalBar({ dept, kpiState, location }: { dept: KpiDept;
 // Department header on the Scheduling tabs: month-to-date Ratio/CPO shown as
 // red/yellow/green pace bars against Goal and Expected, plus production vs.
 // the monthly goal (with last month's missed units rolled in). Same
-// useKpiMetrics data as the All KPIs tab.
-export function DeptKpiBars({ dept, location, kpiState, showCPO }: {
+// useKpiMetrics data as the All KPIs tab. `plain` turns off the
+// red/yellow/green status colors on the actuals.
+export function DeptKpiBars({ dept, location, kpiState, showCPO, plain = false }: {
   dept:     KpiDept;
   location: KpiLocation;
   kpiState: KpiState;
   showCPO:  boolean;
+  plain?:   boolean;
 }) {
   if (kpiState.loading) return null;
   const mtdWindow = getWindowsByType(kpiState.windows, 'mtd')[0];
@@ -217,12 +225,12 @@ export function DeptKpiBars({ dept, location, kpiState, showCPO }: {
       <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">{DEPT_LABELS[dept]} · {location} · Monthly KPIs</p>
       <div className="flex flex-wrap gap-x-8 gap-y-4">
         <MetricPaceBar label="Ratio" actual={actual?.ratio ?? null} goal={goal?.ratio ?? null} expected={expected?.ratio ?? null}
-          fmt={n => fmtRatio(n)} />
+          fmt={n => fmtRatio(n)} plain={plain} />
         {showCPO && (
           <MetricPaceBar label="CPO" actual={actual?.cpo ?? null} goal={goal?.cpo ?? null} expected={expected?.cpo ?? null}
-            fmt={n => fmtCPO(n)} />
+            fmt={n => fmtCPO(n)} plain={plain} />
         )}
-        <MonthlyProductionGoalBar dept={dept} kpiState={kpiState} location={location} />
+        <MonthlyProductionGoalBar dept={dept} kpiState={kpiState} location={location} plain={plain} />
       </div>
     </div>
   );

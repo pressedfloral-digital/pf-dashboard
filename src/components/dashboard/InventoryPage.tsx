@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { PRESERVATION_WEEKS, NOT_ON_ORDER, ADDONS_UNKNOWN, sizeLabel, type QueueLine } from '@/lib/designInventory';
 import type { OrderEdits, OrderPlan } from '@/lib/katanaPlan';
 import OrderPlanView from './OrderPlanView';
+import { HelpTip } from './HelpTip';
 
 interface InventoryWeek {
   weekOf:    string;
@@ -216,7 +217,7 @@ export default function InventoryPage() {
               onClick={() => setView(id)}
               className={`px-4 py-1.5 text-sm font-medium ${view === id ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
             >
-              {name}
+              <HelpTip id={id === 'order' ? 'inv.view.order' : 'inv.view.schedule'}>{name}</HelpTip>
             </button>
           ))}
         </div>
@@ -225,7 +226,7 @@ export default function InventoryPage() {
             onClick={() => downloadCsv(data)}
             className="ml-auto px-3 py-1.5 text-sm rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
           >
-            Download CSV
+            <HelpTip id="inv.csv">Download CSV</HelpTip>
           </button>
         )}
       </div>
@@ -265,7 +266,7 @@ export default function InventoryPage() {
 
       {view === 'schedule' && <>
       <div>
-        <h2 className="text-sm font-semibold text-slate-700">Design inventory — frames, backing &amp; glass needed each week</h2>
+        <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="inv.schedule.title">Design inventory — frames, backing &amp; glass needed each week</HelpTip></h2>
         <p className="text-xs text-slate-500 mt-1 max-w-3xl">
           Orders in Ready to Frame, plus orders still in Preservation once they&apos;re {PRESERVATION_WEEKS} weeks past bouquet received,
           scheduled oldest intake first against each week&apos;s Design capacity from the Weekly Schedule. Backing and glass come from
@@ -340,7 +341,7 @@ export default function InventoryPage() {
                         <th className="px-3 py-2 text-left font-medium">Backing</th>
                         <th className="px-3 py-2 text-left font-medium">Glass</th>
                         <th className="px-3 py-2 text-left font-medium">Status</th>
-                        <th className="px-3 py-2 text-left font-medium">Intake</th>
+                        <th className="px-3 py-2 text-left font-medium"><HelpTip id="inv.col.intake">Intake</HelpTip></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -402,7 +403,7 @@ export default function InventoryPage() {
                     {weeks.map(w => (
                       <th key={w.weekOf} className="px-2 py-2 text-center font-medium whitespace-nowrap">{fmtWeek(w.weekOf)}</th>
                     ))}
-                    <th className="px-3 py-2 text-center font-medium">Total</th>
+                    <th className="px-3 py-2 text-center font-medium"><HelpTip id="inv.col.total">Total</HelpTip></th>
                   </tr>
                 </thead>
                 <tbody>

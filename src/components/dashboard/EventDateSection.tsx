@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { HelpTip } from './HelpTip';
 
 type DayResult = { count: number; orders: { name: string; customer: string }[] };
 
@@ -82,14 +83,14 @@ export function EventDateSection() {
     <section>
       <div className="flex items-baseline gap-4 mb-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-          Orders by Event Date
+          <HelpTip id="event.title">Orders by Event Date</HelpTip>
         </h2>
         <span className="text-xs text-slate-400">pulled from Shopify order tags</span>
       </div>
 
       <Card className="border border-rose-200 bg-rose-50">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base font-semibold text-rose-800">Event Date Lookup</CardTitle>
+          <CardTitle className="text-base font-semibold text-rose-800"><HelpTip id="event.title">Event Date Lookup</HelpTip></CardTitle>
 
           {/* Preset buttons */}
           <div className="flex gap-1.5 flex-wrap mt-1">

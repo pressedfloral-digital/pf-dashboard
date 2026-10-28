@@ -27,6 +27,7 @@ import {
   type RatioVariant,
 } from '@/hooks/useKpiMetrics';
 import { RATIO_TARGETS, type RatioDept } from '@/lib/ratioTargets';
+import { HelpTip } from './HelpTip';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -558,7 +559,7 @@ function ExpectationTable({
         <table className="w-full text-left">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-100">
-              <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left text-xs font-medium text-slate-500 min-w-[110px]">Metric</th>
+              <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left text-xs font-medium text-slate-500 min-w-[110px]"><HelpTip id="kpi.metricCol">Metric</HelpTip></th>
               {depts.map(dept => (
                 <th key={dept} className="px-4 py-2 text-left text-xs font-medium text-slate-500 min-w-[130px] whitespace-nowrap">
                   {DEPT_LABELS[dept]}
@@ -650,7 +651,7 @@ function HistoricalTable({
         <table className="w-full text-left">
           <thead>
             <tr className="border-b border-slate-200">
-              <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">Period</th>
+              <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap"><HelpTip id="kpi.period">Period</HelpTip></th>
               {depts.map(dept => (
                 <th key={dept} className="py-3 px-4 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">
                   {DEPT_LABELS[dept]}
@@ -728,7 +729,7 @@ export default function AllKpisPage() {
       {/* ── Header ── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-lg font-semibold text-slate-800">All KPIs</h2>
+          <h2 className="text-lg font-semibold text-slate-800"><HelpTip id="kpi.title">All KPIs</HelpTip></h2>
           <p className="text-sm text-slate-500 mt-0.5">Ratio and CPO across all departments and locations</p>
         </div>
         <button
@@ -750,13 +751,13 @@ export default function AllKpisPage() {
       <div className="flex flex-wrap gap-4 items-start">
         {/* Location */}
         <div className="space-y-1.5">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Location</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400"><HelpTip id="kpi.location">Location</HelpTip></div>
           <TabBar tabs={LOCATIONS} active={location} onChange={setLocation} small />
         </div>
 
         {/* Section */}
         <div className="space-y-1.5">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Metric</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400"><HelpTip id="kpi.metric">Metric</HelpTip></div>
           <TabBar
             tabs={[
               { id: 'ratio' as KpiSection, label: 'Ratio' },
@@ -770,7 +771,7 @@ export default function AllKpisPage() {
 
         {/* Time window */}
         <div className="space-y-1.5">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Time window</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400"><HelpTip id="kpi.time">Time window</HelpTip></div>
           <TabBar tabs={TIME_WINDOWS} active={timeWindow} onChange={setTimeWindow} small />
         </div>
 
@@ -779,7 +780,7 @@ export default function AllKpisPage() {
             exists to compare against (see WindowResult.planned). */}
         {(timeWindow === 'weekly' || timeWindow === 'monthly' || timeWindow === 'quarterly') && (
           <div className="space-y-1.5">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Compare to</div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400"><HelpTip id="kpi.compare">Compare to</HelpTip></div>
             <TabBar
               tabs={[
                 { id: 'estimate' as RatioVariant, label: 'Estimated' },
@@ -796,7 +797,7 @@ export default function AllKpisPage() {
         {/* GM toggle — CPO only */}
         {section === 'cpo' && (
           <div className="space-y-1.5">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">GM cost</div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400"><HelpTip id="kpi.gm">GM cost</HelpTip></div>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setShowGM(false)}
@@ -823,7 +824,7 @@ export default function AllKpisPage() {
             a month has fully closed. */}
         {section === 'cpo' && timeWindow === 'monthly' && (
           <div className="space-y-1.5">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bonus cost</div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400"><HelpTip id="kpi.bonus">Bonus cost</HelpTip></div>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setShowBonus(false)}

@@ -9,6 +9,7 @@ import { MemberTierBadges } from './MemberTierBadge';
 import { SyncedOrdersPopover } from './SyncedOrdersPopover';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { netAdjustment, type OrderAdjustment } from '@/lib/orderAdjustments';
+import { HelpTip } from './HelpTip';
 
 interface TeamMember {
   id:           string;
@@ -462,7 +463,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
               setAddOrderPick(null);
             }}
           >
-            <h3 className="text-sm font-semibold text-slate-700">Add or remove an order number</h3>
+            <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.adjustOrder">Add or remove an order number</HelpTip></h3>
             <label className="block">
               <span className="text-slate-500">Who did the work</span>
               <select value={addOrderPick.name} onChange={e => setAddOrderPick({ ...addOrderPick, name: e.target.value })}
@@ -508,7 +509,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
       <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-slate-700">Weekly — {department} · {location}</h3>
+            <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.historicals">Weekly — {department} · {location}</HelpTip></h3>
             <p className="text-xs text-slate-400 mt-0.5">
               Oldest → newest. <span className="text-amber-600 font-medium">Amber</span> = missing actuals.{' '}
               <span className="text-sky-600 font-medium">Blue orders</span> = auto-synced from the production app — click &quot;synced&quot; to see the orders{canAdjustLocation && department !== 'resin' ? ' and add or remove order numbers' : ''}{isAdmin ? ' (admins can also type over the count)' : ''}.{' '}
@@ -756,7 +757,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
       {/* ── MONTHLY SUMMARY ── */}
       <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-100">
-          <h3 className="text-sm font-semibold text-slate-700">Monthly summary</h3>
+          <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.monthlySummary">Monthly summary</HelpTip></h3>
           <p className="text-xs text-slate-400 mt-0.5">
             Total {ordersLabel}, hours, ratio. <span className="text-green-600 font-medium">Green CPO</span> = from Rippling payroll. <span className="text-amber-600 font-medium">Amber</span> = estimated.
           </p>
