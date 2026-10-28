@@ -90,15 +90,26 @@ export function selectPlanned(
   return v.combined;
 }
 
-// Weeks of a window, at the given location, that came from the Ops Google
-// Sheet backfill instead of dashboard-tracked data. Combined counts a week
-// if either location used the sheet for it.
-export function sheetBackfillWeeks(window: WindowResult, location: KpiLocation): number {
-  const b = window.sheetBackfill;
+// Weeks of a window, at the given location, that came from a Google Sheet
+// backfill instead of dashboard-tracked data — the Ops cost sheet for CPO,
+// the master-calculations sheets for Ratio. Combined counts a week if either
+// location used the sheet for it.
+export function sheetBackfillWeeks(window: WindowResult, location: KpiLocation, section: 'ratio' | 'cpo'): number {
+  const b = section === 'ratio' ? window.ratioSheetBackfill : window.sheetBackfill;
   if (!b) return 0;
   if (location === 'Utah')    return b.utah;
   if (location === 'Georgia') return b.georgia;
   return Math.max(b.utah, b.georgia);
+}
+
+// Of those, weeks whose cost is an estimate (pre-W/C Aug 11, 2025 — no real
+// payroll on file). CPO only.
+export function estimatedBackfillWeeks(window: WindowResult, location: KpiLocation): number {
+  const e = window.sheetBackfill?.estimated;
+  if (!e) return 0;
+  if (location === 'Utah')    return e.utah;
+  if (location === 'Georgia') return e.georgia;
+  return Math.max(e.utah, e.georgia);
 }
 
 export function selectEstimated(
