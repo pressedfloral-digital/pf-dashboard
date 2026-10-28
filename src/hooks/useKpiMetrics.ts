@@ -14,6 +14,10 @@ export type KpiDept     = 'design' | 'preservation' | 'fulfillment' | 'resin' | 
 export interface KpiState {
   windows:    WindowResult[];
   estimated:  { current?: EstimatedMonthResult; next?: EstimatedMonthResult } | null;
+  // First week the dashboard has its own payroll/production for — anything
+  // earlier on the historical tables comes from the Ops Google Sheet backfill
+  // (see WindowResult.sheetBackfill).
+  dashboardStart: string | null;
   loading:    boolean;
   error:      string | null;
   refresh:    () => void;
@@ -25,6 +29,7 @@ const DEFAULT_WINDOWS = 'mtd,qtd,ytd,weekly-104,monthly-36,quarterly-12,est-curr
 export function useKpiMetrics(windowsParam = DEFAULT_WINDOWS): KpiState {
   const [windows,   setWindows]   = useState<WindowResult[]>([]);
   const [estimated, setEstimated] = useState<{ current?: EstimatedMonthResult; next?: EstimatedMonthResult } | null>(null);
+  const [dashboardStart, setDashboardStart] = useState<string | null>(null);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState<string | null>(null);
 
@@ -37,11 +42,13 @@ export function useKpiMetrics(windowsParam = DEFAULT_WINDOWS): KpiState {
         ok:        boolean;
         windows:   WindowResult[];
         estimated: { current?: EstimatedMonthResult; next?: EstimatedMonthResult } | null;
+        sheetBackfill?: { dashboardStart: string | null };
         error?:    string;
       };
       if (!data.ok) throw new Error(data.error ?? 'Unknown error');
       setWindows(data.windows ?? []);
       setEstimated(data.estimated ?? null);
+      setDashboardStart(data.sheetBackfill?.dashboardStart ?? null);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -51,7 +58,7 @@ export function useKpiMetrics(windowsParam = DEFAULT_WINDOWS): KpiState {
 
   useEffect(() => { fetch_(); }, [fetch_]);
 
-  return { windows, estimated, loading, error, refresh: fetch_ };
+  return { windows, estimated, dashboardStart, loading, error, refresh: fetch_ };
 }
 
 // ── Selector helpers ──────────────────────────────────────────────────────────
@@ -81,6 +88,17 @@ export function selectPlanned(
   if (location === 'Utah')    return v.utah;
   if (location === 'Georgia') return v.georgia;
   return v.combined;
+}
+
+// Weeks of a window, at the given location, that came from the Ops Google
+// Sheet backfill instead of dashboard-tracked data. Combined counts a week
+// if either location used the sheet for it.
+export function sheetBackfillWeeks(window: WindowResult, location: KpiLocation): number {
+  const b = window.sheetBackfill;
+  if (!b) return 0;
+  if (location === 'Utah')    return b.utah;
+  if (location === 'Georgia') return b.georgia;
+  return Math.max(b.utah, b.georgia);
 }
 
 export function selectEstimated(
