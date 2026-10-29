@@ -1,5 +1,7 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+import type { PreservationTurnaround, TurnaroundAverage } from '@/lib/preservationTurnaround';
 import {
   getWindowsByType, selectLocation, selectDept, selectEstimated, selectPlanned,
   fmtRatio, fmtCPO, fmtUnits, DEPT_LABELS, DEPT_PRODUCTION_UNIT,
@@ -200,6 +202,54 @@ function MonthlyProductionGoalBar({ dept, kpiState, location, plain }: { dept: K
   );
 }
 
+// Reload every few minutes so turnaround stays live through the day.
+const TURNAROUND_REFRESH_MS = 3 * 60 * 1000;
+
+const fmtDays = (a: TurnaroundAverage | undefined) => a?.days == null ? '—' : `${a.days.toFixed(2)} days`;
+
+// Preservation's turnaround: how long orders sit in Bouquet Received before
+// their first bouquet photo is uploaded. Month average up top; today, this
+// week and this month underneath, by the day the photo went up.
+function TurnaroundKpi({ location }: { location: KpiLocation }) {
+  const [data, setData] = useState<PreservationTurnaround | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => fetch(`/api/preservation-turnaround?location=${location}`)
+      .then(res => res.ok ? res.json() : Promise.reject())
+      .then(d => { if (!cancelled) { setData(d); setFailed(false); } })
+      // A failed reload keeps the last good numbers.
+      .catch(() => { if (!cancelled) setFailed(true); });
+    load();
+    const timer = setInterval(load, TURNAROUND_REFRESH_MS);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [location]);
+
+  const windows: [string, TurnaroundAverage | undefined][] = [['Today', data?.today], ['Week', data?.week], ['Month', data?.month]];
+
+  return (
+    <div className="flex-1 min-w-[280px]">
+      <div className="flex items-baseline justify-between mb-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500"
+          title="Time from Bouquet Received to the order's first bouquet photo upload, by the day the photo went up.">
+          Turnaround · month average
+        </span>
+      </div>
+      <span className="text-lg font-semibold tabular-nums text-slate-800">
+        {data ? fmtDays(data.month) : failed ? '—' : '…'}
+      </span>
+      <div className="flex flex-wrap gap-x-3 mt-1 text-[10px] text-slate-400">
+        {windows.map(([label, a]) => (
+          <span key={label} title={a ? `${a.count} order${a.count === 1 ? '' : 's'} uploaded` : undefined}>{label} {fmtDays(a)}</span>
+        ))}
+        {data?.catchingUp && <span className="text-amber-600">Catching up — received times through {new Date(data!.syncedThrough).toLocaleDateString()}</span>}
+        {failed && !data && <span className="text-red-500">Couldn&apos;t load</span>}
+      </div>
+    </div>
+  );
+}
+
 // Department header on the Scheduling tabs: month-to-date Ratio/CPO shown as
 // red/yellow/green pace bars against Goal and Expected, plus production vs.
 // the monthly goal (with last month's missed units rolled in). Same
@@ -230,7 +280,10 @@ export function DeptKpiBars({ dept, location, kpiState, showCPO, plain = false }
           <MetricPaceBar label="CPO" actual={actual?.cpo ?? null} goal={goal?.cpo ?? null} expected={expected?.cpo ?? null}
             fmt={n => fmtCPO(n)} plain={plain} />
         )}
-        <MonthlyProductionGoalBar dept={dept} kpiState={kpiState} location={location} plain={plain} />
+        {dept === 'preservation'
+          // Keyed so switching location starts clean instead of showing the other site's numbers
+          ? <TurnaroundKpi key={location} location={location} />
+          : <MonthlyProductionGoalBar dept={dept} kpiState={kpiState} location={location} plain={plain} />}
       </div>
     </div>
   );
