@@ -16,3 +16,25 @@ jobs:
       - run: npm run test:assignment-counts
       - run: npm run test:reporting-budget
       - run: npx tsc --noEmit
+
+  reporting-storage:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: fixture
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: fixture
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - run: psql -v ON_ERROR_STOP=1 -c 'CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS;'
+      - run: psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261028233000_reporting_refresh_coordination.sql
+      - run: psql -v ON_ERROR_STOP=1 -f tests/report-refresh-db.sql

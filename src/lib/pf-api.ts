@@ -1,4 +1,4 @@
-import { reportingFetch } from '@/lib/pf-budget';
+import { reportingFetch, ReportingDeferredError } from '@/lib/pf-budget';
 /**
  * Pressed Floral API client
  * All calls are server-side only — credentials never reach the browser.
@@ -68,10 +68,13 @@ async function loadPfGet<T>(path: string, options?: { fresh?: boolean }): Promis
   const { url } = getApiConfig();
   const token = await getToken();
   const res = await reportingFetch(`${url}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { 'X-PF-Client': 'dashboard', Authorization: `Bearer ${token}` },
     ...(options?.fresh ? { cache: "no-store" as const } : { next: { revalidate: 300 } }), // corrections must be visible immediately
   });
-  if (!res.ok) throw new Error(`PF API GET ${path} → ${res.status}`);
+  if (!res.ok) {
+    if ([429, 502, 503, 504].includes(res.status)) throw new ReportingDeferredError(`PF reporting deferred (${res.status}).`);
+    throw new Error(`PF API GET failed (${res.status}).`);
+  }
   return res.json();
 }
 
@@ -81,17 +84,24 @@ export async function pfPost<T>(path: string, body: unknown, options?: { timeout
   const res = await reportingFetch(`${url}${path}`, {
     ...(options ? { signal: AbortSignal.timeout(options.timeoutMs) } : {}),
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { 'X-PF-Client': 'dashboard', Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     cache: 'no-store',
   });
-  if (!res.ok) throw new Error(`PF API POST ${path} → ${res.status}`);
+  if (!res.ok) {
+    if ([429, 502, 503, 504].includes(res.status)) throw new ReportingDeferredError(`PF reporting deferred (${res.status}).`);
+    throw new Error(`PF API POST failed (${res.status}).`);
+  }
   return res.json();
 }
 
 /** Failed reports reject as a whole; unavailable data must not become zero. */
 export async function pfGetAll<T>(paths: string[]): Promise<(T | null)[]> {
-  return Promise.all(paths.map(path => pfGet<T>(path)));
+  const results: T[] = [];
+  // Start only one month at a time. An overload aborts the scan before any
+  // partial results reach consumers (including destructive reconciliation).
+  for (const path of paths) results.push(await pfGet<T>(path));
+  return results;
 }
 
 /** Format a Date as YYYY-MM-DD */

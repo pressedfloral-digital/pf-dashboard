@@ -44,3 +44,13 @@ test('honors Retry-After and does not retry mutation requests', async () => {
   await limited('https://pf.test', { method: 'POST' }); await wait(5);
   await assert.rejects(limited('https://pf.test'), /paused/); assert.equal(calls, 1);
 });
+test('default budget completes fifteen reports serially without rejecting healthy work', async () => {
+  let active = 0, maximum = 0, calls = 0;
+  const limited = createReportingFetch(async () => {
+    active++; calls++; maximum = Math.max(maximum, active);
+    await wait(2); active--;
+    return Response.json({ complete: true });
+  });
+  const results = await Promise.all(Array.from({ length: 15 }, () => limited('https://pf.test')));
+  assert.equal(maximum, 1); assert.equal(calls, 15); assert.ok(results.every(x => x.ok));
+});
