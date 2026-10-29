@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { PRESERVATION_WEEKS, NOT_ON_ORDER, ADDONS_UNKNOWN, sizeLabel, type QueueLine } from '@/lib/designInventory';
 import type { OrderEdits, OrderPlan } from '@/lib/katanaPlan';
 import OrderPlanView from './OrderPlanView';
+import SupplierForecastView from './SupplierForecastView';
 import { HelpTip } from './HelpTip';
 
 interface InventoryWeek {
@@ -145,8 +146,12 @@ export default function InventoryPage() {
   const [refresh, setRefresh] = useState<{ location: string; state: 'failed' | 'done'; error?: string } | null>(null);
   const [selectedWeek, setSelectedWeek] = useState<string | null>(null);
   const [material, setMaterial] = useState<Material>('frame');
-  const [view, setView] = useState<'order' | 'schedule'>('order');
+  const [view, setView] = useState<'order' | 'supplier' | 'schedule'>('order');
+  // Edits made on What to order this visit, so the supplier forecast (and
+  // What to order when it remounts) shows them without a reload.
+  const [liveEdits, setLiveEdits] = useState<{ location: string; edits: OrderEdits } | null>(null);
   const data = loaded?.location === location ? loaded.data : null;
+  const orderEdits = (liveEdits?.location === location ? liveEdits.edits : data?.orderEdits) ?? {};
   // No result yet for this location means the fresh build is still running.
   const refreshState = refresh?.location === location ? refresh : null;
   const loading = !data;
@@ -211,13 +216,13 @@ export default function InventoryPage() {
           ))}
         </div>
         <div className="flex rounded-lg border border-slate-200 overflow-hidden">
-          {([['order', 'What to order'], ['schedule', 'Frames, backing & glass']] as const).map(([id, name]) => (
+          {([['order', 'What to order'], ['schedule', 'Frames, backing & glass'], ['supplier', 'Supplier forecast']] as const).map(([id, name]) => (
             <button
               key={id}
               onClick={() => setView(id)}
               className={`px-4 py-1.5 text-sm font-medium ${view === id ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
             >
-              <HelpTip id={id === 'order' ? 'inv.view.order' : 'inv.view.schedule'}>{name}</HelpTip>
+              <HelpTip id={`inv.view.${id}`}>{name}</HelpTip>
             </button>
           ))}
         </div>
@@ -258,10 +263,13 @@ export default function InventoryPage() {
         )
       )}
 
-      {view === 'order' && data && !data.error && (
-        data.orderPlan
-          ? <OrderPlanView key={data.location} plan={data.orderPlan} generatedAt={data.generatedAt} edits={data.orderEdits ?? {}} />
-          : <div className="py-12 text-center text-sm text-rose-600">Couldn&apos;t load Katana: {data.katanaError ?? 'unknown error'}</div>
+      {(view === 'order' || view === 'supplier') && data && !data.error && (
+        !data.orderPlan
+          ? <div className="py-12 text-center text-sm text-rose-600">Couldn&apos;t load Katana: {data.katanaError ?? 'unknown error'}</div>
+          : view === 'order'
+            ? <OrderPlanView key={data.location} plan={data.orderPlan} generatedAt={data.generatedAt} edits={orderEdits}
+                onEditsChange={e => setLiveEdits({ location: data.location, edits: e })} />
+            : <SupplierForecastView key={data.location} plan={data.orderPlan} generatedAt={data.generatedAt} edits={orderEdits} />
       )}
 
       {view === 'schedule' && <>

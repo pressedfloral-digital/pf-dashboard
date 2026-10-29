@@ -141,6 +141,10 @@ export const DASHBOARD_HELP = {
     what:   'Which Katana components to order, and by when, so they arrive before the Design schedule needs them.',
     source: 'Katana stock and open purchase orders, set against the Design schedule built from PF API orders.',
   },
+  'inv.view.supplier': {
+    what:   'A sheet per supplier showing when each of their items has to arrive, week by week or month by month, to print or download and send them.',
+    source: 'The What to order plan (Katana stock, open purchase orders and recipes against the Design schedule), including manager edits.',
+  },
   'inv.view.schedule': {
     what:   'Frames, backing and glass each upcoming week needs, order by order, in the order Design will work them.',
     source: 'PF API orders in Ready to Frame (plus late Preservation), their Shopify add-ons, and Design capacity from the Weekly Schedule.',
