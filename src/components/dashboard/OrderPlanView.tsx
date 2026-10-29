@@ -43,10 +43,11 @@ function downloadCsv(plan: OrderPlan, weeks: string[], generatedAt: string) {
   URL.revokeObjectURL(a.href);
 }
 
-export default function OrderPlanView({ plan: basePlan, generatedAt, edits: savedEdits }: {
+export default function OrderPlanView({ plan: basePlan, generatedAt, edits: savedEdits, onEditsChange }: {
   plan:        OrderPlan;
   generatedAt: string;
   edits:       OrderEdits;
+  onEditsChange?: (edits: OrderEdits) => void;
 }) {
   const thisWeek = mondayOf(new Date().toISOString());
   // Hand edits (quantities, deletions), applied on top of the computed list
@@ -64,6 +65,7 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
     const json = await res.json().catch(() => ({ error: `Server returned ${res.status}` }));
     if (!res.ok) throw new Error(json.error ?? `Server returned ${res.status}`);
     setEdits(json as OrderEdits);
+    onEditsChange?.(json as OrderEdits);
   }
 
   // Design weeks that have scheduled work, this week through the last week any
