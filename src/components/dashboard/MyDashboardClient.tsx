@@ -211,7 +211,7 @@ export default function MyDashboardClient({ profile }: { profile: UserProfile })
 
           {/* 52-Week Planner */}
           {tab === "52-Week Planner" && (
-            <MyWeeklySchedule deptSchedules={data?.deptSchedules ?? []} />
+            <MyWeeklySchedule memberName={data?.memberName ?? ""} deptSchedules={data?.deptSchedules ?? []} paidHolidays={data?.paidHolidays ?? []} />
           )}
 
           {/* My Historicals */}
@@ -628,19 +628,27 @@ const SHIFT_TONE_BADGE: Record<ShiftTone, string> = {
   resin:        "bg-violet-50 border-violet-200 text-violet-700",
 };
 
-// The team member's own rows from each department's Weekly Schedule —
-// same weeks-across layout, one row per department they're scheduled in.
-function MyWeeklySchedule({ deptSchedules }: { deptSchedules: DeptSchedule[] }) {
+// The team member's own rows from each department's Weekly Schedule, in the
+// same shift-block layout as This Week — weeks across instead of days.
+function MyWeeklySchedule({ memberName, deptSchedules, paidHolidays }: {
+  memberName: string;
+  deptSchedules: DeptSchedule[];
+  paidHolidays: string[];
+}) {
   const [weekOffset, setWeekOffset] = useState(0);
-  const windowWeeks = Array.from({ length: WINDOW }, (_, i) => weekOffset + i);
-  const multiDept = deptSchedules.length > 1;
+  const windowWeeks = Array.from({ length: WINDOW }, (_, i) => {
+    const w = weekOffset + i;
+    const iso = isoMonday(w);
+    const holiday = paidHolidays.some(h => h >= iso && h <= addDaysIso(iso, 6));
+    return { w, iso, holiday };
+  });
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
       <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 flex-wrap gap-2">
         <div>
-          <h2 className="text-sm font-semibold text-gray-700">Your Weekly Schedule</h2>
-          <p className="text-xs text-gray-400 mt-0.5">Hours you&apos;re scheduled per week, by department. Future weeks are tentative.</p>
+          <h3 className="text-sm font-semibold text-slate-700">Your schedule — by week</h3>
+          <p className="text-[11px] text-slate-400 mt-0.5">Goal for each week you&apos;re scheduled. Future weeks are tentative.</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => setWeekOffset(Math.max(0, weekOffset - WINDOW))} disabled={weekOffset === 0}
@@ -658,57 +666,49 @@ function MyWeeklySchedule({ deptSchedules }: { deptSchedules: DeptSchedule[] }) 
         <div className="overflow-x-auto">
           <table className="min-w-full text-xs">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-100">
-                <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 whitespace-nowrap min-w-[140px]">Department</th>
-                {windowWeeks.map(w => (
-                  <th key={w} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[90px]">
-                    {getWeekLabel(w)}
-                    {w === 0 && <span className="ml-1 text-[10px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
+              <tr className="border-b border-slate-100">
+                <th className="sticky left-0 z-10 bg-white px-4 py-3 text-left text-[13px] font-medium text-slate-500 min-w-[190px]">Department</th>
+                {windowWeeks.map(({ w, iso, holiday }) => (
+                  <th key={w} className="px-1.5 py-3 min-w-[96px]">
+                    <DayHead label="Wk" iso={iso} today={w === 0} holiday={holiday} />
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {deptSchedules.map((d, di) => {
-                const unit = UNIT_SHORT[d.dept] ?? "ord";
+              {deptSchedules.map(d => {
+                const tone: ShiftTone = isShiftTone(d.dept) ? d.dept : "design";
+                const ratio = d.ratio && d.ratio > 0 ? d.ratio : null;
+                const planUnit = PLAN_UNIT[d.dept] ?? " ord";
                 return (
-                  <tr key={d.dept} className={`border-b border-slate-50 ${di % 2 === 0 ? "" : "bg-slate-50/40"}`}>
-                    <td className={`sticky left-0 z-10 ${di % 2 === 0 ? "bg-white" : "bg-slate-50"} px-4 py-2 whitespace-nowrap`}>
-                      <div className={`font-medium capitalize ${d.isHome ? "text-slate-700" : "text-amber-700"}`}>{d.dept}</div>
-                      {d.ratio ? <div className="text-slate-400">{d.ratio} h/{unit === "units" ? "unit" : unit === "f" ? "frame" : "ord"}</div> : null}
+                  <tr key={d.dept} className="border-b border-slate-100">
+                    <td className="sticky left-0 z-10 bg-white px-4 py-2 whitespace-nowrap">
+                      <PersonCell name={memberName}>
+                        <span className={`mt-0.5 inline-block rounded px-1.5 py-px text-[10px] font-medium border ${SHIFT_TONE_BADGE[tone]}`}>{SHIFT_LABEL[tone]}</span>
+                        {ratio && <div className="text-[10px] text-slate-400">{ratio} h/{planUnit.trim() === "f" ? "f" : planUnit.trim().replace(/s$/, "")}</div>}
+                      </PersonCell>
                     </td>
-                    {windowWeeks.map(w => {
+                    {windowWeeks.map(({ w }) => {
                       const hours = d.weeks[w]?.hours ?? 0;
-                      const output = d.ratio && d.ratio > 0 ? hours / d.ratio : 0;
+                      const out = ratio && hours > 0 ? hours / ratio : 0;
                       return (
-                        <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? "bg-indigo-50/30" : ""}`}>
-                          {hours > 0 ? (
-                            <>
-                              <div className="text-slate-700 font-medium">{round1(hours)}h</div>
-                              {output > 0 && <div className="text-slate-400 mt-0.5">{round1(output)}{unit === "f" ? "f" : ` ${unit}`}</div>}
-                            </>
-                          ) : (
-                            <div className="text-slate-300">—</div>
-                          )}
+                        <td key={w} className="p-1 align-top">
+                          <ShiftBlock tone={hours > 0 ? tone : null}>
+                            {hours > 0 ? (
+                              // Goal only, like This Week (hours only when there's no ratio)
+                              <span className="block text-xs font-semibold">
+                                {out > 0 ? `${round1(out)} ${OUTPUT_WORD[d.dept] ?? "orders"}` : `${round1(hours)}h`}
+                              </span>
+                            ) : (
+                              <span className="block py-1">Not scheduled</span>
+                            )}
+                          </ShiftBlock>
                         </td>
                       );
                     })}
                   </tr>
                 );
               })}
-              {multiDept && (
-                <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
-                  <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Week total</td>
-                  {windowWeeks.map(w => {
-                    const total = deptSchedules.reduce((s, d) => s + (d.weeks[w]?.hours ?? 0), 0);
-                    return (
-                      <td key={w} className={`px-2 py-2 text-center ${w === 0 ? "bg-indigo-50/50" : ""}`}>
-                        <div className="text-indigo-700">{total > 0 ? `${round1(total)}h` : "—"}</div>
-                      </td>
-                    );
-                  })}
-                </tr>
-              )}
             </tbody>
           </table>
         </div>
