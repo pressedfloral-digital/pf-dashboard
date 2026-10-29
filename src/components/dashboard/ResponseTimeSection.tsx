@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import type { ResponseTimeResult } from '@/types/dashboard';
+import { HelpTip } from './HelpTip';
 
 function fmtDuration(minutes: number): string {
   if (minutes < 60) return `${Math.round(minutes)}m`;
@@ -71,13 +72,13 @@ export function ResponseTimeSection({ location = 'Utah' }: { location?: string }
   return (
     <section className="space-y-4">
       <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-        Response Times
+        <HelpTip id="response.title">Response Times</HelpTip>
       </h2>
       <Card>
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between flex-wrap gap-3">
             <CardTitle className="text-sm font-semibold text-slate-700">
-              Client Message → First Designer Reply
+              <HelpTip id="response.title">Client Message → First Designer Reply</HelpTip>
             </CardTitle>
             <div className="flex items-center gap-2 flex-wrap">
               <label className="text-xs text-slate-500 flex items-center gap-1">
@@ -125,7 +126,7 @@ export function ResponseTimeSection({ location = 'Utah' }: { location?: string }
               {result.overall.sampleSize > 0 && (
                 <div className="mb-4 p-3 bg-slate-50 rounded-lg flex items-center gap-4">
                   <div>
-                    <p className="text-xs text-slate-500 uppercase tracking-wide">Team Average</p>
+                    <HelpTip id="response.average" className="text-xs text-slate-500 uppercase tracking-wide">Team Average</HelpTip>
                     <p className={`text-2xl font-bold ${speedColor(result.overall.avgMinutes)}`}>
                       {fmtDuration(result.overall.avgMinutes)}
                     </p>

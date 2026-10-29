@@ -97,6 +97,18 @@ function useMemberDirectory(location: string): Map<string, DirectoryEntry> | nul
   return directory;
 }
 
+// (name) => true when Rippling puts that person's home department somewhere
+// other than `dept` — the same test behind the Flex badge. Unknown names
+// read as not flexing.
+export function useIsFlexing(location: string, dept: string): (name: string) => boolean {
+  const directory = useMemberDirectory(location);
+  const viewDept = normalizeDept(dept);
+  return (name: string) => {
+    const homeDept = directory?.get(nameKey(name))?.homeDept;
+    return !!homeDept && homeDept !== viewDept;
+  };
+}
+
 export function MemberTierBadges({ name, location, dept, fallbackRole, fallbackIsManager, notOnRoster, className = 'flex mt-0.5' }: {
   name:     string;
   location: string;

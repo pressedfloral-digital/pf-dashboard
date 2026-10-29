@@ -21,6 +21,7 @@ import { TimeOffCalendar, toTimeOffMember } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { buildActiveMemberIds, InactiveToggle } from './memberActivity';
 import { DEPARTMENT_MANAGERS, STANDARD_WEEKLY_HOURS } from '@/lib/managers';
+import { HelpTip } from './HelpTip';
 import {
   BLOOM_STOCK_PRODUCTS, BLOOM_STOCK_LABEL, DEFAULT_BLOOM_STOCK_ROSTER, emptyByProduct, bloomStockDoneWeeks,
   BLOOM_STOCK_STATUSES, BLOOM_STOCK_TYPE_LABEL, QUEUE_STATUSES, forecastBloomStockWeek, type BloomStockWeekForecast,
@@ -234,7 +235,7 @@ export default function BloomStockPage({ canEdit, canViewCPO }: { canEdit: boole
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-lg font-semibold text-slate-800">Bloom Stock Products — Utah</h2>
+          <h2 className="text-lg font-semibold text-slate-800"><HelpTip id="bloom.title">Bloom Stock Products — Utah</HelpTip></h2>
           <p className="text-xs text-slate-500">Handprint, Paw Print, Footprint frames &amp; Bloom Arrangement Recreations. No drying stage — worked oldest order date first.</p>
         </div>
         <div className="flex items-center gap-3 text-xs">
@@ -261,7 +262,7 @@ export default function BloomStockPage({ canEdit, canViewCPO }: { canEdit: boole
           <button key={id} onClick={() => setTab(id)}
             className={`px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
               tab === id ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
-            {label}
+            <HelpTip id={id === 'orders' ? 'bloom.tab.orders' : `sched.tab.${id}`}>{label}</HelpTip>
             {id === 'orders' && unsorted > 0 && (
               <span className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-white text-[10px] font-semibold"
                 title={`${unsorted} new order${unsorted === 1 ? '' : 's'} to sort`}>{unsorted}</span>
@@ -415,7 +416,7 @@ function WeeklyScheduleTab({ bs, roster }: { bs: BS; roster: BloomStockMember[] 
   return (
     <div className={card}>
       <div className={cardHead}>
-        <h2 className="text-sm font-semibold text-slate-700">Hours per person per week</h2>
+        <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.hoursPerMember">Hours per person per week</HelpTip></h2>
         <div className="flex items-center gap-2">
           <button onClick={() => setOffset(Math.max(0, offset - WINDOW))} disabled={offset === 0} className={navBtn}>← Prev</button>
           <span className="text-xs text-slate-400">{getWeekLabel(offset)} – {getWeekLabel(offset + WINDOW - 1)}</span>
@@ -640,7 +641,7 @@ function QueueTab({ bs, canEdit, queue }: { bs: BS; canEdit: boolean; queue: Que
       <div className={card}>
         <div className={cardHead}>
           <div>
-            <h3 className="text-sm font-semibold text-slate-700">Open orders</h3>
+            <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="bloom.openOrders">Open orders</HelpTip></h3>
             <p className="text-xs text-slate-400 mt-0.5">
               New, Ready to Design and Influencer orders from the Orders tab.{notCounted > 0 && ` ${notCounted} waiting / on hold not counted.`}
             </p>
@@ -670,7 +671,7 @@ function QueueTab({ bs, canEdit, queue }: { bs: BS; canEdit: boolean; queue: Que
         <div className={card}>
           <div className={cardHead}>
             <div>
-              <h3 className="text-sm font-semibold text-slate-700">What-if launches</h3>
+              <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="bloom.whatIf">What-if launches</HelpTip></h3>
               <p className="text-xs text-slate-400 mt-0.5">Extra orders per week on top of the normal pace, at the same ratio. Toggle off to compare.</p>
             </div>
             {canEdit && (
@@ -709,7 +710,7 @@ function QueueTab({ bs, canEdit, queue }: { bs: BS; canEdit: boolean; queue: Que
         <div className={card}>
           <div className={cardHead}>
             <div>
-              <h3 className="text-sm font-semibold text-slate-700">Deadline check</h3>
+              <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="bloom.deadline">Deadline check</HelpTip></h3>
               <p className="text-xs text-slate-400 mt-0.5">Can everything ordered before the cutoff be finished by the due date? Leave time to ship.</p>
             </div>
           </div>
@@ -744,7 +745,7 @@ function QueueTab({ bs, canEdit, queue }: { bs: BS; canEdit: boolean; queue: Que
       <div className={card}>
         <div className="px-5 py-3 border-b border-slate-100 flex items-start justify-between gap-3 flex-wrap">
           <div>
-            <h2 className="text-sm font-semibold text-slate-700">Queue &amp; turnaround — every order week, oldest first</h2>
+            <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="bloom.queue">Queue &amp; turnaround — every order week, oldest first</HelpTip></h2>
             <p className="text-xs text-slate-400 mt-0.5">
               Open orders (actual) then upcoming weeks (seasonal forecast: same week last year × growth{bs.scenarios.some(sc => sc.enabled) ? ', plus what-ifs' : ''} — type over any week to override), worked oldest
               first on scheduled hours ÷ each person&apos;s ratio. Turnaround is order placed → finished.
@@ -1407,7 +1408,7 @@ function HistoricalsTab({ bs, canViewCPO }: { bs: BS; canViewCPO: boolean }) {
       <div className={card}>
         <div className={cardHead}>
           <div>
-            <h2 className="text-sm font-semibold text-slate-700">Hours &amp; completed orders</h2>
+            <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="bloom.hours">Hours &amp; completed orders</HelpTip></h2>
             <p className="text-xs text-slate-400 mt-0.5">
               At the start of each week, log last week&apos;s order numbers per person. Hours fill in from Rippling&apos;s Recreation department when the hours report is uploaded — or type them here. Cost uses Recreation payroll from the earnings upload when there is one.
             </p>

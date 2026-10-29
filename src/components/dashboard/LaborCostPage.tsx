@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { MonthForecast, DeptForecast, LocationMonthActual, InferredDate } from '@/app/api/labor-forecast/route';
 import type { MemberCostLine } from '@/lib/scheduleProjection';
+import { HelpTip } from './HelpTip';
 
 // Admin-only: monthly labor cost per department (see /api/labor-forecast).
 //  - Forecast: projected from the Scheduling rosters/schedules and each
@@ -163,7 +164,7 @@ export default function LaborCostPage() {
               className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${
                 view === id ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'
               }`}>
-              {label}
+              <HelpTip id={id === 'forecast' ? 'lab.forecast' : 'lab.history'}>{label}</HelpTip>
             </button>
           ))}
         </div>
@@ -198,7 +199,7 @@ export default function LaborCostPage() {
         </div>
         <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
           <input type="checkbox" checked={includeGm} onChange={e => setIncludeGm(e.target.checked)} className="accent-indigo-600" />
-          Include general managers in totals
+          <HelpTip id="lab.gm">Include general managers in totals</HelpTip>
         </label>
       </div>
 
@@ -212,8 +213,10 @@ export default function LaborCostPage() {
           [`${visible.length}-month total`, table.grandTotal, `${visible[0]?.label} – ${visible[visible.length - 1]?.label}`],
         ].map(([label, value, sub]) => (
           <div key={label as string} className="bg-white border border-slate-100 rounded-xl px-4 py-3">
-            <div className="text-xs text-slate-500">{label}</div>
-            <div className="text-xl font-semibold text-slate-800 tabular-nums mt-0.5">{fmt$(value as number)}</div>
+            <HelpTip id="lab.forecastTile" className="block">
+              <div className="text-xs text-slate-500">{label}</div>
+              <div className="text-xl font-semibold text-slate-800 tabular-nums mt-0.5">{fmt$(value as number)}</div>
+            </HelpTip>
             <div className="text-[11px] text-slate-400 mt-0.5">{sub}</div>
           </div>
         ))}
@@ -472,17 +475,17 @@ function PlannedVsActual({ months, loc, range, includeGm, inferredDates }: {
     <div className="space-y-5">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="bg-white border border-slate-100 rounded-xl px-4 py-3">
-          <div className="text-xs text-slate-500">Actually paid</div>
+          <div className="text-xs text-slate-500"><HelpTip id="lab.paid">Actually paid</HelpTip></div>
           <div className="text-xl font-semibold text-slate-800 tabular-nums mt-0.5">{fmt$(actualTotal)}</div>
           <div className="text-[11px] text-slate-400 mt-0.5">{rangeLabel} · scheduled depts{includeGm ? ' + GMs' : ''}</div>
         </div>
         <div className="bg-white border border-slate-100 rounded-xl px-4 py-3">
-          <div className="text-xs text-slate-500">Planned by the schedule</div>
+          <div className="text-xs text-slate-500"><HelpTip id="lab.planned">Planned by the schedule</HelpTip></div>
           <div className="text-xl font-semibold text-slate-800 tabular-nums mt-0.5">{fmt$(plannedTotal)}</div>
           <div className="text-[11px] text-slate-400 mt-0.5">same weeks</div>
         </div>
         <div className="bg-white border border-slate-100 rounded-xl px-4 py-3">
-          <div className="text-xs text-slate-500">Difference</div>
+          <div className="text-xs text-slate-500"><HelpTip id="lab.diff">Difference</HelpTip></div>
           <div className={`text-xl font-semibold tabular-nums mt-0.5 ${actualTotal > plannedTotal ? 'text-rose-600' : 'text-emerald-600'}`}>
             {actualTotal >= plannedTotal ? '+' : '−'}{fmt$(Math.abs(actualTotal - plannedTotal))}
           </div>
@@ -492,7 +495,7 @@ function PlannedVsActual({ months, loc, range, includeGm, inferredDates }: {
           </div>
         </div>
         <div className="bg-white border border-slate-100 rounded-xl px-4 py-3">
-          <div className="text-xs text-slate-500">Most over plan</div>
+          <div className="text-xs text-slate-500"><HelpTip id="lab.worst">Most over plan</HelpTip></div>
           <div className="text-xl font-semibold text-slate-800 mt-0.5">{worst && worst.diff > 0 ? worst.key : 'None'}</div>
           <div className="text-[11px] text-slate-400 mt-0.5">{worst && worst.diff > 0 ? `+${fmt$(worst.diff)} over ${hist.length} months` : 'every department at or under plan'}</div>
         </div>
@@ -675,7 +678,7 @@ function PreservationRangeChart({ months, loc }: { months: MonthForecast[]; loc:
     <div className="bg-white border border-slate-100 rounded-xl px-4 py-4">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <div className="text-sm font-semibold text-slate-700">Preservation cost range</div>
+          <div className="text-sm font-semibold text-slate-700"><HelpTip id="lab.presRange">Preservation cost range</HelpTip></div>
           <div className="text-xs text-slate-500 mt-0.5">
             {fmt$(totals.flexible)} – {fmt$(totals.minimum)} over {points.length} months for {fmtN(totals.bouquets)} bouquets
             {totals.idle > 0 && <> · up to {fmtN(totals.idle)} paid manager hours not needed for bouquets</>}
