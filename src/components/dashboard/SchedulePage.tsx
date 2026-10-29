@@ -34,6 +34,8 @@ import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCo
 import { SyncedOrdersPopover } from './SyncedOrdersPopover';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { HelpTip } from './HelpTip';
+import { PreservationFlowTab, TurnaroundDots, type PresFlowWeek } from './PreservationFlowTab';
+import { DEFAULT_FLOW_DAY_PCTS, simulateFlowWeek, splitArrivals, type FlowDayInput } from '@/lib/preservationFlow';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1704,9 +1706,15 @@ function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove
   );
 }
 
+// Where a week's "Bouquets received (est.)" number came from.
+type BouquetEstimateSource =
+  | { kind: 'manual' }
+  | { kind: 'projected'; companyLastYear: number; multiplier: number; multiplierIsDefault: boolean; locationPct: number; pctIsManual: boolean }
+  | { kind: 'average' };
+
 function PreservationSection({ location, preservationQueue, countsLoading, teamActuals, onActualsSaved,
   presHours, presDailyHours, presCheckHours, presCheckCounts, onPresCheckCountsChange, onPresDailyHoursChange, onPresCheckHoursChange, presRoster, presSettings, mgrTotalHours, mgrTotalDailyHours, onPresHoursChange, onPresRosterChange, onPresSettingsChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {}, weeklyEstimates = {}, presActuals = {}, onReceivedSaved, canViewCPO = true, userRole = 'admin', canSeeManagerCPO = () => false,
-  bouquetsReceivedByWeek, presNewHireHours, onPresNewHireHoursChange, paidHolidays, unavailability, onUnavailabilityChange }: {
+  bouquetsReceivedByWeek, bouquetsEstimateSourceByWeek, presNewHireHours, onPresNewHireHoursChange, paidHolidays, unavailability, onUnavailabilityChange }: {
   location:              'Utah' | 'Georgia';
   preservationQueue:     number;
   countsLoading:         boolean;
@@ -1721,12 +1729,12 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   onPresCheckHoursChange:(h: DailyHoursMap) => void;
   presRoster:            Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; _removed?: boolean; _order?: number; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }>;
   employeeRates?:         Record<string, { hourlyRate: number; annualSalary: number; payType: 'hourly'|'salary' }>;
-  presSettings:          { dateFrom?: string; dateTo?: string; weekOverrides?: Record<string, { ut: number; ga: number }>; dayPcts?: number[]; dayOverrides?: Record<string, { ut: number; ga: number }>; dailyReceived?: Record<string, number>; checkSettings?: { c1Min?: number; c1Max?: number; c2Min?: number; c2Max?: number; c3Min?: number; c3Max?: number; c1Mins?: number; c2Mins?: number; c3Mins?: number } };
+  presSettings:          { dateFrom?: string; dateTo?: string; weekOverrides?: Record<string, { ut: number; ga: number }>; dayPcts?: number[]; flowDayPcts?: number[]; flowCarryIn?: Record<string, { ut?: number; ga?: number }>; dayOverrides?: Record<string, { ut: number; ga: number }>; dailyReceived?: Record<string, number>; checkSettings?: { c1Min?: number; c1Max?: number; c2Min?: number; c2Max?: number; c3Min?: number; c3Max?: number; c1Mins?: number; c2Mins?: number; c3Mins?: number } };
   mgrTotalHours:         Record<string, Record<string, number>>;
   mgrTotalDailyHours:    DailyHoursMap;
   onPresHoursChange:     (h: Record<string, Record<string, number>>) => void;
   onPresRosterChange:    (r: Record<string, { ratio: number; rate: number; name: string; payType?: 'hourly'|'salary'; annualSalary?: number; standardWeeklyHours?: number[]; standardTotalWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }>) => void;
-  onPresSettingsChange:  (s: { dateFrom?: string; dateTo?: string; weekOverrides?: Record<string, { ut: number; ga: number }>; dayPcts?: number[]; dayOverrides?: Record<string, { ut: number; ga: number }>; dailyReceived?: Record<string, number>; checkSettings?: { c1Min?: number; c1Max?: number; c2Min?: number; c2Max?: number; c3Min?: number; c3Max?: number; c1Mins?: number; c2Mins?: number; c3Mins?: number } }) => void;
+  onPresSettingsChange:  (s: { dateFrom?: string; dateTo?: string; weekOverrides?: Record<string, { ut: number; ga: number }>; dayPcts?: number[]; flowDayPcts?: number[]; flowCarryIn?: Record<string, { ut?: number; ga?: number }>; dayOverrides?: Record<string, { ut: number; ga: number }>; dailyReceived?: Record<string, number>; checkSettings?: { c1Min?: number; c1Max?: number; c2Min?: number; c2Max?: number; c3Min?: number; c3Max?: number; c1Mins?: number; c2Mins?: number; c3Mins?: number } }) => void;
   onMgrTotalHoursChange: (h: Record<string, Record<string, number>>) => void;
   onMgrTotalDailyHoursChange: (h: DailyHoursMap) => void;
   weeklyEstimates:       Record<string, { ut: number; ga: number }>;
@@ -1739,6 +1747,8 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   // Turnaround tab (52 weeks) — Preservation's own turnaround uses this as
   // its arrivals, rather than a separately-edited estimate.
   bouquetsReceivedByWeek: number[];
+  // How each week's estimate above was made, for the Staffing Check column.
+  bouquetsEstimateSourceByWeek: BouquetEstimateSource[];
   presNewHireHours:        Record<string, number>;
   onPresNewHireHoursChange:(h: Record<string, number>) => void;
   // Shared paid-holiday calendar: zeroes production hours on those dates,
@@ -1749,7 +1759,9 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
 }) {
   const [showAvail] = useShowAvailability();
   const view = useGridView();
-  const [presTab,       setPresTab]      = useState<'thisweek' | 'schedule' | 'queue' | 'historicals'>('thisweek');
+  const [presTab,       setPresTab]      = useState<'thisweek' | 'schedule' | 'queue' | 'flow' | 'historicals'>('thisweek');
+  const [flowOffset,    setFlowOffset]   = useState(0);
+  const [flowActuals,   setFlowActuals]  = useState(true);
   const [showRoster,    setShowRoster]   = useState(false);
   const [weekOffset,    setWeekOffset]   = useState(0);
   const [presInputMode, setPresInputMode] = useState<InputMode>('hours');
@@ -2142,6 +2154,73 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
     return { scheduledHours, plannedHours, scheduledCapacity, plannedCapacity, onCallHoursByWeek };
   }, [presCapacityByWeek, presNewHireHours]);
 
+  // ── Daily flow (Preservation Team Hours Calculator) ─────────────────────────
+  // Read-only view: each week's planner hours and bouquet estimate run day by
+  // day, oldest pressed first, with Friday's leftover rolling into the next
+  // week. Feeds the Daily Flow tab and the extra Staffing Check columns only.
+  const flowDayPcts = presSettings.flowDayPcts ?? DEFAULT_FLOW_DAY_PCTS;
+  const flowCarryIn = presSettings.flowCarryIn;
+  const flowLocKey = location === 'Georgia' ? 'ga' : 'ut';
+  const presFlowWeeks = useMemo<PresFlowWeek[]>(() => {
+    const todayIso = localTodayIso();
+    const addDays = (iso: string, n: number) => {
+      const d = new Date(iso + 'T12:00:00Z');
+      d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    };
+    let carry = 0;
+    let prevLastArrivals = 0;
+    return Array.from({ length: WEEKS }, (_, w) => {
+      const weekIso = isoMonday(w);
+      const hours = Array(7).fill(0) as number[];
+      const cap   = Array(7).fill(0) as number[];
+      team.forEach(m => {
+        const employment = { weekIso, startDate: presRoster[m.id]?.startDate, endDate: presRoster[m.id]?.endDate, rules: presRoster[m.id]?.scheduleRules, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff };
+        const day = Array.from({ length: 7 }, (_, di) => resolveDayHours(presDailyHours, `${weekIso}-${m.id}`, di, presRoster[m.id]?.standardWeeklyHours, employment, paidHolidays).hours);
+        // Same week total the staffing check uses; a legacy weekly value or
+        // hard-coded default with no daily split is spread Mon–Fri.
+        const weekTotal = resolveWeekHours({
+          dailyMap: presDailyHours, weekKey: `${weekIso}-${m.id}`,
+          legacyWeeklyValue: presHours[m.id]?.[weekIso],
+          standardWeeklyHours: presRoster[m.id]?.standardWeeklyHours,
+          hardcodedDefault: m.defaultHrs,
+          employment, holidays: paidHolidays,
+        });
+        const gap = weekTotal - day.reduce((a, b) => a + b, 0);
+        if (gap > 0.01) for (let di = 0; di < 5; di++) day[di] += gap / 5;
+        day.forEach((h, di) => { hours[di] += h; cap[di] += m.ratio > 0 ? h / m.ratio : 0; });
+      });
+      const est = splitArrivals(bouquetsReceivedByWeek[w] ?? 0, flowDayPcts);
+      const input: FlowDayInput[] = [];
+      hours.forEach((h, di) => {
+        // Weekends only show up when someone's scheduled to press.
+        if (di >= 5 && h <= 0) return;
+        const iso = addDays(weekIso, di);
+        const day: FlowDayInput = { iso, hours: h, capacity: cap[di], arrivals: est[di] ?? 0 };
+        if (flowActuals && w === 0 && iso < todayIso && liveCheckQueue) {
+          const typed = manualReceived[iso] ?? 0;
+          day.arrivals = typed > 0 ? typed : liveCheckQueue.received?.[iso] ?? 0;
+          day.pressed = liveCheckQueue.pressed?.[iso] ?? 0;
+        }
+        input.push(day);
+      });
+      const typedCarry = flowCarryIn?.[weekIso]?.[flowLocKey];
+      const carryIn = typedCarry ?? (w === 0 ? 0 : carry);
+      const week = simulateFlowWeek(input, carryIn, w === 0 ? carryIn : prevLastArrivals);
+      carry = week.carryOut;
+      prevLastArrivals = input.filter(d => d.iso <= addDays(weekIso, 4)).at(-1)?.arrivals ?? 0;
+      return { ...week, weekIso, carryTyped: typedCarry !== undefined };
+    });
+  }, [team, presDailyHours, presHours, presRoster, paidHolidays, bouquetsReceivedByWeek, flowDayPcts, flowCarryIn, flowLocKey, liveCheckQueue, manualReceived, flowActuals]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function setFlowCarryIn(weekIso: string, n: number | undefined) {
+    const next = { ...(presSettings.flowCarryIn ?? {}) };
+    const entry = { ...(next[weekIso] ?? {}) };
+    if (n === undefined) delete entry[flowLocKey]; else entry[flowLocKey] = n;
+    if (Object.keys(entry).length) next[weekIso] = entry; else delete next[weekIso];
+    onPresSettingsChange({ ...presSettings, flowCarryIn: next });
+  }
+
   function setPresOnCallHours(weekIso: string, hours: number) {
     const next = { ...presNewHireHours };
     if (hours > 0) next[weekIso] = hours; else delete next[weekIso];
@@ -2384,11 +2463,11 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
       {/* Tabs: This Week | Weekly Schedule | Queue & Turnaround | Historicals */}
       {userRole !== 'viewer' && (
         <div className="flex border-b border-slate-200">
-          {(['thisweek', 'schedule', 'queue', 'historicals'] as const).map(t => (
+          {(['thisweek', 'schedule', 'queue', 'flow', 'historicals'] as const).map(t => (
             <button key={t} onClick={() => setPresTab(t)}
               className={`px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
                 presTab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}><HelpTip id={`sched.tab.${t}`}>{t === 'thisweek' ? 'This Week' : t === 'schedule' ? 'Weekly Schedule' : t === 'queue' ? 'Queue & Turnaround' : 'Historicals'}</HelpTip></button>
+              }`}><HelpTip id={`sched.tab.${t}`}>{t === 'thisweek' ? 'This Week' : t === 'schedule' ? 'Weekly Schedule' : t === 'queue' ? 'Queue & Turnaround' : t === 'flow' ? 'Daily Flow' : 'Historicals'}</HelpTip></button>
           ))}
         </div>
       )}
@@ -2926,6 +3005,11 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                     <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">On-call support</th>
                     <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Preservation hours</th>
                     <th className="text-left font-medium px-2 py-1.5 min-w-[220px]">Staffing</th>
+                    <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap border-l border-slate-100"><HelpTip id="sched.flow.hoursNeeded">Hours needed</HelpTip></th>
+                    <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Over / short</th>
+                    <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap">Capacity used</th>
+                    <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap"><HelpTip id="sched.flow.carry">Carry → next wk</HelpTip></th>
+                    <th className="text-left font-medium px-2 py-1.5 whitespace-nowrap"><HelpTip id="sched.flow.dots">Mon–Fri</HelpTip></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2946,6 +3030,26 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                         </td>
                         <td className="px-2 py-2 whitespace-nowrap text-slate-600">
                           {Math.round(demand)} bq
+                          {(() => {
+                            const src = bouquetsEstimateSourceByWeek[w];
+                            if (src?.kind === 'manual') return <div className="text-[10px] text-amber-600" title="Typed in on Design's Queue & Turnaround — the growth formula isn't applied">manual override</div>;
+                            if (src?.kind === 'average') return <div className="text-[10px] text-slate-400" title="No company intake for the same week last year, so the average intake is used">avg intake</div>;
+                            if (src?.kind !== 'projected') return null;
+                            return (
+                              <div className="mt-0.5 space-y-0.5 text-[10px] leading-tight"
+                                title={`Company same week last year ${Math.round(src.companyLastYear)} × ${src.multiplier.toFixed(2)} growth × ${src.locationPct.toFixed(0)}% to ${location} — set on the Growth & Distribution tab`}>
+                                <div className="text-slate-500">
+                                  ×{src.multiplier.toFixed(2)} growth
+                                  <span className="text-slate-300"> {src.multiplierIsDefault ? 'rolling' : 'set'}</span>
+                                </div>
+                                <div className="text-slate-500">
+                                  {src.locationPct.toFixed(0)}% {location === 'Utah' ? 'UT' : 'GA'} distribution
+                                  <span className="text-slate-300"> {src.pctIsManual ? 'set' : 'suggested'}</span>
+                                </div>
+                                <div className="text-slate-300">co. LY {Math.round(src.companyLastYear)}</div>
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="px-2 py-2">
                           <div className="flex items-center gap-1">
@@ -2984,6 +3088,33 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                             </div>
                           </div>
                         </td>
+                        {(() => {
+                          const flow = presFlowWeeks[w];
+                          if (!flow) return <td colSpan={5} />;
+                          const short = flow.overShort < -0.05;
+                          return (
+                            <>
+                              <td className="px-2 py-2 whitespace-nowrap text-slate-600 border-l border-slate-100">
+                                {Math.round(flow.hoursNeeded)}h
+                                {flow.carryIn > 0.5 && <div className="text-[10px] text-slate-400">incl. {Math.round(flow.carryIn)} carried in</div>}
+                              </td>
+                              <td className={`px-2 py-2 whitespace-nowrap font-medium ${short ? 'text-red-600' : 'text-green-700'}`}>
+                                {short ? '' : '+'}{Math.round(flow.overShort * 10) / 10}h
+                              </td>
+                              <td className="px-2 py-2 whitespace-nowrap text-slate-600">
+                                {flow.capacityUsed === null ? '—' : `${Math.round(flow.capacityUsed * 100)}%`}
+                              </td>
+                              <td className={`px-2 py-2 whitespace-nowrap ${flow.carryOut > 0.5 ? 'text-amber-600 font-medium' : 'text-slate-400'}`}>
+                                {flow.carryOut > 0.5 ? `${Math.round(flow.carryOut)} bq` : '—'}
+                              </td>
+                              <td className="px-2 py-2 whitespace-nowrap">
+                                <button type="button" onClick={() => { setFlowOffset(w); setPresTab('flow'); }} title="Open this week on the Daily Flow tab">
+                                  <TurnaroundDots days={flow.days.slice(0, 5)} />
+                                </button>
+                              </td>
+                            </>
+                          );
+                        })()}
                       </tr>
                     );
                   })}
@@ -2996,9 +3127,28 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
               <span className="flex items-center gap-1.5 text-[10px] text-slate-500 border-l border-slate-200 pl-4"><span className="w-2.5 h-2.5 rounded-full bg-green-400 inline-block" /> correctly staffed</span>
               <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-red-400 inline-block" /> understaffed</span>
               <span className="flex items-center gap-1.5 text-[10px] text-slate-500"><span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> overstaffed (&gt;{Math.round(PRES_OVERSTAFF_PCT * 100)}% over)</span>
+              <span className="text-[10px] text-slate-500 border-l border-slate-200 pl-4">
+                Hours needed → Mon–Fri: the Daily Flow tab&apos;s day-by-day math on scheduled hours, with Friday&apos;s leftover carried into the next week.
+                Dots: green on target, amber using day 2, red past 2 days. Click them to open that week.
+              </span>
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── DAILY FLOW TAB ── */}
+      {presTab === 'flow' && (
+        <PreservationFlowTab
+          location={location}
+          weeks={presFlowWeeks}
+          offset={flowOffset}
+          onOffsetChange={setFlowOffset}
+          dayPcts={flowDayPcts}
+          onDayPctsChange={pcts => onPresSettingsChange({ ...presSettings, flowDayPcts: pcts })}
+          onCarryInChange={setFlowCarryIn}
+          useActuals={flowActuals}
+          onUseActualsChange={setFlowActuals}
+        />
       )}
 
       {/* ── HISTORICALS TAB ── */}
@@ -4969,6 +5119,21 @@ export function SchedulePage({
     return estimateLocationBouquets(location, isoMonday(w), weeklyEstimates, avgIntake, intakeProjectionInputs);
   }), [weeklyEstimates, location, companyActualIntakeByWeek, companyMultipliers, distributionPct, distributionEstimates, avgIntake]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Same decision estimateLocationBouquets makes, kept so Preservation's
+  // Staffing Check can show the growth multiplier and distribution % behind
+  // each week's number.
+  const bouquetsEstimateSourceByWeek = useMemo<BouquetEstimateSource[]>(() => Array.from({ length: WEEKS }, (_, w) => {
+    const weekOf = isoMonday(w);
+    if (weeklyEstimates[weekOf] !== undefined) return { kind: 'manual' };
+    const companyLastYear = companyActualIntakeByWeek[addDays(weekOf, -364)];
+    if (companyLastYear === undefined) return { kind: 'average' };
+    return {
+      kind: 'projected', companyLastYear,
+      multiplier: getCompanyMultiplier(weekOf), multiplierIsDefault: companyMultipliers[weekOf] === undefined,
+      locationPct: getLocationPct(weekOf), pctIsManual: distributionPct[weekOf]?.ut !== undefined,
+    };
+  }), [weeklyEstimates, location, companyActualIntakeByWeek, companyMultipliers, distributionPct, distributionEstimates, rollingCompanyMultiplier]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Graduating cohorts (preservation → designable, per week) ────────────────
   const graduatingCohorts = useMemo(() => {
     const taByWeek: Record<string, number> = {};
@@ -5697,6 +5862,7 @@ export function SchedulePage({
           weeklyEstimates={weeklyEstimates}
           presActuals={presActuals}
           bouquetsReceivedByWeek={bouquetsReceivedByWeek}
+          bouquetsEstimateSourceByWeek={bouquetsEstimateSourceByWeek}
           presNewHireHours={settings.presNewHireHours}
           onPresNewHireHoursChange={(h) => update('presNewHireHours', h)}
           onReceivedSaved={() => {

@@ -47,6 +47,9 @@ export interface PresSettings {
   dateFrom?: string;
   dateTo?:   string;
   dayPcts?:  number[];
+  // Daily Flow tab: Mon–Fri arrival mix (%) and hand-typed Monday carry-in per week.
+  flowDayPcts?: number[];
+  flowCarryIn?: Record<string, { ut?: number; ga?: number }>;
   utPct?:    number;
   gaPct?:    number;
   unkPct?:   number;
