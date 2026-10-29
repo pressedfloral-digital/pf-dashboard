@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { DESIGNER_IDS } from "@/lib/teamMembers";
 import { isoMonday } from "@/lib/weekDates";
-import { resolveWeekHours, type ScheduleRule } from "@/lib/scheduleResolution";
+import { resolveWeekHours, resolveDayHours, activeRuleForDay, isWithinEmployment, type ScheduleRule } from "@/lib/scheduleResolution";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -234,6 +234,32 @@ export async function GET(req: NextRequest) {
       return Math.round(h * 100) / 100;
     });
   }
+  // This week's Mon-Fri production hours, resolved per day the same way the
+  // Scheduling tab's This Week grid does — drives "planned so far" pacing.
+  function getThisWeekDaily(dailyKey: string, id: string, entry?: RosterEntry): number[] {
+    const dailyMap = (scheduleMap[dailyKey] ?? {}) as Record<string, (number | null)[]>;
+    const weekIso = isoMonday(0);
+    return Array.from({ length: 5 }, (_, d) => Math.round(resolveDayHours(
+      dailyMap, `${weekIso}-${id}`, d, entry?.standardWeeklyHours,
+      { weekIso, startDate: entry?.startDate, endDate: entry?.endDate, rules: entry?.scheduleRules, daysOff: entry?.daysOff, hoursOff: entry?.hoursOff },
+      paidHolidays,
+    ).hours * 100) / 100);
+  }
+  // Per weekday: Time Off flags plus the standard-schedule hours, which the
+  // shift-block grid treats as the person's preferred time (see Unavailability.tsx)
+  function getThisWeekOff(entry?: RosterEntry): { iso: string; dayOff: boolean; hoursOff: number; standardHours: number }[] {
+    const weekIso = isoMonday(0);
+    const [y, m, d0] = weekIso.split("-").map(Number);
+    const employment = { weekIso, startDate: entry?.startDate, endDate: entry?.endDate, rules: entry?.scheduleRules, daysOff: entry?.daysOff, hoursOff: entry?.hoursOff };
+    return Array.from({ length: 5 }, (_, d) => {
+      const dt = new Date(y, m - 1, d0 + d);
+      const iso = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+      const standardHours = isWithinEmployment(d, employment)
+        ? activeRuleForDay(d, employment)?.hours[d] ?? entry?.standardWeeklyHours?.[d] ?? 0
+        : 0;
+      return { iso, dayOff: !!entry?.daysOff?.includes(iso), hoursOff: entry?.hoursOff?.[iso] ?? 0, standardHours };
+    });
+  }
   function getDailyHours(dept: string, dailyKey: string, id: string): number[] {
     const raw = scheduleMap[dailyKey] ?? {};
     // Daily hours are keyed `${isoMonday}-${memberId}`; "this week" = offset 0.
@@ -253,7 +279,9 @@ export async function GET(req: NextRequest) {
     ? getWeeklyHours(homeDeptNorm, homeDeptConfig.weekly, homeDeptConfig.daily, homeScheduleId, homeEntry) : [];
   const dailyHours: number[] = homeScheduleId
     ? getDailyHours(homeDeptNorm, homeDeptConfig.daily, homeScheduleId) : [];
-  const crossDeptWeekly: { dept: string; hours: number[]; ratio: number | null }[] = [];
+  const homeThisWeekDaily: number[] = homeScheduleId ? getThisWeekDaily(homeDeptConfig.daily, homeScheduleId, homeEntry) : [];
+
+  const crossDeptWeekly: { dept: string; memberId: string; hours: number[]; ratio: number | null; thisWeekDaily: number[]; thisWeekOff: ReturnType<typeof getThisWeekOff> }[] = [];
   for (const dk of ALL_DEPT_KEYS) {
     if (dk.dept === homeDeptNorm) continue;
     // Find this person's ID in the cross-dept roster by name
@@ -262,15 +290,15 @@ export async function GET(req: NextRequest) {
 
     const deptWeekly: number[] = getWeeklyHours(dk.dept, dk.weekly, dk.daily, cross.id, cross.entry);
     if (deptWeekly.some(h => h > 0)) {
-      crossDeptWeekly.push({ dept: dk.dept, hours: deptWeekly, ratio: cross.ratio });
+      crossDeptWeekly.push({ dept: dk.dept, memberId: cross.id, hours: deptWeekly, ratio: cross.ratio, thisWeekDaily: getThisWeekDaily(dk.daily, cross.id, cross.entry), thisWeekOff: getThisWeekOff(cross.entry) });
     }
   }
 
   // One row per department this person is scheduled in — the team member's
   // slice of each department's Weekly Schedule
   const deptSchedules = [
-    ...(homeWeeklyHours.some(h => h > 0) ? [{ dept: homeDeptNorm, isHome: true, ratio: targetRatio, hours: homeWeeklyHours }] : []),
-    ...crossDeptWeekly.map(d => ({ dept: d.dept, isHome: false, ratio: d.ratio, hours: d.hours })),
+    ...(homeWeeklyHours.some(h => h > 0) ? [{ dept: homeDeptNorm, memberId: homeScheduleId ?? "", isHome: true, ratio: targetRatio, hours: homeWeeklyHours, thisWeekDaily: homeThisWeekDaily, thisWeekOff: getThisWeekOff(homeEntry) }] : []),
+    ...crossDeptWeekly.map(d => ({ dept: d.dept, memberId: d.memberId, isHome: false, ratio: d.ratio, hours: d.hours, thisWeekDaily: d.thisWeekDaily, thisWeekOff: d.thisWeekOff })),
   ].map(d => ({ ...d, weeks: d.hours.map((h, i) => ({ weekOf: isoMonday(i), hours: h })) }))
    .map(({ hours: _hours, ...d }) => d);
 
@@ -309,6 +337,26 @@ export async function GET(req: NextRequest) {
 
   const thisWeekScheduledHours = mergedWeeklyHours[0] ?? null;
 
+  // Availability markers for the shift-block grid — only this person's
+  // Every roster they're on, scheduled or not — the team view's Add
+  // availability replaces this whole set (see ./availability/route.ts)
+  const memberIds = new Set<string>([
+    ...(homeScheduleId ? [homeScheduleId] : []),
+    ...Object.values(ROSTER_KEYS).map(k => findIdInRoster(k, memberName)).filter((id): id is string => !!id),
+  ]);
+  const { data: unavRow } = await supabase
+    .from("schedule_settings")
+    .select("value")
+    .eq("location", location)
+    .eq("key", "unavailability")
+    .maybeSingle();
+  const unavailability = (() => {
+    try {
+      const v = typeof unavRow?.value === "string" ? JSON.parse(unavRow.value) : unavRow?.value;
+      return Array.isArray(v) ? v.filter((e: { personId?: string }) => !!e?.personId && memberIds.has(e.personId)) : [];
+    } catch { return []; }
+  })();
+
   return NextResponse.json({
     routeVersion: 'v3-resin-shapes',
     memberName,
@@ -327,6 +375,11 @@ export async function GET(req: NextRequest) {
     historicals,
     upcomingWeeks,
     deptSchedules,
+    paidHolidays,
+    unavailability,
+    availabilityPeople: ALL_DEPT_KEYS
+      .map(dk => ({ dept: dk.dept, id: dk.dept === homeDeptNorm ? homeScheduleId : findIdInRoster(ROSTER_KEYS[dk.dept] ?? "", memberName) }))
+      .filter((p): p is { dept: string; id: string } => !!p.id),
     avgHours:  ratioData.length > 0 ? Math.round((totalHours  / ratioData.length) * 10) / 10 : null,
     avgOrders: ratioData.length > 0 ? Math.round((totalOrders / ratioData.length) * 10) / 10 : null,
     homeDepartment: department,
