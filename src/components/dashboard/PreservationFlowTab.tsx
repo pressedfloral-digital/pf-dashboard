@@ -12,6 +12,8 @@ import { HelpTip } from './HelpTip';
 export interface PresFlowWeek extends FlowWeek {
   weekIso:    string;
   carryTyped: boolean;   // carry-in typed by hand rather than rolled from last week
+  plan?:      FlowWeek;  // this week as planned, before any actuals — set once a day has actuals
+  soFar?:     { iso: string; received: number; pressed: number }; // today's live counts so far
 }
 
 const STATUS_STYLE: Record<TurnaroundStatus, { chip: string; bar: string; dot: string }> = {
@@ -55,9 +57,9 @@ function Card({ label, value, sub, tone = 'text-slate-800' }: { label: string; v
 // Each day: a bar of everything waiting at the start of the day, split into
 // what gets pressed (green) and what's still waiting (amber/red by
 // turnaround), with the day's press capacity as a dashed line.
-function FlowChart({ days }: { days: FlowDay[] }) {
+function FlowChart({ days, planDays, soFar }: { days: FlowDay[]; planDays?: FlowDay[]; soFar?: PresFlowWeek['soFar'] }) {
   const W = 640, H = 220, padL = 36, padB = 34, padT = 12;
-  const max = Math.max(1, ...days.map(d => Math.max(d.start, d.capacity))) * 1.12;
+  const max = Math.max(1, ...days.map(d => Math.max(d.start, d.capacity)), ...(planDays ?? []).map(d => d.start)) * 1.12;
   const y = (v: number) => padT + (H - padT - padB) * (1 - v / max);
   const slot = (W - padL) / Math.max(1, days.length);
   const barW = Math.min(64, slot * 0.55);
@@ -74,8 +76,15 @@ function FlowChart({ days }: { days: FlowDay[] }) {
         const cx = padL + slot * i + slot / 2;
         const x = cx - barW / 2;
         const capY = y(d.capacity);
+        const planned = d.actual ? planDays?.find(p => p.iso === d.iso) : undefined;
+        const today = soFar?.iso === d.iso ? soFar : undefined;
         return (
           <g key={d.iso}>
+            {planned && (
+              <rect x={x - 3} y={y(planned.start)} width={barW + 6} height={y(0) - y(planned.start)} fill="none" stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="4 3" rx="3">
+                <title>{`Planned: ${r1(planned.start)} waiting, ${r1(planned.done)} pressed`}</title>
+              </rect>
+            )}
             <rect x={x} y={y(d.done)} width={barW} height={y(0) - y(d.done)} fill="#34d399" rx="2">
               <title>{`${d.actual ? 'Pressed' : 'Pressed (plan)'}: ${r1(d.done)}`}</title>
             </rect>
@@ -89,9 +98,10 @@ function FlowChart({ days }: { days: FlowDay[] }) {
                 <title>{`Press capacity: ${r1(d.capacity)}`}</title>
               </line>
             )}
-            <text x={cx} y={y(Math.max(d.start, d.actual ? 0 : d.capacity)) - 5} textAnchor="middle" fontSize="10" fontWeight="600" fill="#334155">{r0(d.start)}</text>
+            <text x={cx} y={y(Math.max(d.start, d.actual ? planned?.start ?? 0 : d.capacity)) - 5} textAnchor="middle" fontSize="10" fontWeight="600" fill="#334155">{r0(d.start)}</text>
             <text x={cx} y={H - padB + 14} textAnchor="middle" fontSize="10" fill="#475569">{dayName(d.iso)} {dayDate(d.iso)}</text>
-            {d.actual && <text x={cx} y={H - padB + 26} textAnchor="middle" fontSize="8" fill="#059669">actual</text>}
+            {d.actual && <text x={cx} y={H - padB + 26} textAnchor="middle" fontSize="8" fill="#059669">actual{planned ? ` · plan ${r0(planned.start)}` : ''}</text>}
+            {today && <text x={cx} y={H - padB + 26} textAnchor="middle" fontSize="8" fill="#4f46e5">so far {today.received} in · {today.pressed} pressed</text>}
           </g>
         );
       })}
@@ -99,7 +109,7 @@ function FlowChart({ days }: { days: FlowDay[] }) {
   );
 }
 
-export function PreservationFlowTab({ location, weeks, offset, onOffsetChange, dayPcts, onDayPctsChange, onCarryInChange, useActuals, onUseActualsChange }: {
+export function PreservationFlowTab({ location, weeks, offset, onOffsetChange, dayPcts, onDayPctsChange, onCarryInChange }: {
   location:         'Utah' | 'Georgia';
   weeks:            PresFlowWeek[];
   offset:           number;
@@ -107,21 +117,21 @@ export function PreservationFlowTab({ location, weeks, offset, onOffsetChange, d
   dayPcts:          number[];
   onDayPctsChange:  (pcts: number[] | undefined) => void;
   onCarryInChange:  (weekIso: string, n: number | undefined) => void;
-  useActuals:       boolean;   // days already past this week use actual received / pressed
-  onUseActualsChange: (v: boolean) => void;
 }) {
   const week = weeks[offset];
   if (!week) return null;
   const pctTotal = dayPcts.reduce((s, p) => s + p, 0);
   const isDefaultMix = dayPcts.every((p, i) => p === DEFAULT_FLOW_DAY_PCTS[i]);
   const short = week.overShort < -0.05;
-  const rows: { label: string; sub?: string; cell: (d: FlowDay) => string; total?: string; strong?: boolean }[] = [
-    { label: 'Bouquets coming in', sub: 'est. from the weekly mix, actual for days past', cell: d => String(r1(d.arrivals)), total: String(r1(week.arrivals)) },
+  const planOf = (d: FlowDay) => d.actual ? week.plan?.days.find(p => p.iso === d.iso) : undefined;
+  const actualDays = week.days.filter(d => d.actual);
+  const rows: { label: string; sub?: string; cell: (d: FlowDay) => string; plan?: (d: FlowDay) => number; total?: string; strong?: boolean }[] = [
+    { label: 'Bouquets coming in', sub: 'actual for days past, est. from the weekly mix after', cell: d => String(r1(d.arrivals)), plan: d => planOf(d)?.arrivals ?? NaN, total: String(r1(week.arrivals)) },
     { label: 'Left from previous day', cell: d => String(r1(d.leftIn)) },
     { label: 'Total at start of day', cell: d => String(r1(d.start)), strong: true },
     { label: 'Press capacity', sub: 'scheduled hours ÷ ratio', cell: d => String(r1(d.capacity)), total: String(r1(week.capacity)) },
-    { label: 'Pressed', sub: 'plan, or photo uploaded for days past', cell: d => String(r1(d.done)) },
-    { label: 'Left at end of day', cell: d => String(r1(d.remaining)), total: `${r1(week.carryOut)} → next wk`, strong: true },
+    { label: 'Pressed', sub: 'photo uploaded for days past, plan after', cell: d => String(r1(d.done)), plan: d => planOf(d)?.done ?? NaN },
+    { label: 'Left at end of day', cell: d => String(r1(d.remaining)), plan: d => planOf(d)?.remaining ?? NaN, total: `${r1(week.carryOut)} → next wk`, strong: true },
     { label: 'Scheduled hours', cell: d => `${r1(d.hours)}h`, total: `${r1(week.scheduledHours)}h` },
     { label: 'Hours used pressing', cell: d => `${r1(d.hoursUsed)}h` },
     { label: 'Leftover hours', sub: 'scheduled but not needed', cell: d => d.hoursIdle > 0.05 ? `${r1(d.hoursIdle)}h` : '—', total: `${r1(week.hoursIdle)}h` },
@@ -137,7 +147,7 @@ export function PreservationFlowTab({ location, weeks, offset, onOffsetChange, d
             <p className="text-xs text-slate-400 mt-1 max-w-3xl">
               The Preservation Team Hours Calculator, live for {location}. Each week&apos;s bouquet estimate is spread across the days by the mix
               below and pressed oldest first, using the hours on the 52-week planner. Anything left on Friday rolls into the next week.
-              Days already past this week use actual received and pressed counts. Nothing here changes the schedule, staffing check or historicals.
+              As each day finishes it switches to actual received and pressed counts, and the rest of the week replans from there. Nothing here changes the schedule, staffing check or historicals.
             </p>
           </div>
           <div className="flex items-center gap-1">
@@ -147,18 +157,20 @@ export function PreservationFlowTab({ location, weeks, offset, onOffsetChange, d
             <button onClick={() => onOffsetChange(Math.min(weeks.length - 1, offset + 1))} disabled={offset >= weeks.length - 1}
               className="px-2 py-1 text-sm rounded border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-30">›</button>
             {offset > 0 && <button onClick={() => onOffsetChange(0)} className="ml-1 text-xs text-indigo-600 underline">This week</button>}
-            {offset === 0 && (
-              <div className="ml-2 flex rounded-lg border border-slate-200 overflow-hidden" title="For days already past this week">
-                {([[true, 'Actuals'], [false, 'Plan']] as const).map(([v, name]) => (
-                  <button key={name} onClick={() => onUseActualsChange(v)}
-                    className={`px-2.5 py-1 text-xs font-medium ${useActuals === v ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
-                    {name}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
         </div>
+
+        {(actualDays.length > 0 || week.soFar) && (
+          <div className="rounded-lg bg-emerald-50/60 border border-emerald-100 px-3 py-2 text-xs text-emerald-900">
+            {actualDays.length > 0 && <>
+              <span className="font-semibold">{actualDays.length === 1 ? dayName(actualDays[0].iso) : `${dayName(actualDays[0].iso)}–${dayName(actualDays[actualDays.length - 1].iso)}`} use actuals</span>
+              {' '}({r0(actualDays.reduce((s, d) => s + d.arrivals, 0))} received vs {r0((week.plan?.days ?? []).filter(p => actualDays.some(d => d.iso === p.iso)).reduce((s, d) => s + d.arrivals, 0))} planned,
+              {' '}{r0(actualDays.reduce((s, d) => s + d.done, 0))} pressed). The rest of the week is the plan, starting from what&apos;s actually still waiting.
+            </>}
+            {week.plan && <> Planned carry into next week was {r1(week.plan.carryOut)}; now {r1(week.carryOut)}.</>}
+            <span className="text-emerald-700/70"> Counts reload every 5 minutes.</span>
+          </div>
+        )}
 
         <div className="grid gap-3 grid-cols-2 md:grid-cols-4 xl:grid-cols-7">
           <div className="rounded-xl border border-slate-100 bg-white px-4 py-3">
@@ -181,11 +193,12 @@ export function PreservationFlowTab({ location, weeks, offset, onOffsetChange, d
         </div>
 
         <div className="rounded-xl border border-slate-100 p-3">
-          <FlowChart days={week.days} />
+          <FlowChart days={week.days} planDays={week.plan?.days} soFar={week.soFar} />
           <div className="flex flex-wrap gap-4 px-2 pt-1 text-[10px] text-slate-500">
             <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-emerald-400" /> Pressed that day</span>
             <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-amber-400" /> Still waiting (amber = day 2, red = past 2 days)</span>
             <span className="inline-flex items-center gap-1"><span className="w-4 border-t-2 border-dashed border-indigo-600" /> Press capacity</span>
+            {week.plan && <span className="inline-flex items-center gap-1"><span className="h-2.5 w-3 rounded-sm border border-dashed border-slate-400" /> What was planned (days with actuals)</span>}
             <span>Number on top = total waiting at start of day</span>
           </div>
         </div>
@@ -199,6 +212,7 @@ export function PreservationFlowTab({ location, weeks, offset, onOffsetChange, d
                   <th key={d.iso} className="font-medium px-2 py-1.5 text-center whitespace-nowrap">
                     {dayName(d.iso)} <span className="text-slate-300">{dayDate(d.iso)}</span>
                     {d.actual && <div className="text-[9px] font-normal text-emerald-600">actual</div>}
+                    {week.soFar?.iso === d.iso && <div className="text-[9px] font-normal text-indigo-600">today · so far {week.soFar.received} in, {week.soFar.pressed} pressed</div>}
                   </th>
                 ))}
                 <th className="font-medium px-2 py-1.5 text-center">Week</th>
@@ -211,7 +225,15 @@ export function PreservationFlowTab({ location, weeks, offset, onOffsetChange, d
                     {row.label}
                     {row.sub && <div className="text-[9px] font-normal text-slate-400">{row.sub}</div>}
                   </td>
-                  {week.days.map(d => <td key={d.iso} className="px-2 py-1.5 text-center">{row.cell(d)}</td>)}
+                  {week.days.map(d => {
+                    const p = row.plan?.(d);
+                    return (
+                      <td key={d.iso} className="px-2 py-1.5 text-center">
+                        {row.cell(d)}
+                        {p !== undefined && !Number.isNaN(p) && <div className="text-[9px] font-normal text-slate-400">plan {r1(p)}</div>}
+                      </td>
+                    );
+                  })}
                   <td className="px-2 py-1.5 text-center">{row.total ?? ''}</td>
                 </tr>
               ))}
