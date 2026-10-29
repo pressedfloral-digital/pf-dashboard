@@ -59,6 +59,7 @@ interface WeekSchedule {
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
 const WEEKS              = 52;
+const LIVE_COUNTS_REFRESH_MS = 5 * 60 * 1000;
 const WINDOW             = 8;
 const PRESERVATION_WEEKS = 8;
 // Ratio assumed for a hypothetical new hire on the Queue & Turnaround planner —
@@ -1761,7 +1762,6 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   const view = useGridView();
   const [presTab,       setPresTab]      = useState<'thisweek' | 'schedule' | 'queue' | 'flow' | 'historicals'>('thisweek');
   const [flowOffset,    setFlowOffset]   = useState(0);
-  const [flowActuals,   setFlowActuals]  = useState(true);
   const [showRoster,    setShowRoster]   = useState(false);
   const [weekOffset,    setWeekOffset]   = useState(0);
   const [presInputMode, setPresInputMode] = useState<InputMode>('hours');
@@ -1849,11 +1849,16 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   useEffect(() => {
     let cancelled = false;
     setLiveCheckQueue(null);
-    fetch(`/api/preservation-check-queue?location=${location}`)
+    const load = () => fetch(`/api/preservation-check-queue?location=${location}`)
       .then(res => res.ok ? res.json() : null)
       .then(data => { if (!cancelled && data?.byEntered) setLiveCheckQueue(data.byEntered); })
       .catch(() => {});
-    return () => { cancelled = true; };
+    load();
+    // Reload every few minutes so received/pressed counts (This Week, Daily
+    // Flow) pick up new bouquets as they come in. A failed reload keeps the
+    // last good counts.
+    const timer = setInterval(load, LIVE_COUNTS_REFRESH_MS);
+    return () => { cancelled = true; clearInterval(timer); };
   }, [location]);
 
   // Actual received per day: a typed-in number wins; otherwise the live count
@@ -2191,27 +2196,35 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
         day.forEach((h, di) => { hours[di] += h; cap[di] += m.ratio > 0 ? h / m.ratio : 0; });
       });
       const est = splitArrivals(bouquetsReceivedByWeek[w] ?? 0, flowDayPcts);
+      const planInput: FlowDayInput[] = [];
       const input: FlowDayInput[] = [];
+      let soFar: PresFlowWeek['soFar'];
       hours.forEach((h, di) => {
         // Weekends only show up when someone's scheduled to press.
         if (di >= 5 && h <= 0) return;
         const iso = addDays(weekIso, di);
-        const day: FlowDayInput = { iso, hours: h, capacity: cap[di], arrivals: est[di] ?? 0 };
-        if (flowActuals && w === 0 && iso < todayIso && liveCheckQueue) {
-          const typed = manualReceived[iso] ?? 0;
-          day.arrivals = typed > 0 ? typed : liveCheckQueue.received?.[iso] ?? 0;
-          day.pressed = liveCheckQueue.pressed?.[iso] ?? 0;
-        }
-        input.push(day);
+        const plan: FlowDayInput = { iso, hours: h, capacity: cap[di], arrivals: est[di] ?? 0 };
+        planInput.push(plan);
+        if (w !== 0 || !liveCheckQueue || iso > todayIso) { input.push(plan); return; }
+        const typed = manualReceived[iso] ?? 0;
+        const received = typed > 0 ? typed : liveCheckQueue.received?.[iso] ?? 0;
+        const pressed = liveCheckQueue.pressed?.[iso] ?? 0;
+        // Days that have happened switch to actuals; today stays on plan
+        // until it's over, with the counts so far shown alongside.
+        if (iso < todayIso) input.push({ ...plan, arrivals: received, pressed });
+        else { input.push(plan); soFar = { iso, received, pressed }; }
       });
       const typedCarry = flowCarryIn?.[weekIso]?.[flowLocKey];
       const carryIn = typedCarry ?? (w === 0 ? 0 : carry);
-      const week = simulateFlowWeek(input, carryIn, w === 0 ? carryIn : prevLastArrivals);
+      const prevArrivals = w === 0 ? carryIn : prevLastArrivals;
+      const week = simulateFlowWeek(input, carryIn, prevArrivals);
+      // The plan as it stood before any actuals, for comparison on the chart and table.
+      const planWeek = input.some(d => d.pressed !== undefined) ? simulateFlowWeek(planInput, carryIn, prevArrivals) : undefined;
       carry = week.carryOut;
       prevLastArrivals = input.filter(d => d.iso <= addDays(weekIso, 4)).at(-1)?.arrivals ?? 0;
-      return { ...week, weekIso, carryTyped: typedCarry !== undefined };
+      return { ...week, weekIso, carryTyped: typedCarry !== undefined, plan: planWeek, soFar };
     });
-  }, [team, presDailyHours, presHours, presRoster, paidHolidays, bouquetsReceivedByWeek, flowDayPcts, flowCarryIn, flowLocKey, liveCheckQueue, manualReceived, flowActuals]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [team, presDailyHours, presHours, presRoster, paidHolidays, bouquetsReceivedByWeek, flowDayPcts, flowCarryIn, flowLocKey, liveCheckQueue, manualReceived]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function setFlowCarryIn(weekIso: string, n: number | undefined) {
     const next = { ...(presSettings.flowCarryIn ?? {}) };
@@ -3146,8 +3159,6 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
           dayPcts={flowDayPcts}
           onDayPctsChange={pcts => onPresSettingsChange({ ...presSettings, flowDayPcts: pcts })}
           onCarryInChange={setFlowCarryIn}
-          useActuals={flowActuals}
-          onUseActualsChange={setFlowActuals}
         />
       )}
 
