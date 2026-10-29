@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { DESIGNER_IDS } from "@/lib/teamMembers";
 import { isoMonday } from "@/lib/weekDates";
+import { resolveWeekHours, resolveDayHours, activeRuleForDay, isWithinEmployment, type ScheduleRule } from "@/lib/scheduleResolution";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -156,7 +157,12 @@ export async function GET(req: NextRequest) {
     .eq("location", location)
     .in("key", rosterKeyList);
 
-  const rosterMap: Record<string, Record<string, { id?: string; name?: string; ratio?: number; _removed?: boolean }>> = {};
+  type RosterEntry = {
+    id?: string; name?: string; ratio?: number; _removed?: boolean;
+    standardWeeklyHours?: number[]; startDate?: string; endDate?: string;
+    scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number>;
+  };
+  const rosterMap: Record<string, Record<string, RosterEntry>> = {};
   for (const row of rosterRows ?? []) {
     try {
       const parsed = typeof row.value === "string" ? JSON.parse(row.value) : row.value;
@@ -166,17 +172,35 @@ export async function GET(req: NextRequest) {
 
   // Helper: find a person in a given dept roster by name match.
   // Rosters may be objects keyed by ID or arrays (resin) — prefer member.id over the key.
-  function findMemberInRoster(rosterKey: string, name: string): { id: string; ratio: number | null } | null {
+  function findMemberInRoster(rosterKey: string, name: string): { id: string; ratio: number | null; entry: RosterEntry } | null {
     const roster = rosterMap[rosterKey] ?? {};
     const nameLower = name.trim().toLowerCase();
     for (const [key, member] of Object.entries(roster)) {
       if (member?._removed) continue;
       if (member?.name?.trim().toLowerCase() === nameLower) {
-        return { id: member?.id ?? key, ratio: member?.ratio ?? null };
+        return { id: member?.id ?? key, ratio: member?.ratio ?? null, entry: member };
       }
     }
     return null;
   }
+  function rosterEntryById(rosterKey: string, id: string): RosterEntry | undefined {
+    const roster = rosterMap[rosterKey] ?? {};
+    return roster[id] ?? Object.values(roster).find(m => m?.id === id);
+  }
+
+  // Paid holidays are global — needed so a holiday week resolves the same as on the Scheduling tab
+  const { data: holidayRow } = await supabase
+    .from("schedule_settings")
+    .select("value")
+    .eq("location", "Global")
+    .eq("key", "paidHolidays")
+    .maybeSingle();
+  const paidHolidays: string[] = (() => {
+    try {
+      const v = typeof holidayRow?.value === "string" ? JSON.parse(holidayRow.value) : holidayRow?.value;
+      return Array.isArray(v) ? v : [];
+    } catch { return []; }
+  })();
   function findIdInRoster(rosterKey: string, name: string): string | null {
     return findMemberInRoster(rosterKey, name)?.id ?? null;
   }
@@ -185,18 +209,56 @@ export async function GET(req: NextRequest) {
   // (date-then-member); other depts store {memberId: {isoMonday: hours}} (member-then-date).
   // Both are date-keyed — we translate week offset -> isoMonday at the read boundary so the
   // rest of this route can keep working with plain offset-indexed arrays.
-  function getWeeklyHours(dept: string, weeklyKey: string, id: string): number[] {
+  function getLegacyWeekly(dept: string, weeklyKey: string, id: string, weekIso: string): number | undefined {
     const raw = scheduleMap[weeklyKey] ?? {};
-    if (dept === 'resin') {
-      return Array.from({ length: 52 }, (_, i) => {
-        const wk = raw[isoMonday(i)];
-        const val = wk && !Array.isArray(wk) ? (wk as Record<string, number>)[id] : undefined;
-        return typeof val === 'number' ? val : 0;
+    const val = dept === 'resin'
+      ? (raw[weekIso] && !Array.isArray(raw[weekIso]) ? (raw[weekIso] as Record<string, number>)[id] : undefined)
+      : (raw[id] && !Array.isArray(raw[id]) ? (raw[id] as Record<string, number>)[weekIso] : undefined);
+    return typeof val === 'number' ? val : undefined;
+  }
+  // Production hours per week, resolved through the same fallback chain the
+  // Scheduling tab's Weekly Schedule uses (daily overrides -> legacy weekly ->
+  // standard template + rules, minus days off / holidays / employment window).
+  function getWeeklyHours(dept: string, weeklyKey: string, dailyKey: string, id: string, entry?: RosterEntry): number[] {
+    const dailyMap = (scheduleMap[dailyKey] ?? {}) as Record<string, (number | null)[]>;
+    return Array.from({ length: 52 }, (_, i) => {
+      const weekIso = isoMonday(i);
+      const h = resolveWeekHours({
+        dailyMap,
+        weekKey: `${weekIso}-${id}`,
+        legacyWeeklyValue: getLegacyWeekly(dept, weeklyKey, id, weekIso),
+        standardWeeklyHours: entry?.standardWeeklyHours,
+        employment: { weekIso, startDate: entry?.startDate, endDate: entry?.endDate, rules: entry?.scheduleRules, daysOff: entry?.daysOff, hoursOff: entry?.hoursOff },
+        holidays: paidHolidays,
       });
-    }
-    const memberMap = raw[id];
-    if (!memberMap || Array.isArray(memberMap)) return [];
-    return Array.from({ length: 52 }, (_, i) => (memberMap as Record<string, number>)[isoMonday(i)] ?? 0);
+      return Math.round(h * 100) / 100;
+    });
+  }
+  // This week's Mon-Fri production hours, resolved per day the same way the
+  // Scheduling tab's This Week grid does — drives "planned so far" pacing.
+  function getThisWeekDaily(dailyKey: string, id: string, entry?: RosterEntry): number[] {
+    const dailyMap = (scheduleMap[dailyKey] ?? {}) as Record<string, (number | null)[]>;
+    const weekIso = isoMonday(0);
+    return Array.from({ length: 5 }, (_, d) => Math.round(resolveDayHours(
+      dailyMap, `${weekIso}-${id}`, d, entry?.standardWeeklyHours,
+      { weekIso, startDate: entry?.startDate, endDate: entry?.endDate, rules: entry?.scheduleRules, daysOff: entry?.daysOff, hoursOff: entry?.hoursOff },
+      paidHolidays,
+    ).hours * 100) / 100);
+  }
+  // Per weekday: Time Off flags plus the standard-schedule hours, which the
+  // shift-block grid treats as the person's preferred time (see Unavailability.tsx)
+  function getThisWeekOff(entry?: RosterEntry): { iso: string; dayOff: boolean; hoursOff: number; standardHours: number }[] {
+    const weekIso = isoMonday(0);
+    const [y, m, d0] = weekIso.split("-").map(Number);
+    const employment = { weekIso, startDate: entry?.startDate, endDate: entry?.endDate, rules: entry?.scheduleRules, daysOff: entry?.daysOff, hoursOff: entry?.hoursOff };
+    return Array.from({ length: 5 }, (_, d) => {
+      const dt = new Date(y, m - 1, d0 + d);
+      const iso = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+      const standardHours = isWithinEmployment(d, employment)
+        ? activeRuleForDay(d, employment)?.hours[d] ?? entry?.standardWeeklyHours?.[d] ?? 0
+        : 0;
+      return { iso, dayOff: !!entry?.daysOff?.includes(iso), hoursOff: entry?.hoursOff?.[iso] ?? 0, standardHours };
+    });
   }
   function getDailyHours(dept: string, dailyKey: string, id: string): number[] {
     const raw = scheduleMap[dailyKey] ?? {};
@@ -212,33 +274,33 @@ export async function GET(req: NextRequest) {
 
   // Prefer the home-roster ID; fall back to DESIGNER_IDS for legacy design/pres IDs
   const homeScheduleId = homeRosterId ?? designerId;
+  const homeEntry = homeMember?.entry ?? (homeScheduleId && homeRosterKey ? rosterEntryById(homeRosterKey, homeScheduleId) : undefined);
   const homeWeeklyHours: number[] = homeScheduleId
-    ? [...getWeeklyHours(homeDeptNorm, homeDeptConfig.weekly, homeScheduleId)] : [];
+    ? getWeeklyHours(homeDeptNorm, homeDeptConfig.weekly, homeDeptConfig.daily, homeScheduleId, homeEntry) : [];
   const dailyHours: number[] = homeScheduleId
     ? getDailyHours(homeDeptNorm, homeDeptConfig.daily, homeScheduleId) : [];
-  // Current week: the daily grid is the source of truth when it has entries
-  const homeDailySum = dailyHours.reduce((s, h) => s + (h ?? 0), 0);
-  if (homeDailySum > 0) homeWeeklyHours[0] = Math.round(homeDailySum * 10) / 10;
+  const homeThisWeekDaily: number[] = homeScheduleId ? getThisWeekDaily(homeDeptConfig.daily, homeScheduleId, homeEntry) : [];
 
-  const crossDeptWeekly: { dept: string; hours: number[] }[] = [];
+  const crossDeptWeekly: { dept: string; memberId: string; hours: number[]; ratio: number | null; thisWeekDaily: number[]; thisWeekOff: ReturnType<typeof getThisWeekOff> }[] = [];
   for (const dk of ALL_DEPT_KEYS) {
     if (dk.dept === homeDeptNorm) continue;
     // Find this person's ID in the cross-dept roster by name
-    const crossId = findIdInRoster(ROSTER_KEYS[dk.dept] ?? '', memberName);
-    if (!crossId) continue;
+    const cross = findMemberInRoster(ROSTER_KEYS[dk.dept] ?? '', memberName);
+    if (!cross) continue;
 
-    const deptWeekly: number[] = getWeeklyHours(dk.dept, dk.weekly, crossId);
-    const deptDaily: number[]  = getDailyHours(dk.dept, dk.daily, crossId);
-    const dailyThisWeekTotal = deptDaily.reduce((s, h) => s + (h ?? 0), 0);
-
-    const mergedForDept = [...deptWeekly];
-    if (dailyThisWeekTotal > 0 && (mergedForDept[0] ?? 0) === 0) {
-      mergedForDept[0] = Math.round(dailyThisWeekTotal * 10) / 10;
-    }
-    if (mergedForDept.some(h => h > 0)) {
-      crossDeptWeekly.push({ dept: dk.dept, hours: mergedForDept });
+    const deptWeekly: number[] = getWeeklyHours(dk.dept, dk.weekly, dk.daily, cross.id, cross.entry);
+    if (deptWeekly.some(h => h > 0)) {
+      crossDeptWeekly.push({ dept: dk.dept, memberId: cross.id, hours: deptWeekly, ratio: cross.ratio, thisWeekDaily: getThisWeekDaily(dk.daily, cross.id, cross.entry), thisWeekOff: getThisWeekOff(cross.entry) });
     }
   }
+
+  // One row per department this person is scheduled in — the team member's
+  // slice of each department's Weekly Schedule
+  const deptSchedules = [
+    ...(homeWeeklyHours.some(h => h > 0) ? [{ dept: homeDeptNorm, memberId: homeScheduleId ?? "", isHome: true, ratio: targetRatio, hours: homeWeeklyHours, thisWeekDaily: homeThisWeekDaily, thisWeekOff: getThisWeekOff(homeEntry) }] : []),
+    ...crossDeptWeekly.map(d => ({ dept: d.dept, memberId: d.memberId, isHome: false, ratio: d.ratio, hours: d.hours, thisWeekDaily: d.thisWeekDaily, thisWeekOff: d.thisWeekOff })),
+  ].map(d => ({ ...d, weeks: d.hours.map((h, i) => ({ weekOf: isoMonday(i), hours: h })) }))
+   .map(({ hours: _hours, ...d }) => d);
 
   // Merged weekly totals (home + all cross-dept)
   const NUM_WEEKS = 8;
@@ -275,6 +337,26 @@ export async function GET(req: NextRequest) {
 
   const thisWeekScheduledHours = mergedWeeklyHours[0] ?? null;
 
+  // Availability markers for the shift-block grid — only this person's
+  // Every roster they're on, scheduled or not — the team view's Add
+  // availability replaces this whole set (see ./availability/route.ts)
+  const memberIds = new Set<string>([
+    ...(homeScheduleId ? [homeScheduleId] : []),
+    ...Object.values(ROSTER_KEYS).map(k => findIdInRoster(k, memberName)).filter((id): id is string => !!id),
+  ]);
+  const { data: unavRow } = await supabase
+    .from("schedule_settings")
+    .select("value")
+    .eq("location", location)
+    .eq("key", "unavailability")
+    .maybeSingle();
+  const unavailability = (() => {
+    try {
+      const v = typeof unavRow?.value === "string" ? JSON.parse(unavRow.value) : unavRow?.value;
+      return Array.isArray(v) ? v.filter((e: { personId?: string }) => !!e?.personId && memberIds.has(e.personId)) : [];
+    } catch { return []; }
+  })();
+
   return NextResponse.json({
     routeVersion: 'v3-resin-shapes',
     memberName,
@@ -292,6 +374,12 @@ export async function GET(req: NextRequest) {
     },
     historicals,
     upcomingWeeks,
+    deptSchedules,
+    paidHolidays,
+    unavailability,
+    availabilityPeople: ALL_DEPT_KEYS
+      .map(dk => ({ dept: dk.dept, id: dk.dept === homeDeptNorm ? homeScheduleId : findIdInRoster(ROSTER_KEYS[dk.dept] ?? "", memberName) }))
+      .filter((p): p is { dept: string; id: string } => !!p.id),
     avgHours:  ratioData.length > 0 ? Math.round((totalHours  / ratioData.length) * 10) / 10 : null,
     avgOrders: ratioData.length > 0 ? Math.round((totalOrders / ratioData.length) * 10) / 10 : null,
     homeDepartment: department,
