@@ -1706,9 +1706,15 @@ function FfRosterEditor({ team, ffRoster, onUpdateName, onUpdateRoster, onRemove
   );
 }
 
+// Where a week's "Bouquets received (est.)" number came from.
+type BouquetEstimateSource =
+  | { kind: 'manual' }
+  | { kind: 'projected'; companyLastYear: number; multiplier: number; multiplierIsDefault: boolean; locationPct: number; pctIsManual: boolean }
+  | { kind: 'average' };
+
 function PreservationSection({ location, preservationQueue, countsLoading, teamActuals, onActualsSaved,
   presHours, presDailyHours, presCheckHours, presCheckCounts, onPresCheckCountsChange, onPresDailyHoursChange, onPresCheckHoursChange, presRoster, presSettings, mgrTotalHours, mgrTotalDailyHours, onPresHoursChange, onPresRosterChange, onPresSettingsChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {}, weeklyEstimates = {}, presActuals = {}, onReceivedSaved, canViewCPO = true, userRole = 'admin', canSeeManagerCPO = () => false,
-  bouquetsReceivedByWeek, presNewHireHours, onPresNewHireHoursChange, paidHolidays, unavailability, onUnavailabilityChange }: {
+  bouquetsReceivedByWeek, bouquetsEstimateSourceByWeek, presNewHireHours, onPresNewHireHoursChange, paidHolidays, unavailability, onUnavailabilityChange }: {
   location:              'Utah' | 'Georgia';
   preservationQueue:     number;
   countsLoading:         boolean;
@@ -1741,6 +1747,8 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   // Turnaround tab (52 weeks) — Preservation's own turnaround uses this as
   // its arrivals, rather than a separately-edited estimate.
   bouquetsReceivedByWeek: number[];
+  // How each week's estimate above was made, for the Staffing Check column.
+  bouquetsEstimateSourceByWeek: BouquetEstimateSource[];
   presNewHireHours:        Record<string, number>;
   onPresNewHireHoursChange:(h: Record<string, number>) => void;
   // Shared paid-holiday calendar: zeroes production hours on those dates,
@@ -3022,6 +3030,26 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                         </td>
                         <td className="px-2 py-2 whitespace-nowrap text-slate-600">
                           {Math.round(demand)} bq
+                          {(() => {
+                            const src = bouquetsEstimateSourceByWeek[w];
+                            if (src?.kind === 'manual') return <div className="text-[10px] text-amber-600" title="Typed in on Design's Queue & Turnaround — the growth formula isn't applied">manual override</div>;
+                            if (src?.kind === 'average') return <div className="text-[10px] text-slate-400" title="No company intake for the same week last year, so the average intake is used">avg intake</div>;
+                            if (src?.kind !== 'projected') return null;
+                            return (
+                              <div className="mt-0.5 space-y-0.5 text-[10px] leading-tight"
+                                title={`Company same week last year ${Math.round(src.companyLastYear)} × ${src.multiplier.toFixed(2)} growth × ${src.locationPct.toFixed(0)}% to ${location} — set on the Growth & Distribution tab`}>
+                                <div className="text-slate-500">
+                                  ×{src.multiplier.toFixed(2)} growth
+                                  <span className="text-slate-300"> {src.multiplierIsDefault ? 'rolling' : 'set'}</span>
+                                </div>
+                                <div className="text-slate-500">
+                                  {src.locationPct.toFixed(0)}% {location === 'Utah' ? 'UT' : 'GA'} distribution
+                                  <span className="text-slate-300"> {src.pctIsManual ? 'set' : 'suggested'}</span>
+                                </div>
+                                <div className="text-slate-300">co. LY {Math.round(src.companyLastYear)}</div>
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="px-2 py-2">
                           <div className="flex items-center gap-1">
@@ -5091,6 +5119,21 @@ export function SchedulePage({
     return estimateLocationBouquets(location, isoMonday(w), weeklyEstimates, avgIntake, intakeProjectionInputs);
   }), [weeklyEstimates, location, companyActualIntakeByWeek, companyMultipliers, distributionPct, distributionEstimates, avgIntake]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Same decision estimateLocationBouquets makes, kept so Preservation's
+  // Staffing Check can show the growth multiplier and distribution % behind
+  // each week's number.
+  const bouquetsEstimateSourceByWeek = useMemo<BouquetEstimateSource[]>(() => Array.from({ length: WEEKS }, (_, w) => {
+    const weekOf = isoMonday(w);
+    if (weeklyEstimates[weekOf] !== undefined) return { kind: 'manual' };
+    const companyLastYear = companyActualIntakeByWeek[addDays(weekOf, -364)];
+    if (companyLastYear === undefined) return { kind: 'average' };
+    return {
+      kind: 'projected', companyLastYear,
+      multiplier: getCompanyMultiplier(weekOf), multiplierIsDefault: companyMultipliers[weekOf] === undefined,
+      locationPct: getLocationPct(weekOf), pctIsManual: distributionPct[weekOf]?.ut !== undefined,
+    };
+  }), [weeklyEstimates, location, companyActualIntakeByWeek, companyMultipliers, distributionPct, distributionEstimates, rollingCompanyMultiplier]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Graduating cohorts (preservation → designable, per week) ────────────────
   const graduatingCohorts = useMemo(() => {
     const taByWeek: Record<string, number> = {};
@@ -5819,6 +5862,7 @@ export function SchedulePage({
           weeklyEstimates={weeklyEstimates}
           presActuals={presActuals}
           bouquetsReceivedByWeek={bouquetsReceivedByWeek}
+          bouquetsEstimateSourceByWeek={bouquetsEstimateSourceByWeek}
           presNewHireHours={settings.presNewHireHours}
           onPresNewHireHoursChange={(h) => update('presNewHireHours', h)}
           onReceivedSaved={() => {
