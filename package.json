@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:assignment-counts": "node --experimental-strip-types --test tests/*.test.ts tests/*.test.mjs"
+    "test:assignment-counts": "node --experimental-strip-types --test tests/*.test.ts tests/*.test.mjs",
+    "test:reporting-budget": "node --experimental-strip-types --test tests/pf-budget.test.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.2.0",

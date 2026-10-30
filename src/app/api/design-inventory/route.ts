@@ -1,3 +1,5 @@
+import { RefreshDeferredError } from '@/lib/report-refresh';
+import { ReportingDeferredError } from '@/lib/pf-budget';
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
@@ -19,11 +21,11 @@ import { saveSnapshot, loadSnapshot } from '@/lib/inventorySnapshots';
 
 export const maxDuration = 300;
 
-// Orders whose add-ons have never been saved are fetched live, 8 at a time,
+// Orders whose add-ons have never been saved are fetched live, one at a time,
 // starting no new request after this long into the request; any left over
 // show as couldn't-load until the refresh cron reaches them.
 const LIVE_ADDON_BUDGET_MS = 150_000;
-const LIVE_ADDON_CONCURRENCY = 8;
+const LIVE_ADDON_CONCURRENCY = 1;
 
 // With no `through`, the schedule runs until every known order line has a
 // week, but never past this many weeks out (in case capacity stays at zero).
@@ -194,6 +196,7 @@ export async function GET(req: NextRequest) {
     }
 
     const payload = {
+      pipelineRefreshedAt: pipeline.refreshedAt,
       location,
       orderPlan,
       katanaError,
@@ -224,6 +227,8 @@ export async function GET(req: NextRequest) {
     await saveSnapshot(location, payload);
     return NextResponse.json(payload);
   } catch (e) {
+    if (e instanceof RefreshDeferredError || e instanceof ReportingDeferredError)
+      return NextResponse.json({ deferred: true, error: e.message }, { status: 503, headers: { 'Retry-After': '60' } });
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }

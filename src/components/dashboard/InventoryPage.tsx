@@ -17,6 +17,7 @@ interface InventoryWeek {
 interface InventoryResponse {
   location:         string;
   generatedAt:      string;
+  pipelineRefreshedAt?: string;
   designedThisWeek: number;
   weeks:            InventoryWeek[];
   unscheduledCount: number;
@@ -253,7 +254,7 @@ export default function InventoryPage() {
           <div className="text-xs text-slate-500">
             {data.savedCopy
               ? <>Showing the saved version from <span className="font-medium text-slate-700">{fmtTime(data.generatedAt)}</span> · <span className="text-indigo-600">refreshing…</span></>
-              : <>Updated <span className="font-medium text-slate-700">{fmtTime(data.generatedAt)}</span></>}
+              : <>Updated <span className="font-medium text-slate-700">{fmtTime(data.generatedAt)}</span>{data.pipelineRefreshedAt && <> · Order data as of {fmtTime(data.pipelineRefreshedAt)}</>}</>}
             {data.addOns?.oldestFetchedAt && (
               <> · backing &amp; glass last checked {data.addOns.oldestFetchedAt.slice(0, 16) === data.addOns.newestFetchedAt?.slice(0, 16)
                 ? fmtTime(data.addOns.oldestFetchedAt)
