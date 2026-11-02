@@ -289,7 +289,7 @@ function UnavailabilityModal({ people, defaultDate, onClose, onSave }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-4" onClick={onClose}>
       <div className="w-[460px] max-w-full max-h-[90vh] overflow-y-auto rounded-xl bg-white p-5 shadow-xl" onClick={e => e.stopPropagation()}>
         <h3 className="text-base font-semibold text-slate-800">Add availability</h3>
-        <p className="mt-0.5 text-xs text-slate-400">Shows on the schedule only — it doesn&apos;t change scheduled hours or pay. Use Time Off for that.</p>
+        <p className="mt-0.5 text-xs text-slate-400">Shows on the schedule only — it doesn&apos;t change scheduled hours or pay. Use + Time off for that.</p>
 
         <div className="mt-4 inline-flex rounded-lg border border-slate-200 p-0.5 text-xs">
           {([['preferred', 'Available'], ['unavailable', 'Unavailable']] as const).map(([k, label]) => (

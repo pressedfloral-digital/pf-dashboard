@@ -17,6 +17,7 @@ import { activeRuleForDay, distributeHours, resolveDayHours, resolveWeekHours, r
 import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './BloomUpdateModal';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { TimeOffCalendar, toTimeOffMember, type TimeOffPatch } from './TimeOffCalendar';
+import { AddTimeOffButton } from './AddTimeOff';
 import { MemberTierBadges, useIsFlexing } from './MemberTierBadge';
 import { AddUnavailabilityButton, AvailabilityChips, ScheduledTimeBox, entriesOn, isUnavailableAllDay, withStandardPreferred, withDefaultUnavailable, useShowAvailability, type UnavailabilityEntry } from './Unavailability';
 import { GridViewMenu, useGridView } from './GridView';
@@ -2497,6 +2498,17 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                   <GridViewMenu options={['times', 'hours', 'output', 'checks', 'mgrTotal', 'actuals', 'weekend']} />
                   <AddUnavailabilityButton people={team.map(m => ({ id: m.id, name: m.name }))} list={unavailability}
                     onChange={onUnavailabilityChange} defaultDate={days.find(day => day.iso >= localTodayIso())?.iso ?? days[0]?.iso} />
+                  <AddTimeOffButton disabled={userRole === 'viewer'} defaultDate={days.find(day => day.iso >= localTodayIso())?.iso ?? days[0]?.iso}
+                    people={team.map(m => ({ id: m.id, name: m.name, daysOff: presRoster[m.id]?.daysOff, hoursOff: presRoster[m.id]?.hoursOff }))}
+                    onSave={patches => {
+                      const next = { ...presRoster };
+                      for (const [id, patch] of Object.entries(patches)) {
+                        const m = team.find(x => x.id === id);
+                        const existing = presRoster[id] ?? { ratio: m?.ratio ?? 1, rate: m?.rate ?? 0, name: m?.name ?? '', payType: 'hourly' as const, annualSalary: 0 };
+                        next[id] = { ...existing, ...patch };
+                      }
+                      onPresRosterChange(next);
+                    }} />
                   <button onClick={() => setPresThisWeekOffset(Math.max(0, presThisWeekOffset - 1))} disabled={presThisWeekOffset === 0} className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">← Prev</button>
                   <button onClick={() => setPresThisWeekOffset(Math.min(maxPresThisWeekOffset, presThisWeekOffset + 1))} disabled={presThisWeekOffset >= maxPresThisWeekOffset} className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">Next →</button>
                 </div>
@@ -3570,6 +3582,17 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                 <GridViewMenu options={['times', 'hours', 'output', 'mgrTotal', 'actuals', 'weekend']} />
                 <AddUnavailabilityButton people={team.map(m => ({ id: m.id, name: m.name }))} list={unavailability}
                   onChange={onUnavailabilityChange} defaultDate={days.find(day => day.iso >= todayIso)?.iso ?? days[0]?.iso} />
+                <AddTimeOffButton disabled={userRole === 'viewer'} defaultDate={days.find(day => day.iso >= todayIso)?.iso ?? days[0]?.iso}
+                  people={team.map(m => ({ id: m.id, name: m.name, daysOff: ffRoster[m.id]?.daysOff, hoursOff: ffRoster[m.id]?.hoursOff }))}
+                  onSave={patches => {
+                    const next = { ...ffRoster };
+                    for (const [id, patch] of Object.entries(patches)) {
+                      const m = team.find(x => x.id === id);
+                      const existing = ffRoster[id] ?? { ratio: m?.ratio ?? 1, rate: m?.rate ?? 0, name: m?.name ?? '', payType: 'hourly' as const, annualSalary: 0 };
+                      next[id] = { ...existing, ...patch };
+                    }
+                    onFfRosterChange(next);
+                  }} />
                 <button onClick={() => setFfThisWeekOffset(Math.max(0, ffThisWeekOffset - 1))} disabled={ffThisWeekOffset === 0} className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">← Prev</button>
                 <button onClick={() => setFfThisWeekOffset(Math.min(maxFfThisWeekOffset, ffThisWeekOffset + 1))} disabled={ffThisWeekOffset >= maxFfThisWeekOffset} className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">Next →</button>
               </div>
@@ -5774,6 +5797,15 @@ export function SchedulePage({
     update('designRoster', currentRoster);
   }
 
+  function handleDesignerTimeOffBatch(patches: Record<string, TimeOffPatch>) {
+    const currentRoster = { ...settings.designRoster };
+    for (const [id, next] of Object.entries(patches)) {
+      const existing = currentRoster[id] ?? designers.find(d => d.id === id) ?? {};
+      currentRoster[id] = { ...existing, ...next } as typeof currentRoster[string];
+    }
+    update('designRoster', currentRoster);
+  }
+
   const windowWeeks = Array.from({ length: WINDOW }, (_, i) => i + weekOffset).filter(i => i < WEEKS);
   const hasRates    = canViewCPO && designers.some(d =>
     (d.payType === 'hourly' && d.hourlyRate > 0) ||
@@ -6087,6 +6119,9 @@ export function SchedulePage({
                     <GridViewMenu options={['times', 'hours', 'output', 'mgrTotal', 'actuals', 'weekend']} />
                     <AddUnavailabilityButton people={designers.map(d => ({ id: d.id, name: d.name }))} list={settings.unavailability ?? []}
                       onChange={n => update('unavailability', n)} defaultDate={days.find(day => day.iso >= todayIso)?.iso ?? days[0]?.iso} />
+                    <AddTimeOffButton disabled={!canEditCurrent} defaultDate={days.find(day => day.iso >= todayIso)?.iso ?? days[0]?.iso}
+                      people={designers.map(d => ({ id: d.id, name: d.name, daysOff: settings.designRoster[d.id]?.daysOff, hoursOff: settings.designRoster[d.id]?.hoursOff }))}
+                      onSave={handleDesignerTimeOffBatch} />
                     <button onClick={() => setDesignThisWeekOffset(Math.max(0, designThisWeekOffset - 1))} disabled={designThisWeekOffset === 0} className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">← Prev</button>
                     <button onClick={() => setDesignThisWeekOffset(Math.min(maxDesignThisWeekOffset, designThisWeekOffset + 1))} disabled={designThisWeekOffset >= maxDesignThisWeekOffset} className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">Next →</button>
                   </div>
