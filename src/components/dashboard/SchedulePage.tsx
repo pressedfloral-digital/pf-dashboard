@@ -35,7 +35,7 @@ import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCo
 import { SyncedOrdersPopover } from './SyncedOrdersPopover';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { HelpTip } from './HelpTip';
-import { WeekBubble, WeekTotalBubble } from './WeekBubble';
+import { WeekCell, WeekHead } from './WeekCell';
 import { PreservationFlowTab, TurnaroundDots, type PresFlowWeek } from './PreservationFlowTab';
 import { DEFAULT_FLOW_DAY_PCTS, simulateFlowWeek, splitArrivals, type FlowDayInput } from '@/lib/preservationFlow';
 
@@ -2859,9 +2859,8 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                       <tr className="bg-slate-50 border-b border-slate-100">
                         <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 whitespace-nowrap min-w-[140px]">Team member</th>
                         {windowWeeks.map(w => (
-                          <th key={w} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[90px]">
-                            {getWeekLabel(w)}
-                            {w === 0 && <span className="ml-1 text-[10px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
+                          <th key={w} className="px-1 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[110px]">
+                            <WeekHead label={getWeekLabel(w)} now={w === 0} />
                           </th>
                         ))}
                       </tr>
@@ -2870,9 +2869,9 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                       {team.map((m, mi) => (
                         <tr key={m.id} {...presRowDrag.rowProps(m.id)} className={`border-b border-slate-50 ${presRowDrag.isOver(m.id) ? 'bg-sky-50' : mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
                           <td {...presRowDrag.handleProps(m.id)} className={`sticky left-0 z-10 cursor-grab ${presRowDrag.isOver(m.id) ? 'bg-sky-50' : mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
-                            <span className="float-left mr-1.5 select-none text-slate-300" aria-hidden>⠿</span>
-                            <div className="font-medium text-slate-700">{m.name}</div>
-                            <MemberTierBadges name={m.name} location={location} dept="Preservation" fallbackRole={m.role} fallbackIsManager={m.isManager} />
+                            <PersonCell name={m.name} grip>
+                              <MemberTierBadges name={m.name} location={location} dept="Preservation" fallbackRole={m.role} fallbackIsManager={m.isManager} />
+                            </PersonCell>
                           </td>
                           {windowWeeks.map(w => {
                             const weekIso = isoMonday(w);
@@ -2888,16 +2887,10 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                             const cost = m.payType === 'salary' ? (m.annualSalary / 52) : totalH * m.rate;
                             const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && orders > 0 && cost > 0 ? cost / orders : null;
                             return (
-                              <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
-                                <WeekBubble value={presInputMode === 'output' ? round2(orders) : round2(prodH)} />
-                                {m.isManager && totalH !== prodH && <WeekTotalBubble value={round2(totalH)} />}
-                                {!m.isManager && payH > prodH && (
-                                  <div className="text-[10px] text-violet-600">{round2(totalH)}h paid</div>
-                                )}
-                                {presInputMode === 'output'
-                                  ? (prodH > 0 && <div className="text-slate-400 mt-0.5">{round2(prodH)}h</div>)
-                                  : (orders > 0 && <div className="text-slate-400 mt-0.5">{round2(orders)} ord</div>)}
-                                {cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
+                              <td key={w} className="p-1 align-top">
+                                <WeekCell tone="preservation" mode={presInputMode} hours={prodH} output={orders} outputUnit="orders"
+                                  totalHours={m.isManager ? totalH : undefined} paidHours={m.isManager ? undefined : payH}
+                                  cpo={cpo !== null ? fmt$(cpo) : null} />
                               </td>
                             );
                           })}
@@ -3791,8 +3784,8 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                   <tr className="bg-slate-50 border-b border-slate-100">
                     <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 min-w-[160px]">Team member</th>
                     {Array.from({ length: WINDOW }, (_, i) => i + weekOffset).filter(i => i < WEEKS).map(w => (
-                      <th key={w} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[90px]">
-                        {getWeekLabel(w)}{w === 0 && <span className="ml-1 text-[10px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
+                      <th key={w} className="px-1 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[110px]">
+                        <WeekHead label={getWeekLabel(w)} now={w === 0} />
                       </th>
                     ))}
                   </tr>
@@ -3801,10 +3794,10 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                   {team.map((m, mi) => (
                     <tr key={m.id} {...ffRowDrag.rowProps(m.id)} className={`border-b border-slate-50 ${ffRowDrag.isOver(m.id) ? 'bg-sky-50' : mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
                       <td {...ffRowDrag.handleProps(m.id)} className={`sticky left-0 z-10 cursor-grab ${ffRowDrag.isOver(m.id) ? 'bg-sky-50' : mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
-                        <span className="float-left mr-1.5 select-none text-slate-300" aria-hidden>⠿</span>
-                        <div className="font-medium text-slate-700">{m.name}</div>
-                        <MemberTierBadges name={m.name} location={location} dept="Fulfillment" fallbackRole={m.role} fallbackIsManager={m.isManager} />
-                        {m.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
+                        <PersonCell name={m.name} grip>
+                          <MemberTierBadges name={m.name} location={location} dept="Fulfillment" fallbackRole={m.role} fallbackIsManager={m.isManager} />
+                          {m.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
+                        </PersonCell>
                       </td>
                       {Array.from({ length: WINDOW }, (_, i) => i + weekOffset).filter(i => i < WEEKS).map(w => {
                         const weekIso = isoMonday(w);
@@ -3820,16 +3813,10 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         const cost = m.payType === 'salary' ? m.annualSalary / 52 : totalH * m.rate;
                         const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && o > 0 && cost > 0 ? cost / o : null;
                         return (
-                          <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
-                            <WeekBubble value={ffInputMode === 'output' ? round2(o) : round2(prodH)} />
-                            {m.isManager && totalH !== prodH && <WeekTotalBubble value={round2(totalH)} />}
-                            {!m.isManager && payH > prodH && (
-                              <div className="text-[10px] text-violet-600">{round2(totalH)}h paid</div>
-                            )}
-                            {ffInputMode === 'output'
-                              ? (prodH > 0 && <div className="text-slate-400 mt-0.5">{round2(prodH)}h</div>)
-                              : (o > 0 && <div className="text-slate-400 mt-0.5">{round2(o)} ord</div>)}
-                            {cpo !== null && <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>}
+                          <td key={w} className="p-1 align-top">
+                            <WeekCell tone="fulfillment" mode={ffInputMode} hours={prodH} output={o} outputUnit="orders"
+                              totalHours={m.isManager ? totalH : undefined} paidHours={m.isManager ? undefined : payH}
+                              cpo={cpo !== null ? fmt$(cpo) : null} />
                           </td>
                         );
                       })}
@@ -6331,9 +6318,8 @@ export function SchedulePage({
                     <tr className="bg-slate-50 border-b border-slate-100">
                       <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 whitespace-nowrap min-w-[140px]">Designer</th>
                       {windowWeeks.map(w => (
-                        <th key={w} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[90px]">
-                          {getWeekLabel(w)}
-                          {w === 0 && <span className="ml-1 text-[10px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
+                        <th key={w} className="px-1 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[110px]">
+                          <WeekHead label={getWeekLabel(w)} now={w === 0} />
                         </th>
                       ))}
                     </tr>
@@ -6342,24 +6328,19 @@ export function SchedulePage({
                     {designers.map((d, di) => (
                       <tr key={d.id} {...designRowDrag.rowProps(d.id)} className={`border-b border-slate-50 ${designRowDrag.isOver(d.id) ? 'bg-sky-50' : di % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
                         <td {...designRowDrag.handleProps(d.id)} className={`sticky left-0 z-10 cursor-grab ${designRowDrag.isOver(d.id) ? 'bg-sky-50' : di % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 whitespace-nowrap`}>
-                          <span className="float-left mr-1.5 select-none text-slate-300" aria-hidden>⠿</span>
-                          <div className="font-medium text-slate-700">{d.name}</div>
-                          <MemberTierBadges name={d.name} location={location} dept="Design" fallbackRole={(d as {role?:string}).role} fallbackIsManager={!!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager)} />
-                          {d.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
+                          <PersonCell name={d.name} grip>
+                            <MemberTierBadges name={d.name} location={location} dept="Design" fallbackRole={(d as {role?:string}).role} fallbackIsManager={!!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager)} />
+                            {d.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
+                          </PersonCell>
                         </td>
                         {windowWeeks.map(w => {
                           const { hrs, frames, cpo, totalHrs } = weekStats(w, d);
                           const isDesignMgr = !!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager);
                           return (
-                            <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
-                              <WeekBubble value={designInputMode === 'output' ? round2(frames) : round2(hrs)} />
-                              {isDesignMgr && totalHrs !== hrs && <WeekTotalBubble value={round2(totalHrs)} />}
-                              {designInputMode === 'output'
-                                ? (hrs > 0 && <div className="text-slate-400 mt-0.5">{round2(hrs)}h</div>)
-                                : (frames > 0 && <div className="text-slate-400 mt-0.5">{Math.round(frames)}f</div>)}
-                              {showCPO && (!isDesignMgr || canSeeManagerCPO(d.name)) && cpo !== null && (
-                                <div className="text-amber-600 text-[10px]">{fmt$(cpo)}</div>
-                              )}
+                            <td key={w} className="p-1 align-top">
+                              <WeekCell tone="design" mode={designInputMode} hours={hrs} output={frames} outputUnit="frames"
+                                totalHours={isDesignMgr ? totalHrs : undefined}
+                                cpo={showCPO && (!isDesignMgr || canSeeManagerCPO(d.name)) && cpo !== null ? fmt$(cpo) : null} />
                             </td>
                           );
                         })}

@@ -12,7 +12,8 @@ import { ScheduleRulesEditor } from './ScheduleRulesEditor';
 import { TimeOffCalendar, toTimeOffMember } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
-import { WeekBubble, WeekTotalBubble } from './WeekBubble';
+import { WeekCell, WeekHead } from './WeekCell';
+import { PersonCell } from './ScheduleBlocks';
 import { HelpTip } from './HelpTip';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -959,9 +960,8 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                     Team Member
                   </th>
                   {windowWeeks.map(w => (
-                    <th key={w} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[90px]">
-                      {getWeekLabel(w)}
-                      {w === 0 && <span className="ml-1 text-[10px] bg-purple-100 text-purple-600 rounded px-1">now</span>}
+                    <th key={w} className="px-1 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[110px]">
+                      <WeekHead label={getWeekLabel(w)} now={w === 0} />
                     </th>
                   ))}
                 </tr>
@@ -969,9 +969,10 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
               <tbody>
                 {productionRoster.map((m, mi) => (
                   <tr key={m.id} className={`border-b border-slate-50 ${mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
-                    <td className="sticky left-0 bg-white px-4 py-1.5 font-medium text-slate-700 whitespace-nowrap">
-                      {m.name}
-                      <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
+                    <td className="sticky left-0 z-10 bg-white px-4 py-2 whitespace-nowrap">
+                      <PersonCell name={m.name}>
+                        <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
+                      </PersonCell>
                     </td>
                     {windowWeeks.map(w => {
                       const h    = memberWeekHours(w, m);
@@ -979,19 +980,10 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                       const { cpo }  = weekMemberStats(w, m);
                       const totalH = m.isManager ? resolveMgrTotalWeekHours(w, m, h) : h;
                       return (
-                        <td key={w} className="px-1 py-1 text-center">
-                          <WeekBubble value={resinInputMode === 'output' ? round2(units) : round2(h)} />
-                          {m.isManager && totalH !== h && <WeekTotalBubble value={round2(totalH)} />}
-                          {resinInputMode === 'output'
-                            ? (h > 0 && <div className="text-[10px] text-slate-400 mt-0.5">{round2(h)}h</div>)
-                            : (h > 0 && (
-                              <div className="text-[10px] text-slate-400 mt-0.5">
-                                {units.toFixed(0)}u
-                                {showCPO && cpo !== null && (
-                                  <span className="ml-1 text-purple-500">${cpo.toFixed(2)}</span>
-                                )}
-                              </div>
-                            ))}
+                        <td key={w} className="p-1 align-top">
+                          <WeekCell tone="resin" mode={resinInputMode} hours={h} output={units} outputUnit="units"
+                            totalHours={m.isManager ? totalH : undefined}
+                            cpo={showCPO && cpo !== null ? `$${cpo.toFixed(2)}` : null} />
                         </td>
                       );
                     })}
