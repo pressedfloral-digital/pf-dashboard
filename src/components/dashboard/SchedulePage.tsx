@@ -35,6 +35,7 @@ import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCo
 import { SyncedOrdersPopover } from './SyncedOrdersPopover';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { HelpTip } from './HelpTip';
+import { WeekBubble, WeekTotalBubble } from './WeekBubble';
 import { PreservationFlowTab, TurnaroundDots, type PresFlowWeek } from './PreservationFlowTab';
 import { DEFAULT_FLOW_DAY_PCTS, simulateFlowWeek, splitArrivals, type FlowDayInput } from '@/lib/preservationFlow';
 
@@ -2888,11 +2889,10 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                             const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && orders > 0 && cost > 0 ? cost / orders : null;
                             return (
                               <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
-                                <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This Week tab (one-off exceptions) — the 52-week planner is a read-only view">
-                                  {presInputMode === 'output' ? round2(orders) : round2(prodH)}
-                                </div>
-                                {(m.isManager ? totalH !== prodH : payH > prodH) && (
-                                  <div className="text-[10px] text-violet-600">{round2(totalH)}h {m.isManager ? 'total' : 'paid'}</div>
+                                <WeekBubble value={presInputMode === 'output' ? round2(orders) : round2(prodH)} />
+                                {m.isManager && totalH !== prodH && <WeekTotalBubble value={round2(totalH)} />}
+                                {!m.isManager && payH > prodH && (
+                                  <div className="text-[10px] text-violet-600">{round2(totalH)}h paid</div>
                                 )}
                                 {presInputMode === 'output'
                                   ? (prodH > 0 && <div className="text-slate-400 mt-0.5">{round2(prodH)}h</div>)
@@ -3821,11 +3821,10 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && o > 0 && cost > 0 ? cost / o : null;
                         return (
                           <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
-                            <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This Week tab (one-off exceptions) — Weekly Schedule is a read-only view">
-                              {ffInputMode === 'output' ? round2(o) : round2(prodH)}
-                            </div>
-                            {(m.isManager ? totalH !== prodH : payH > prodH) && (
-                              <div className="text-[10px] text-violet-600">{round2(totalH)}h {m.isManager ? 'total' : 'paid'}</div>
+                            <WeekBubble value={ffInputMode === 'output' ? round2(o) : round2(prodH)} />
+                            {m.isManager && totalH !== prodH && <WeekTotalBubble value={round2(totalH)} />}
+                            {!m.isManager && payH > prodH && (
+                              <div className="text-[10px] text-violet-600">{round2(totalH)}h paid</div>
                             )}
                             {ffInputMode === 'output'
                               ? (prodH > 0 && <div className="text-slate-400 mt-0.5">{round2(prodH)}h</div>)
@@ -6353,12 +6352,8 @@ export function SchedulePage({
                           const isDesignMgr = !!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager);
                           return (
                             <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
-                              <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This Week tab (one-off exceptions) — Weekly Schedule is a read-only view">
-                                {designInputMode === 'output' ? round2(frames) : round2(hrs)}
-                              </div>
-                              {isDesignMgr && totalHrs !== hrs && (
-                                <div className="text-[10px] text-violet-600" title="Total hours (production + managerial)">{round2(totalHrs)}h total</div>
-                              )}
+                              <WeekBubble value={designInputMode === 'output' ? round2(frames) : round2(hrs)} />
+                              {isDesignMgr && totalHrs !== hrs && <WeekTotalBubble value={round2(totalHrs)} />}
                               {designInputMode === 'output'
                                 ? (hrs > 0 && <div className="text-slate-400 mt-0.5">{round2(hrs)}h</div>)
                                 : (frames > 0 && <div className="text-slate-400 mt-0.5">{Math.round(frames)}f</div>)}
