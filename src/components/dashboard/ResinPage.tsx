@@ -12,6 +12,7 @@ import { ScheduleRulesEditor } from './ScheduleRulesEditor';
 import { TimeOffCalendar, toTimeOffMember } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
+import { WeekBubble, WeekTotalBubble } from './WeekBubble';
 import { HelpTip } from './HelpTip';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -979,12 +980,8 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                       const totalH = m.isManager ? resolveMgrTotalWeekHours(w, m, h) : h;
                       return (
                         <td key={w} className="px-1 py-1 text-center">
-                          <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This week tab (one-off exceptions) — the 52-week planner is a read-only view">
-                            {resinInputMode === 'output' ? round2(units) : round2(h)}
-                          </div>
-                          {m.isManager && totalH !== h && (
-                            <div className="text-[10px] text-violet-600">{round2(totalH)}h total</div>
-                          )}
+                          <WeekBubble value={resinInputMode === 'output' ? round2(units) : round2(h)} />
+                          {m.isManager && totalH !== h && <WeekTotalBubble value={round2(totalH)} />}
                           {resinInputMode === 'output'
                             ? (h > 0 && <div className="text-[10px] text-slate-400 mt-0.5">{round2(h)}h</div>)
                             : (h > 0 && (
