@@ -53,6 +53,8 @@ interface CohortRow {
   units:        number;   // resin units that entered queue this week
   weeksElapsed: number;   // weeks since this intake week, i.e. its current age
   weeksToComplete: number | null;
+  // Same walk, with the hypothetical hires from the hiring plan strip added.
+  weeksToCompletePlanned: number | null;
   estimated:    boolean;  // no real order yet — projected at the recent average intake pace
 }
 
@@ -73,6 +75,10 @@ interface QueueSummary {
 
 const WEEKS = 52;
 const WINDOW = 8;  // weeks visible in the schedule grid at once
+// Ratio (hours per unit) assumed for a hypothetical new hire on the Queue &
+// Turnaround planner — a specialist pace, not the team's blended average,
+// same reasoning as SchedulePage's NEW_HIRE_RATIO for Design.
+const RESIN_NEW_HIRE_RATIO = 2.0;
 
 // The production app has no Resin stage — resin pieces are assigned to the
 // resin team member as the designer, so live Resin actuals read the Design
@@ -127,6 +133,7 @@ function useResinSettings() {
   const mgrTotalDailyHours: DailyHoursMap = settings.mgrTotalDailyHours ?? {};
 
   const queueFrontWeek: string | null = settings.resinQueueFrontWeek ?? null;
+  const newHireHours: Record<string, number> = settings.resinNewHireHours ?? {};
 
   function setRoster(r: ResinMember[]) { update('resinRoster', r as unknown); }
   function setMgrTotalDailyHours(h: DailyHoursMap) { update('mgrTotalDailyHours', h); }
@@ -136,11 +143,17 @@ function useResinSettings() {
   // otherwise it would keep outranking the template in resolveWeekHours.
   function setHours(h: Record<string, Record<string, number>>) { update('resinHours', h); }
   function setQueueFrontWeek(w: string | null) { update('resinQueueFrontWeek', w); }
+  function setNewHireHours(weekIso: string, h: number) {
+    const next = { ...newHireHours };
+    if (h !== 0) next[weekIso] = h; else delete next[weekIso];
+    update('resinNewHireHours', next);
+  }
 
   return {
     roster, setRoster, hours, setHours, resinDailyHours, setResinDailyHours,
     mgrTotalHours, mgrTotalDailyHours, setMgrTotalDailyHours,
     queueFrontWeek, setQueueFrontWeek,
+    newHireHours, setNewHireHours,
     paidHolidays,
     loading, saveState,
   };
@@ -171,6 +184,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     roster, setRoster, hours, setHours, resinDailyHours, setResinDailyHours,
     mgrTotalHours, mgrTotalDailyHours, setMgrTotalDailyHours,
     queueFrontWeek, setQueueFrontWeek,
+    newHireHours, setNewHireHours,
     paidHolidays,
     loading, saveState,
   } = useResinSettings();
@@ -288,6 +302,20 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
   // 8-week average that can't see them.
   const capacityByWeek = Array.from({ length: WEEKS }, (_, w) => weeklyCapacity(w));
 
+  // ── Hiring / what-if plan ─────────────────────────────────────────────────
+  // Same as Design's: a hire's hours carry forward from their start week on,
+  // and only ever feed the Planned side — Scheduled stays exactly what's in
+  // the Schedule tab.
+  const hireHoursByWeek: number[] = [];
+  {
+    let cumulative = 0;
+    for (let w = 0; w < WEEKS; w++) {
+      cumulative += newHireHours[isoMonday(w)] ?? 0;
+      hireHoursByWeek.push(cumulative);
+    }
+  }
+  const planCapacityByWeek = capacityByWeek.map((c, w) => Math.max(0, c + hireHoursByWeek[w] / RESIN_NEW_HIRE_RATIO));
+
   // ── Derived: turnaround simulation ────────────────────────────────────────
   // Cohorts older than queueFrontWeek are stuck-open stragglers (a bad tag, an
   // abandoned line item) rather than real backlog — folding them into the FIFO
@@ -345,33 +373,39 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     // Horizon extends past the tracked schedule (assuming the last tracked
     // week's capacity holds) so a large backlog doesn't read as "never
     // clears" just because the capacity array ran out.
-    const horizon = capacityByWeek.length * 2;
-    const capAt = (w: number) => w < capacityByWeek.length ? capacityByWeek[w] : (capacityByWeek[capacityByWeek.length - 1] ?? 0);
-
     const today = getMondayDate(0);
     const weeksElapsedOf = (weekOf: string) =>
       Math.round((today.getTime() - mondayOf(weekOf).getTime()) / (7 * 24 * 60 * 60 * 1000));
     // Past/current cohorts are already in hand at week 0; future ones arrive
     // in their own intake week.
     const arrivalWeek = projectedCohorts.map(c => Math.max(0, -weeksElapsedOf(c.weekOf)));
-    const remaining = projectedCohorts.map(c => c.units);
-    const doneWeek: (number | null)[] = projectedCohorts.map(() => null);
-    let front = 0;  // first cohort with work left — FIFO, so everything before it is done
-    for (let w = 0; w < horizon && front < projectedCohorts.length; w++) {
-      let cap = capAt(w);
-      for (let i = front; i < projectedCohorts.length && cap > 0; i++) {
-        if (arrivalWeek[i] > w) break;  // sorted by week, so nothing later has arrived either
-        if (remaining[i] <= 0) continue;
-        const take = Math.min(cap, remaining[i]);
-        remaining[i] -= take;
-        cap -= take;
-        if (remaining[i] <= 1e-9) doneWeek[i] = w;
+    // Run once per capacity array (Scheduled, then Planned with hypothetical
+    // hires) on fresh copies so the two walks can't contaminate each other.
+    function runWalk(capByWeek: number[]): (number | null)[] {
+      const horizon = capByWeek.length * 2;
+      const capAt = (w: number) => w < capByWeek.length ? capByWeek[w] : (capByWeek[capByWeek.length - 1] ?? 0);
+      const remaining = projectedCohorts.map(c => c.units);
+      const doneWeek: (number | null)[] = projectedCohorts.map(() => null);
+      let front = 0;  // first cohort with work left — FIFO, so everything before it is done
+      for (let w = 0; w < horizon && front < projectedCohorts.length; w++) {
+        let cap = capAt(w);
+        for (let i = front; i < projectedCohorts.length && cap > 0; i++) {
+          if (arrivalWeek[i] > w) break;  // sorted by week, so nothing later has arrived either
+          if (remaining[i] <= 0) continue;
+          const take = Math.min(cap, remaining[i]);
+          remaining[i] -= take;
+          cap -= take;
+          if (remaining[i] <= 1e-9) doneWeek[i] = w;
+        }
+        while (front < projectedCohorts.length && remaining[front] <= 1e-9) {
+          if (doneWeek[front] === null) doneWeek[front] = Math.max(w, arrivalWeek[front]);
+          front++;
+        }
       }
-      while (front < projectedCohorts.length && remaining[front] <= 1e-9) {
-        if (doneWeek[front] === null) doneWeek[front] = Math.max(w, arrivalWeek[front]);
-        front++;
-      }
+      return doneWeek;
     }
+    const doneWeek        = runWalk(capacityByWeek);
+    const doneWeekPlanned = runWalk(planCapacityByWeek);
 
     return projectedCohorts.map(({ weekOf, units, estimated }, i) => ({
       weekOf,
@@ -379,6 +413,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
       units,
       weeksElapsed: weeksElapsedOf(weekOf),
       weeksToComplete: doneWeek[i],
+      weeksToCompletePlanned: doneWeekPlanned[i],
       estimated,
     }));
   })();
@@ -1131,6 +1166,43 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
             </div>
           </div>
 
+          {/* Hiring plan */}
+          <div className="bg-white border border-slate-100 rounded-xl p-5">
+            <div className="flex items-start justify-between gap-2 flex-wrap mb-1">
+              <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.hiring">Hiring plan — hypothetical new hires</HelpTip></h3>
+            </div>
+            <p className="text-xs text-slate-400 mb-3">
+              Hours/wk a hypothetical new hire starting that week would average (at {RESIN_NEW_HIRE_RATIO} hrs/unit). Affects the
+              Planned rows below for that intake week and for every cohort already waiting in the queue — a hire made now can pull
+              in turnaround for orders already on the shelf, not just future ones.
+            </p>
+            <div className="overflow-x-auto -mx-1 pb-1">
+              <div className="flex gap-1.5" style={{ width: 'max-content' }}>
+                {Array.from({ length: WEEKS }, (_, w) => w).map(w => {
+                  const weekIso = isoMonday(w);
+                  const hireCum = hireHoursByWeek[w];
+                  return (
+                    <div key={w} className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded ${w === 0 ? 'bg-indigo-50/60' : ''}`}>
+                      <span className="text-[9px] text-slate-400 whitespace-nowrap">{getWeekLabel(w)}</span>
+                      <input
+                        type="number" step="1" placeholder="0"
+                        value={newHireHours[weekIso] ?? ''}
+                        onChange={e => setNewHireHours(weekIso, parseFloat(e.target.value) || 0)}
+                        className="w-12 border border-slate-200 rounded px-1 py-0.5 text-center text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-purple-300"
+                        title={`Hours/wk a hypothetical new hire starting ${mondayOf(weekIso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} would average (negative to remove hours)`}
+                      />
+                      {hireCum !== 0 && (
+                        <span className={`text-[9px] whitespace-nowrap ${hireCum > 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                          {hireCum > 0 ? '+' : ''}{Math.round(hireCum)}h
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
           {/* Turnaround bars */}
           <div className="bg-white border border-slate-100 rounded-xl p-5">
             <div className="flex items-start justify-between gap-4 flex-wrap mb-1">
@@ -1180,7 +1252,29 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                   <tbody>
                     {cohortRows.map(row => {
                       const wks = row.weeksToComplete;
+                      const wksPlanned = row.weeksToCompletePlanned;
                       const totalTurnaround = wks !== null ? row.weeksElapsed + wks : null;
+                      const totalPlanned = wksPlanned !== null ? row.weeksElapsed + wksPlanned : null;
+                      const tone = (n: number) => n <= 6 ? 'emerald' : n <= 12 ? 'yellow' : 'red';
+                      const bar = (label: string, labelClass: string, n: number) => (
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] w-14 shrink-0 ${labelClass}`}>{label}</span>
+                          {n === 0 ? (
+                            <span className="text-xs font-semibold text-indigo-700">this week</span>
+                          ) : (
+                            <>
+                              <div className="flex-1 bg-slate-100 rounded-full h-1.5 max-w-24">
+                                <div className={`h-1.5 rounded-full ${tone(n) === 'emerald' ? 'bg-emerald-400' : tone(n) === 'yellow' ? 'bg-yellow-400' : 'bg-red-400'}`}
+                                  style={{ width: `${Math.min(100, (n / 24) * 100)}%` }} />
+                              </div>
+                              <span className={`text-[10px] font-medium whitespace-nowrap ${tone(n) === 'emerald' ? 'text-emerald-700' : tone(n) === 'yellow' ? 'text-yellow-700' : 'text-red-700'}`}>
+                                ~{n} wk{n !== 1 ? 's' : ''}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      );
+                      const showPlanned = wksPlanned !== wks;
                       return (
                         <tr key={row.weekOf} className={`border-b border-slate-50 ${wks === 0 ? 'bg-indigo-50/40' : row.estimated ? 'bg-slate-50/40' : 'hover:bg-slate-50'}`}>
                           <td className="px-4 py-2 font-medium text-slate-700 whitespace-nowrap">
@@ -1196,30 +1290,36 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                             )}
                           </td>
                           <td className="px-3 py-2">
-                            {wks === null ? (
-                              <span className="text-xs text-red-400 italic">not cleared in {WEEKS * 2} wks</span>
-                            ) : wks === 0 ? (
-                              <span className="text-xs font-semibold text-indigo-700">this week</span>
-                            ) : (
-                              <div className="flex items-center gap-2">
-                                <div className="flex-1 bg-slate-100 rounded-full h-1.5 max-w-24">
-                                  <div className={`h-1.5 rounded-full ${wks <= 6 ? 'bg-emerald-400' : wks <= 12 ? 'bg-yellow-400' : 'bg-red-400'}`}
-                                    style={{ width: `${Math.min(100, (wks / 24) * 100)}%` }} />
+                            <div className="space-y-1">
+                              {wks === null ? (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-slate-400 w-14 shrink-0">Scheduled</span>
+                                  <span className="text-xs text-red-400 italic">not cleared in {WEEKS * 2} wks</span>
                                 </div>
-                                <span className={`text-[10px] font-medium whitespace-nowrap ${wks <= 6 ? 'text-emerald-700' : wks <= 12 ? 'text-yellow-700' : 'text-red-700'}`}>
-                                  ~{wks} wk{wks !== 1 ? 's' : ''}
-                                </span>
-                              </div>
-                            )}
+                              ) : bar('Scheduled', 'text-slate-400', wks)}
+                              {showPlanned && (wksPlanned === null ? (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-emerald-600 w-14 shrink-0">Planned</span>
+                                  <span className="text-xs text-red-400 italic">not cleared in {WEEKS * 2} wks</span>
+                                </div>
+                              ) : bar('Planned', 'text-emerald-600', wksPlanned))}
+                            </div>
                           </td>
                           <td className="px-3 py-2 text-center">
-                            {totalTurnaround !== null ? (
-                              <span className={`text-xs font-semibold ${totalTurnaround <= 6 ? 'text-emerald-700' : totalTurnaround <= 12 ? 'text-yellow-700' : 'text-red-700'}`}>
-                                ~{totalTurnaround} wks
-                              </span>
-                            ) : (
-                              <span className="text-xs text-slate-400">TBD</span>
-                            )}
+                            <div className="space-y-0.5">
+                              {totalTurnaround !== null ? (
+                                <div className={`text-xs font-semibold ${totalTurnaround <= 6 ? 'text-emerald-700' : totalTurnaround <= 12 ? 'text-yellow-700' : 'text-red-700'}`}>
+                                  ~{totalTurnaround} wks
+                                </div>
+                              ) : (
+                                <div className="text-xs text-slate-400">TBD</div>
+                              )}
+                              {showPlanned && (
+                                <div className="text-[10px] text-emerald-600 whitespace-nowrap">
+                                  Planned: {totalPlanned !== null ? `~${totalPlanned} wks` : 'TBD'}
+                                </div>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );

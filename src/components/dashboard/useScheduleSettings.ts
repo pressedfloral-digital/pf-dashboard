@@ -133,6 +133,8 @@ export interface ScheduleSettings {
   // are excluded from the turnaround math and surfaced separately for
   // investigation instead.
   resinQueueFrontWeek: string | null;
+  // Same idea as newHireHours, for Resin's Queue & Turnaround tab.
+  resinNewHireHours:   Record<string, number>;
   // Utah Bloom Stock Products department (handprint/paw/footprint frames +
   // bloom recreations) — see src/lib/bloomStock.ts and BloomStockPage.tsx.
   // Roster is BloomStockMember[] (null = defaults); daily hours keyed
@@ -180,6 +182,7 @@ const DEFAULTS: ScheduleSettings = {
   resinHours: {},
   resinDailyHours: {},
   resinQueueFrontWeek: null,
+  resinNewHireHours: {},
   bloomStockRoster: null,
   bloomStockDailyHours: {},
   bloomStockRatio: null,
@@ -194,7 +197,7 @@ const KEYS: (keyof ScheduleSettings)[] = [
   'designHours','designRoster','presHours','presRoster','presSettings',
   'ffHours','ffRoster','masterAvailability','avgIntake','newHireHours','ffNewHireHours','presNewHireHours','weeklyEstimates','weeklyMultipliers',
   'mgrTotalHours','mgrTotalDailyHours','designDailyHours','ffDailyHours','presDailyHours','presCheckHours','presCheckCounts',
-  'resinRoster','resinHours','resinDailyHours','resinQueueFrontWeek',
+  'resinRoster','resinHours','resinDailyHours','resinQueueFrontWeek','resinNewHireHours',
   'bloomStockRoster','bloomStockDailyHours','bloomStockRatio','bloomStockWeeklyEstimates','bloomStockScenarios','bloomStockDeadline',
   'designQueueFront','unavailability',
 ];
