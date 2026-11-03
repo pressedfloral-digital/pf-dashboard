@@ -6,6 +6,7 @@ import { parseWeeklyLaborXLSX } from './weeklyLaborParser';
 import type { WeeklyLaborRow } from './weeklyLaborParser';
 import { parseMonthlyBonusXLSX } from './monthlyBonusParser';
 import type { MonthlyBonusRow } from './monthlyBonusParser';
+import { parseDurationHours } from '@/lib/durationHours';
 
 function fmt$(n: number) {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
@@ -91,7 +92,7 @@ function parseHoursXLSX(file: File): Promise<HoursRow[]> {
             location:      String(r['Work location name'] ?? ''),
             department:    String(r['Department (Worked)'] ?? ''),
             date:          excelDate(r['Time entry clock in date']),
-            durationHours: parseFloat(String(r['Time entry duration (hours)'] ?? '0')) || 0,
+            durationHours: parseDurationHours(r['Time entry duration (hours)']),
           }))
           .filter(r => r.durationHours > 0 && r.date);
         resolve(parsed);
