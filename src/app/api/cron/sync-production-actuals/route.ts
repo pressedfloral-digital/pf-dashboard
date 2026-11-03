@@ -9,6 +9,7 @@ import {
 } from '@/lib/assignment-counts';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { adjustmentRowKey, netAdjustment, type OrderAdjustment } from '@/lib/orderAdjustments';
+import { hasBearerSecret } from '@/lib/bearerSecret';
 
 export const maxDuration = 300;
 
@@ -256,7 +257,7 @@ async function netAdjustmentsForWeek(weekOf: string): Promise<Map<string, number
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!hasBearerSecret(authHeader, process.env.CRON_SECRET)) {
     const { userId } = await auth();
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }

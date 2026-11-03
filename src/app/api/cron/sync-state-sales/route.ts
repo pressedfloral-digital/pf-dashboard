@@ -3,6 +3,7 @@ import { auth } from '@clerk/nextjs/server';
 import { revalidateTag } from 'next/cache';
 import { supabase } from '@/lib/supabase';
 import { STATE_SALES_CACHE_TAG } from '@/lib/distributionEstimate';
+import { hasBearerSecret } from '@/lib/bearerSecret';
 
 export const maxDuration = 300;
 
@@ -102,7 +103,7 @@ async function syncMonth(monthStr: string): Promise<{ rows: number; orders: numb
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!hasBearerSecret(authHeader, process.env.CRON_SECRET)) {
     const { userId } = await auth();
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }

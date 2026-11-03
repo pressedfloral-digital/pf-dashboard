@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { hasBearerSecret } from '@/lib/bearerSecret';
 
 const SHOPIFY_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN!;
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
@@ -28,7 +29,7 @@ async function shopifyFetch(path: string, options: RequestInit = {}) {
 
 export async function POST(req: Request) {
   const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!hasBearerSecret(auth, process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

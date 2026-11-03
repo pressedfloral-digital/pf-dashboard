@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { syncBouquetReceived } from '@/lib/preservationTurnaround';
+import { hasBearerSecret } from '@/lib/bearerSecret';
 
 export const maxDuration = 300;
 
@@ -13,7 +14,7 @@ const BUDGET_MS = 240_000;
 // 15 minutes; a signed-in user can also call it to seed the table.
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
-  const cronOk = authHeader === `Bearer ${process.env.CRON_SECRET}`;
+  const cronOk = hasBearerSecret(authHeader, process.env.CRON_SECRET);
   if (!cronOk) {
     const { userId } = await auth();
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

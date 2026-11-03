@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth }                      from '@clerk/nextjs/server';
 import { supabase }                  from '@/lib/supabase';
+import { hasBearerSecret } from '@/lib/bearerSecret';
 
 export const maxDuration = 300;
 
@@ -9,7 +10,7 @@ const CRON_SECRET = process.env.CRON_SECRET ?? '';
 
 function isAuthorized(req: NextRequest): boolean {
   const bearer = req.headers.get('authorization') ?? '';
-  if (bearer === `Bearer ${CRON_SECRET}`) return true;
+  if (hasBearerSecret(bearer, CRON_SECRET)) return true;
   return false;
 }
 

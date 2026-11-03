@@ -6,6 +6,7 @@ import { getWeekMondays } from '@/lib/weekDates';
 import { projectDept, buildManagerHomeDept, type DesignRosterEntry, type PresRosterEntry, type HoursMap, type DailyHoursMap } from '@/lib/scheduleProjection';
 import { fetchAllRows } from '@/lib/fetchAllRows';
 import { filterToHistoricalsRows, HISTORICALS_ROSTER_KEYS } from '@/lib/historicalsRows';
+import { hasBearerSecret } from '@/lib/bearerSecret';
 
 // MTD/QTD/YTD figures need to reflect whatever's in weekly_labor_cost right
 // now — a payroll upload landing mid-month should show up on next load, not
@@ -978,7 +979,7 @@ function stripPtoForViewer(windows: WindowResult[], visibleLocations: Set<string
 }
 
 export async function GET(req: NextRequest) {
-  const isSyncCaller = req.headers.get('authorization') === `Bearer ${process.env.SCORECARDS_SYNC_SECRET}`;
+  const isSyncCaller = hasBearerSecret(req.headers.get('authorization'), process.env.SCORECARDS_SYNC_SECRET);
   const ptoVisibleLocations = new Set<string>();
   if (!isSyncCaller) {
     const { userId } = await auth();

@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks, PTO_RATE_TRAILING_WEEKS, type ManagerActualHoursRow } from '@/lib/managers';
 import { fetchAllRows } from '@/lib/fetchAllRows';
 import { filterToHistoricalsRows, HISTORICALS_ROSTER_KEYS } from '@/lib/historicalsRows';
+import { hasBearerSecret } from '@/lib/bearerSecret';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -103,7 +104,7 @@ const ALL_CPO_DEPTS = ['Design', 'Preservation', 'Fulfillment', 'G&A', 'Resin'];
 //   months    = number of months to return (default: 13 for YTD + prev)
 
 export async function GET(req: NextRequest) {
-  const isSyncCaller = req.headers.get('authorization') === `Bearer ${process.env.SCORECARDS_SYNC_SECRET}`;
+  const isSyncCaller = hasBearerSecret(req.headers.get('authorization'), process.env.SCORECARDS_SYNC_SECRET);
   if (!isSyncCaller) {
     const { userId } = await auth();
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

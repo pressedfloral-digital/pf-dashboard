@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { hasBearerSecret } from '@/lib/bearerSecret';
 
 export const maxDuration = 300;
 
@@ -94,7 +95,7 @@ async function batchRun<T>(
 
 export async function GET(req: Request) {
   const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!hasBearerSecret(auth, process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
