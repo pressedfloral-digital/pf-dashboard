@@ -4,7 +4,7 @@
 // tabs and the Master Schedule): avatar + name column, day headers with a
 // pill on today, and coloured day blocks that turn into an input on click.
 
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 
 export type ShiftTone = 'design' | 'preservation' | 'fulfillment' | 'resin';
 
@@ -169,4 +169,52 @@ export function ArchivedMembers({ members, onRestore }: { members: { id: string;
       )}
     </div>
   );
+}
+
+// ─── useDraggableOrder ────────────────────────────────────────────────────────
+export function useDraggableOrder<T extends { id: string }>(
+  items: T[],
+  onReorder: (newOrder: string[]) => void
+) {
+  const dragId = useRef<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  function handleDragStart(id: string) { dragId.current = id; }
+  function handleDragOver(e: React.DragEvent, id: string) { e.preventDefault(); setDragOverId(id); }
+  function handleDrop(targetId: string) {
+    if (!dragId.current || dragId.current === targetId) { setDragOverId(null); return; }
+    const ids = items.map(i => i.id);
+    const fromIdx = ids.indexOf(dragId.current);
+    const toIdx   = ids.indexOf(targetId);
+    if (fromIdx === -1 || toIdx === -1) { setDragOverId(null); return; }
+    const next = [...ids];
+    next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, dragId.current);
+    dragId.current = null;
+    setDragOverId(null);
+    onReorder(next);
+  }
+  function handleDragEnd() { dragId.current = null; setDragOverId(null); }
+  return { dragOverId, handleDragStart, handleDragOver, handleDrop, handleDragEnd };
+}
+
+// Drag-to-reorder for schedule grid rows. The row only becomes draggable
+// while the name cell is held, so clicks and inputs in day cells are unaffected.
+export function useRowDrag<T extends { id: string }>(items: T[], onReorder: (newOrder: string[]) => void) {
+  const drag = useDraggableOrder(items, onReorder);
+  const [armed, setArmed] = useState<string | null>(null);
+  return {
+    rowProps: (id: string) => ({
+      draggable: armed === id,
+      onDragStart: (e: React.DragEvent) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', id); drag.handleDragStart(id); },
+      onDragOver:  (e: React.DragEvent) => drag.handleDragOver(e, id),
+      onDrop:      (e: React.DragEvent) => { e.preventDefault(); drag.handleDrop(id); },
+      onDragEnd:   () => { drag.handleDragEnd(); setArmed(null); },
+    }),
+    isOver: (id: string) => drag.dragOverId === id,
+    handleProps: (id: string) => ({
+      onMouseDown: () => setArmed(id),
+      onMouseUp:   () => setArmed(null),
+      title:       'Drag to reorder',
+    }),
+  };
 }

@@ -7,7 +7,7 @@
 // the cell shows a conflict.
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { WEEKDAY_LABELS } from '@/lib/scheduleResolution';
+import { WEEKDAY_LABELS, activeRuleForDay, isWithinEmployment, type ScheduleRule } from '@/lib/scheduleResolution';
 import { SHIFT_TONE, type ShiftTone } from './ScheduleBlocks';
 
 export interface UnavailabilityEntry {
@@ -71,6 +71,22 @@ export function withDefaultUnavailable(entries: UnavailabilityEntry[], personId:
     id: `none-${personId}-${iso}`, personId, personName, kind: 'unavailable', date: iso, repeat: 'none',
     allDay: true, createdAt: '', fromDefault: true,
   }];
+}
+
+// Standard-schedule hours for one day (schedule rule first, then the plain
+// template), 0 outside the employment window — the basis for preferred hours.
+export function standardHoursOn(r: { standardWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> } | undefined, weekIso: string, di: number): number {
+  const employment = { weekIso, startDate: r?.startDate, endDate: r?.endDate, rules: r?.scheduleRules, daysOff: r?.daysOff, hoursOff: r?.hoursOff };
+  if (!isWithinEmployment(di, employment)) return 0;
+  return activeRuleForDay(di, employment)?.hours[di] ?? r?.standardWeeklyHours?.[di] ?? 0;
+}
+
+// Available that day: has available time (entered, or standard-schedule
+// hours) and isn't marked unavailable all day.
+export function availableOn(list: UnavailabilityEntry[] | undefined, personId: string, iso: string, standardHours: number) {
+  const es = entriesOn(list, personId, iso);
+  if (es.some(e => e.kind === 'unavailable' && e.allDay)) return false;
+  return standardHours > 0 || es.some(e => e.kind === 'preferred');
 }
 
 export function isUnavailableAllDay(list: UnavailabilityEntry[] | undefined, personId: string, iso: string) {

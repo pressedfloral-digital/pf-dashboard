@@ -3,17 +3,19 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
 import { getMondayDate, isoMonday, getWeekLabel } from '@/lib/weekDates';
-import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
-import { resolveDayHours, resolveWeekHours, isDayOff, applyTimeOff, hoursOffOn, resolveWeekPayHours, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
+import { InputModeToggle, round2, type InputMode } from './InputModeToggle';
+import { resolveDayHours, resolveWeekHours, isDayOff, applyTimeOff, hoursOffOn, resolveWeekPayHours, baseDailyArray, isWithinEmployment, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
 import { HistoricalsSection } from './HistoricalsSection';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
-import { ScheduleRulesEditor } from './ScheduleRulesEditor';
-import { TimeOffCalendar, toTimeOffMember } from './TimeOffCalendar';
+import { type TimeOffPatch } from './TimeOffCalendar';
+import { AddTimeOffButton } from './AddTimeOff';
+import { AddUnavailabilityButton, AvailabilityChips, ScheduledTimeBox, entriesOn, withStandardPreferred, withDefaultUnavailable, useShowAvailability, standardHoursOn, availableOn, type UnavailabilityEntry } from './Unavailability';
+import { GridViewMenu, useGridView, HIDE_WEEKEND } from './GridView';
 import { MemberTierBadges } from './MemberTierBadge';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { WeekCell, WeekHead } from './WeekCell';
-import { PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock } from './ScheduleBlocks';
+import { PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock, ArchiveButton, ArchivedMembers, useDraggableOrder, useRowDrag } from './ScheduleBlocks';
 import { HelpTip } from './HelpTip';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
 import { ProductionActual, ProductionActualsStatus, sumActuals } from './ProductionActual';
@@ -45,6 +47,7 @@ export interface ResinMember {
   daysOff?: string[];
   // ISO date → hours off that day (partial day off) — see EmploymentWindow.hoursOff.
   hoursOff?: Record<string, number>;
+  _removed?: boolean;   // archived: off the schedule, history kept
 }
 
 interface CohortRow {
@@ -119,9 +122,15 @@ function useResinSettings() {
 
   function setResinDailyHours(h: DailyHoursMap) { update('resinDailyHours', h); }
 
-    const roster: ResinMember[] = Array.isArray(settings.resinRoster)
+  // Saved order is the array order. `allRoster` keeps archived members (for
+  // writes and the Archived list); `roster` is everyone still on the team.
+  const allRoster: ResinMember[] = Array.isArray(settings.resinRoster)
     ? (settings.resinRoster as unknown as ResinMember[])
     : DEFAULT_RESIN_ROSTER;
+  const roster = allRoster.filter(m => !m._removed);
+
+  const unavailability: UnavailabilityEntry[] = settings.unavailability ?? [];
+  function setUnavailability(next: UnavailabilityEntry[]) { update('unavailability', next); }
 
   // Date-keyed: isoMonday -> { memberId -> hours }
   const hours: Record<string, Record<string, number>> = settings.resinHours ?? {};
@@ -150,10 +159,11 @@ function useResinSettings() {
   }
 
   return {
-    roster, setRoster, hours, setHours, resinDailyHours, setResinDailyHours,
+    allRoster, roster, setRoster, hours, setHours, resinDailyHours, setResinDailyHours,
     mgrTotalHours, mgrTotalDailyHours, setMgrTotalDailyHours,
     queueFrontWeek, setQueueFrontWeek,
     newHireHours, setNewHireHours,
+    unavailability, setUnavailability,
     paidHolidays,
     loading, saveState,
   };
@@ -165,9 +175,15 @@ interface ResinPageProps {
   resinQueue?: number;  // live count from dashboard (if wired up)
   canViewCPO?: boolean;
   canSeeManagerCPO?: (name: string) => boolean;
+  userRole?: string;
+  // Utah's availability list, when the page around Resin already holds it —
+  // one copy, so edits here and in the other Utah grids don't overwrite each
+  // other. Falls back to Resin's own Utah settings when not passed.
+  unavailability?: UnavailabilityEntry[];
+  onUnavailabilityChange?: (next: UnavailabilityEntry[]) => void;
 }
 
-export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManagerCPO = () => false }: ResinPageProps) {
+export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManagerCPO = () => false, userRole = 'admin', unavailability: unavailabilityProp, onUnavailabilityChange }: ResinPageProps) {
   const [activeTab, setActiveTab] = useState<'thisweek' | 'schedule' | 'queue' | 'historicals'>('thisweek');
   const [thisWeekOffset, setThisWeekOffset] = useState(0);
   const [weekOffset, setWeekOffset] = useState(0);
@@ -181,16 +197,23 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
 
   const {
-    roster, setRoster, hours, setHours, resinDailyHours, setResinDailyHours,
+    allRoster, roster, setRoster, hours, resinDailyHours, setResinDailyHours,
     mgrTotalHours, mgrTotalDailyHours, setMgrTotalDailyHours,
     queueFrontWeek, setQueueFrontWeek,
     newHireHours, setNewHireHours,
+    unavailability: ownUnavailability, setUnavailability: setOwnUnavailability,
     paidHolidays,
     loading, saveState,
   } = useResinSettings();
+  const unavailability = unavailabilityProp ?? ownUnavailability;
+  const setUnavailability = onUnavailabilityChange ?? setOwnUnavailability;
+  const [showAvail] = useShowAvailability();
+  const view = useGridView();
 
   // App/technology staff are kept off every roster view (see nonProductionStaff.ts).
   const productionRoster = roster.filter(m => !isNonProductionStaff(m.name));
+  const rosterDrag = useDraggableOrder(productionRoster, reorderRoster);
+  const rowDrag = useRowDrag(productionRoster, reorderRoster);
 
   const thisWeekDates = weekIsoDates(thisWeekOffset);
   const resinActuals = useProductionAssignmentCounts({
@@ -495,85 +518,29 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
   }
 
   function updateRosterField(id: string, field: keyof ResinMember, val: string | number | boolean) {
-    setRoster(roster.map(m => m.id === id ? { ...m, [field]: val } : m));
-  }
-
-  function updateTemplate(id: string, dayIdx: number, value: number) {
-    setRoster(roster.map(m => {
-      if (m.id !== id) return m;
-      const prevTemplate = m.standardWeeklyHours ?? [0, 0, 0, 0, 0, 0, 0];
-      return { ...m, standardWeeklyHours: prevTemplate.map((h, j) => j === dayIdx ? value : h) };
-    }));
-
-    // Legacy per-week values (hours, date-keyed) predate the standard-schedule
-    // template and outrank it in resolveWeekHours — nothing writes new ones
-    // (see useResinSettings' setHours comment), so any left on a future week
-    // are stale pre-template leftovers silently shadowing the template.
-    // Release just those (current week forward, past weeks kept as
-    // historical record) so a template edit actually takes effect. A week
-    // genuinely touched via "This Week" has a real resinDailyHours entry —
-    // untouched here, so intentional day-level overrides never get wiped.
-    const nextWeekly: Record<string, Record<string, number>> = {};
-    let changed = false;
-    const currentWeekIso = isoMonday(0);
-    for (let w = 0; w < WEEKS; w++) {
-      const weekIso = isoMonday(w);
-      const weekEntry = hours[weekIso];
-      if (!weekEntry || weekEntry[id] === undefined) continue;
-      if (weekIso < currentWeekIso || resinDailyHours[`${weekIso}-${id}`]) {
-        nextWeekly[weekIso] = weekEntry;
-        continue;
-      }
-      const rest = { ...weekEntry };
-      delete rest[id];
-      nextWeekly[weekIso] = rest;
-      changed = true;
-    }
-    if (changed) setHours({ ...hours, ...nextWeekly });
-  }
-
-  // Manager-only: the standing full work-week template (management +
-  // production combined) that resolveMgrTotalWeekHours falls back to when no
-  // per-week mgrTotalHours entry is set — mirrors updateTemplate above, just
-  // for the total-hours field instead of the production one.
-  function updateTotalTemplate(id: string, dayIdx: number, value: number) {
-    setRoster(roster.map(m => {
-      if (m.id !== id) return m;
-      const prevTemplate = m.standardTotalWeeklyHours ?? [0, 0, 0, 0, 0, 0, 0];
-      return { ...m, standardTotalWeeklyHours: prevTemplate.map((h, j) => j === dayIdx ? value : h) };
-    }));
-  }
-  // Clears every frozen day/week override for this member from the current
-  // week forward (past weeks untouched) so they fall back to the template.
-  function resetMemberToTemplate(id: string) {
-    if (!window.confirm('Clear this person’s scheduled hours from this week forward and go back to following their standard schedule? Past weeks are not affected.')) return;
-    const newDaily = { ...resinDailyHours };
-    let changedDaily = false;
-    // `hours` is date-keyed (isoMonday -> { memberId -> hours }), the inverse
-    // shape of the other three departments' legacy weekly maps.
-    const newWeekly = { ...hours };
-    let changedWeekly = false;
-    for (let w = 0; w < WEEKS; w++) {
-      const weekIso = isoMonday(w);
-      const dailyKey = `${weekIso}-${id}`;
-      if (newDaily[dailyKey]) { delete newDaily[dailyKey]; changedDaily = true; }
-      if (newWeekly[weekIso]?.[id] !== undefined) {
-        newWeekly[weekIso] = { ...newWeekly[weekIso] };
-        delete newWeekly[weekIso][id];
-        changedWeekly = true;
-      }
-    }
-    if (changedDaily) setResinDailyHours(newDaily);
-    if (changedWeekly) setHours(newWeekly);
+    setRoster(allRoster.map(m => m.id === id ? { ...m, [field]: val } : m));
   }
 
   function addMember() {
     const id = `resin-${Date.now()}`;
-    setRoster([...roster, { id, name: 'Team Member', ratio: 1.5, payType: 'hourly', hourlyRate: 0, annualSalary: 0 }]);
+    setRoster([...allRoster, { id, name: 'Team Member', ratio: 1.5, payType: 'hourly', hourlyRate: 0, annualSalary: 0 }]);
   }
 
-  function removeMember(id: string) {
-    setRoster(roster.filter(m => m.id !== id));
+  // Archive, not delete — past hours and Historicals keep the member.
+  function archiveMember(id: string) {
+    setRoster(allRoster.map(m => m.id === id ? { ...m, _removed: true } : m));
+  }
+  function restoreMember(id: string) {
+    setRoster(allRoster.map(m => m.id === id ? { ...m, _removed: false } : m));
+  }
+  // New order for the active members; archived ones stay at the end.
+  function reorderRoster(newOrder: string[]) {
+    const byId = new Map(allRoster.map(m => [m.id, m]));
+    const ordered = newOrder.map(id => byId.get(id)).filter((m): m is ResinMember => !!m);
+    setRoster([...ordered, ...allRoster.filter(m => !newOrder.includes(m.id))]);
+  }
+  function saveTimeOff(patches: Record<string, TimeOffPatch>) {
+    setRoster(allRoster.map(m => patches[m.id] ? { ...m, ...patches[m.id] } : m));
   }
 
   async function refreshRatio(m: ResinMember) {
@@ -715,124 +682,77 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
         </button>
         {showRoster && (
           <div className="mt-3 bg-white border border-slate-100 rounded-xl p-5">
-            <div className="grid grid-cols-[1fr_80px_90px_20px] gap-2 mb-2 px-1 text-xs font-medium text-slate-400">
-              <span>Name</span>
-              <span className="text-center">Role</span>
-              <span className="text-center">Ratio</span>
-              <span />
+            <div className="grid grid-cols-[16px_1fr_80px_90px_20px] gap-2 mb-2 px-1 text-xs font-medium text-slate-400">
+              <span /><span>Name</span><span className="text-center">Role</span><span className="text-center">Ratio</span><span />
             </div>
             <div className="space-y-3">
               {productionRoster.map(m => (
-                <div key={m.id} className="space-y-1.5">
-                <div className="grid grid-cols-[1fr_80px_90px_20px] gap-2 items-center">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <div className="flex-1 min-w-0">
-                      <EmployeeAutocomplete
-                        value={m.name}
-                        location="Utah"
-                        department="Resin"
-                        onChange={val => updateRosterField(m.id, 'name', val)}
-                        onSelect={(emp: RipplingEmployee) => {
-                          updateRosterField(m.id, 'name', emp.full_name);
-                          updateRosterField(m.id, 'role', emp.role);
-                          updateRosterField(m.id, 'payType', emp.pay_type);
-                          updateRosterField(m.id, 'hourlyRate', emp.hourly_rate ?? 0);
-                          updateRosterField(m.id, 'annualSalary', emp.annual_salary ?? 0);
-                          updateRosterField(m.id, 'isManager', /manager|head of|director/i.test(emp.title ?? ''));
-                        }}
-                      />
+                <div key={m.id}
+                  className={`rounded transition-colors ${rosterDrag.dragOverId === m.id ? 'bg-indigo-50' : ''}`}
+                  onDragOver={e => rosterDrag.handleDragOver(e, m.id)}
+                  onDrop={() => rosterDrag.handleDrop(m.id)}>
+                  <div className="grid grid-cols-[16px_1fr_80px_90px_20px] gap-2 items-center">
+                    <span
+                      draggable
+                      onDragStart={e => { e.stopPropagation(); rosterDrag.handleDragStart(m.id); }}
+                      onDragEnd={rosterDrag.handleDragEnd}
+                      className="text-slate-300 cursor-grab active:cursor-grabbing text-center select-none px-1">⠿</span>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="flex-1 min-w-0">
+                        <EmployeeAutocomplete
+                          value={m.name}
+                          location="Utah"
+                          department="Resin"
+                          onChange={val => updateRosterField(m.id, 'name', val)}
+                          onSelect={(emp: RipplingEmployee) => {
+                            updateRosterField(m.id, 'name', emp.full_name);
+                            updateRosterField(m.id, 'role', emp.role);
+                            updateRosterField(m.id, 'payType', emp.pay_type);
+                            updateRosterField(m.id, 'hourlyRate', emp.hourly_rate ?? 0);
+                            updateRosterField(m.id, 'annualSalary', emp.annual_salary ?? 0);
+                            updateRosterField(m.id, 'isManager', /manager|head of|director/i.test(emp.title ?? ''));
+                          }}
+                        />
+                      </div>
+                      <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} className="inline-flex shrink-0" />
                     </div>
-                    <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} className="inline-flex shrink-0" />
+                    <select value={m.role ?? 'specialist'} onChange={e => updateRosterField(m.id, 'role', e.target.value)}
+                      className="border border-slate-200 rounded px-1.5 py-1.5 text-xs text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300">
+                      <option value="specialist">Specialist</option>
+                      <option value="senior">Senior</option>
+                      <option value="master">Master</option>
+                    </select>
+                    <div className="flex items-center gap-1">
+                      <input type="number" value={m.ratio} step="0.01" min="0.01"
+                        onChange={e => updateRosterField(m.id, 'ratio', parseFloat(e.target.value) || 0)}
+                        className="w-full border border-slate-200 rounded px-2 py-1.5 text-sm text-center text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300" />
+                      <button onClick={() => refreshRatio(m)} title="Update ratio from last 8 weeks of historicals"
+                        className="text-slate-300 hover:text-indigo-500 transition-colors text-sm shrink-0"
+                        disabled={refreshingId === m.id}>
+                        {refreshingId === m.id ? '…' : '↻'}
+                      </button>
+                    </div>
+                    {roster.length > 1 ? <ArchiveButton onClick={() => archiveMember(m.id)} /> : <span />}
                   </div>
-                  <select value={m.role ?? 'specialist'} onChange={e => updateRosterField(m.id, 'role', e.target.value)}
-                    className="border border-slate-200 rounded px-1.5 py-1.5 text-xs text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300">
-                    <option value="specialist">Specialist</option>
-                    <option value="senior">Senior</option>
-                    <option value="master">Master</option>
-                  </select>
-                  <div className="flex items-center gap-1">
-                    <input type="number" value={m.ratio} step="0.01" min="0.01"
-                      onChange={e => updateRosterField(m.id, 'ratio', parseFloat(e.target.value) || 0)}
-                      className="w-full border border-slate-200 rounded px-2 py-1.5 text-sm text-center text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300" />
-                    <button onClick={() => refreshRatio(m)} title="Update ratio from last 8 weeks of historicals"
-                      className="text-slate-300 hover:text-indigo-500 transition-colors text-sm shrink-0"
-                      disabled={refreshingId === m.id}>
-                      {refreshingId === m.id ? '…' : '↻'}
-                    </button>
+                  <div className="flex items-center gap-1.5 pl-6 mt-1.5">
+                    <span className="text-[10px] text-slate-400 w-32 shrink-0">Employment dates</span>
+                    <EmploymentDatesEditor
+                      startDate={m.startDate}
+                      endDate={m.endDate}
+                      onStartDateChange={val => updateRosterField(m.id, 'startDate', val)}
+                      onEndDateChange={val => updateRosterField(m.id, 'endDate', val)}
+                    />
                   </div>
-                  {roster.length > 1 ? (
-                    <button onClick={() => removeMember(m.id)} className="text-slate-300 hover:text-red-400 transition-colors text-xl leading-none text-center">×</button>
-                  ) : <span />}
-                </div>
-                <div className="flex items-center gap-1.5 pl-1">
-                  <span className="text-[10px] text-slate-400 w-32 shrink-0">
-                    Standard schedule{!m.standardWeeklyHours && <span className="text-amber-500"> — not set</span>}
-                  </span>
-                  {WEEKDAY_LABELS.map((label, di) => (
-                    <label key={di} className="flex flex-col items-center gap-0.5">
-                      <span className="text-[9px] text-slate-300">{label[0]}</span>
-                      <input type="number" min="0" step="0.5" placeholder="0"
-                        value={m.standardWeeklyHours?.[di] || ''}
-                        onChange={e => updateTemplate(m.id, di, parseFloat(e.target.value) || 0)}
-                        title={`${label} standard hours`}
-                        className="w-10 border border-slate-200 rounded px-1 py-0.5 text-center text-[11px] text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-300" />
-                    </label>
-                  ))}
-                  <button onClick={() => resetMemberToTemplate(m.id)}
-                    title="Clear scheduled hours from this week forward and go back to following this template"
-                    className="text-[10px] text-slate-400 hover:text-indigo-600 whitespace-nowrap ml-1">
-                    ↺ Reset to template
-                  </button>
-                </div>
-                {m.isManager && (
-                  <div className="flex items-center gap-1.5 pl-1">
-                    <span className="text-[10px] text-violet-500 w-32 shrink-0">
-                      Total schedule{!m.standardTotalWeeklyHours && <span className="text-amber-500"> — not set</span>}
-                    </span>
-                    {WEEKDAY_LABELS.map((label, di) => (
-                      <label key={di} className="flex flex-col items-center gap-0.5">
-                        <span className="text-[9px] text-slate-300">{label[0]}</span>
-                        <input type="number" min="0" step="0.5" placeholder="0"
-                          value={m.standardTotalWeeklyHours?.[di] || ''}
-                          onChange={e => updateTotalTemplate(m.id, di, parseFloat(e.target.value) || 0)}
-                          title={`${label} standard total hours (production + managerial)`}
-                          className="w-10 border border-violet-200 rounded px-1 py-0.5 text-center text-[11px] text-violet-600 bg-violet-50 focus:outline-none focus:ring-1 focus:ring-violet-300" />
-                      </label>
-                    ))}
-                    <span className="text-[10px] text-slate-400 ml-1">falls back here when no weekly total is entered</span>
-                  </div>
-                )}
-                <div className="flex items-center gap-1.5 pl-1">
-                  <span className="text-[10px] text-slate-400 w-32 shrink-0">Employment dates</span>
-                  <EmploymentDatesEditor
-                    startDate={m.startDate}
-                    endDate={m.endDate}
-                    onStartDateChange={val => updateRosterField(m.id, 'startDate', val)}
-                    onEndDateChange={val => updateRosterField(m.id, 'endDate', val)}
-                  />
-                </div>
-                <div className="flex items-start gap-1.5 pl-1">
-                  <span className="text-[10px] text-slate-400 w-32 shrink-0 pt-0.5">Schedule rules</span>
-                  <ScheduleRulesEditor
-                    rules={m.scheduleRules}
-                    standardWeeklyHours={m.standardWeeklyHours}
-                    onChange={rules => setRoster(roster.map(x => x.id === m.id ? { ...x, scheduleRules: rules } : x))}
-                  />
-                </div>
                 </div>
               ))}
             </div>
+            <p className="mt-3 text-xs text-slate-400">Pay rates &amp; titles come from Rippling upload.</p>
             <button onClick={addMember}
-              className="mt-3 text-xs px-3 py-1 border border-slate-200 rounded text-slate-500 hover:bg-slate-50 transition-colors">
-              + Add member
+              className="mt-4 text-xs px-3 py-1 border border-slate-200 rounded text-slate-500 hover:bg-slate-50 transition-colors">
+              + Add team member
             </button>
-            <p className="mt-3 text-xs text-slate-400">Pay rates &amp; titles come from Rippling upload. Ratio = hours per unit.</p>
-            <div className="mt-5">
-              <TimeOffCalendar
-                members={roster.map(m => toTimeOffMember(m.id, m.name, m))}
-                dailyMap={resinDailyHours} holidays={paidHolidays} canEdit
-                onChange={(id, next) => setRoster(roster.map(m => m.id === id ? { ...m, ...next } : m))} />
-            </div>
+            <ArchivedMembers members={allRoster.filter(m => m._removed)} onRestore={restoreMember} />
+            <p className="mt-3 text-xs text-slate-400"><strong>Ratio:</strong> hours per unit. e.g. 1.5 = 1 unit takes 1.5 hrs.</p>
           </div>
         )}
       </div>
@@ -859,14 +779,15 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
         <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
             <div>
-              <h3 className="text-sm font-semibold text-slate-700">
-                Hours — {thisWeekOffset === 0 ? 'this week' : thisWeekOffset === 1 ? 'next week' : `week +${thisWeekOffset}`}
-              </h3>
               <ProductionActualsStatus loading={resinActuals.loading} error={resinActuals.error} refreshedAt={resinActuals.refreshedAt} />
             </div>
-            <div className="flex items-center gap-2">
-              {hasRates && <span className="text-xs text-slate-400 mr-2">CPO shown when rate is set</span>}
-              <InputModeToggle mode={resinInputMode} onChange={setResinInputMode} unitLabel="Orders" />
+            <div className="flex items-center gap-2 flex-wrap justify-end">
+              <GridViewMenu options={['times', 'hours', 'output', 'mgrTotal', 'actuals', 'weekend']} />
+              <AddUnavailabilityButton people={productionRoster.map(m => ({ id: m.id, name: m.name }))} list={unavailability}
+                onChange={setUnavailability} defaultDate={thisWeekIsos.find(iso => iso >= todayIso) ?? thisWeekIsos[0]} />
+              <AddTimeOffButton disabled={userRole === 'viewer'} defaultDate={thisWeekIsos.find(iso => iso >= todayIso) ?? thisWeekIsos[0]}
+                people={productionRoster.map(m => ({ id: m.id, name: m.name, daysOff: m.daysOff, hoursOff: m.hoursOff }))}
+                onSave={saveTimeOff} />
               <button onClick={() => setThisWeekOffset(Math.max(0, thisWeekOffset - 1))} disabled={thisWeekOffset === 0}
                 className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">← Prev</button>
               <button onClick={() => setThisWeekOffset(Math.min(WEEKS - 1, thisWeekOffset + 1))} disabled={thisWeekOffset >= WEEKS - 1}
@@ -874,7 +795,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
             </div>
           </div>
           <div className="overflow-x-auto">
-            <table className="min-w-full text-xs">
+            <table className={`min-w-full text-xs ${view.weekend ? '' : HIDE_WEEKEND}`}>
               <thead>
                 <tr className="border-b border-slate-100">
                   <th className="sticky left-0 z-10 bg-white px-4 py-3 text-left text-[13px] font-medium text-slate-500 min-w-[190px]">Team member</th>
@@ -887,16 +808,34 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                 </tr>
               </thead>
               <tbody>
-                {productionRoster.map((m) => {
+                {(() => {
+                  const weekIso = isoMonday(thisWeekOffset);
+                  // Rows: scheduled this week, or (Availability on) available some day
+                  const isScheduledThisWeek = (m: ResinMember) =>
+                    [0,1,2,3,4,5,6].some(di => getDH(m.id, thisWeekOffset, di) > 0 || (!!m.isManager && getMgrTotalDH(m, thisWeekOffset, di) > 0));
+                  // Scheduled people first, then the rest (stable sort keeps drag order within each group)
+                  const visibleTeam = productionRoster.filter(m => {
+                    if (isScheduledThisWeek(m)) return true;
+                    if (!showAvail) return false;
+                    const employment = { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules, daysOff: m.daysOff, hoursOff: m.hoursOff };
+                    return thisWeekIsos.some((iso, di) => isWithinEmployment(di, employment) && !m.daysOff?.includes(iso) && availableOn(unavailability, m.id, iso, standardHoursOn(m, weekIso, di)));
+                  }).sort((a, b) => Number(isScheduledThisWeek(b)) - Number(isScheduledThisWeek(a)));
+                  if (visibleTeam.length === 0) return (
+                    <tr><td colSpan={9} className="px-4 py-6 text-center text-xs text-slate-400">
+                      No one is scheduled this week{showAvail ? ' or available' : ' — turn on Availability in View to see who’s available'}.
+                    </td></tr>
+                  );
+                  return visibleTeam.map((m) => {
                   const weekTotal = [0,1,2,3,4,5,6].reduce((s, di) => s + getDH(m.id, thisWeekOffset, di), 0);
+                  const weekTotalHrs = [0,1,2,3,4,5,6].reduce((s, di) => s + (m.isManager ? getMgrTotalDH(m, thisWeekOffset, di) : getDH(m.id, thisWeekOffset, di)), 0);
                   const units = m.ratio > 0 ? weekTotal / m.ratio : 0;
                   return (
-                    <tr key={m.id} className="border-b border-slate-100">
-                      <td className="sticky left-0 z-10 bg-white px-4 py-2 whitespace-nowrap">
-                        <PersonCell name={m.name}>
+                    <tr key={m.id} {...rowDrag.rowProps(m.id)} className={`border-b border-slate-100 ${rowDrag.isOver(m.id) ? 'bg-sky-50' : ''}`}>
+                      <td {...rowDrag.handleProps(m.id)} className={`sticky left-0 z-10 cursor-grab ${rowDrag.isOver(m.id) ? 'bg-sky-50' : 'bg-white'} px-4 py-2 whitespace-nowrap`}>
+                        <PersonCell name={m.name} grip>
                           <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
+                          {resinActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
                         </PersonCell>
-                        {resinActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
                       </td>
                       {[0,1,2,3,4,5,6].map(di => {
                         const dayVal = getDH(m.id, thisWeekOffset, di);
@@ -907,53 +846,56 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                         if (isDHDayOff(m.id, thisWeekOffset, di)) {
                           return <td key={di} className="p-1 align-top"><OffBlock sub={isHoliday ? 'Holiday' : 'Time off'} /></td>;
                         }
-                        const hoursOff = hoursOffOn(di, { weekIso: isoMonday(thisWeekOffset), hoursOff: m.hoursOff });
-                        const working = dayVal > 0 || (m.isManager && totalDayVal > 0);
+                        const hoursOff = hoursOffOn(di, { weekIso, hoursOff: m.hoursOff });
+                        const dayEntries = withDefaultUnavailable(withStandardPreferred(entriesOn(unavailability, m.id, thisWeekIsos[di]), m.id, m.name, thisWeekIsos[di], standardHoursOn(m, weekIso, di)), m.id, m.name, thisWeekIsos[di]);
+                        const avail = showAvail ? dayEntries : [];
+                        const unav = avail.some(e => e.kind === 'unavailable');
+                        const working = dayVal > 0 || (!!m.isManager && totalDayVal > 0);
+                        // With hours and output hidden, a working day's block would only say
+                        // "Scheduled" — skip it unless something else in it is turned on.
+                        const hideBlock = working && !view.hours && !view.output && !((!!m.isManager && view.mgrTotal) || view.actuals || avail.length > 0 || isHoliday || hoursOff > 0);
                         return (
-                          <td key={di} className="p-1 align-top">
-                            <ShiftBlock tone={working ? 'resin' : isHoliday ? 'holiday' : null} edited={isOverride && dayVal > 0}>
+                          <td key={di} className="group relative p-1 align-top">
+                            {view.times && <ScheduledTimeBox entries={dayEntries} hours={m.isManager ? totalDayVal : dayVal} tone="resin" />}
+                            {!hideBlock && (
+                            <ShiftBlock tone={working ? 'resin' : isHoliday ? 'holiday' : unav ? 'unavailable' : avail.length ? 'preferred' : null} edited={isOverride && dayVal > 0}>
                               <InlineNumber
-                                value={resinInputMode === 'output' ? (dayUnits ? round2(dayUnits) : '') : (dayVal || '')}
-                                step={resinInputMode === 'output' ? '0.1' : '0.5'}
+                                value={dayVal || ''}
+                                step="0.5"
                                 title={isHoliday
                                   ? (isOverride ? 'Paid holiday — worked hours, paid on top of guaranteed holiday pay' : 'Paid holiday — no production expected, staff still paid. Click to enter hours if someone worked.')
                                   : isOverride ? 'Changed for this day only — click to edit' : 'Following the standard weekly schedule — click to override just this day'}
-                                onChange={raw => setDH(m.id, thisWeekOffset, di, resinInputMode === 'output' ? hoursFromOutput(raw, m.ratio) : raw)}
+                                onChange={raw => setDH(m.id, thisWeekOffset, di, raw)}
                                 className="block w-full">
                                 {dayVal > 0 ? (
-                                  resinInputMode === 'output' ? (
-                                    <>
-                                      <span className="block text-xs font-semibold">{round2(dayUnits)} units</span>
-                                      <span className="block opacity-70">{round2(dayVal)}h</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <span className="block text-xs font-semibold">{round2(dayVal)}h</span>
-                                      <span className="block opacity-70">{round2(dayUnits)} units</span>
-                                    </>
-                                  )
+                                  <>
+                                    {view.hours && <span className="block text-xs font-semibold">{round2(dayVal)}h</span>}
+                                    {view.output && <span className={`block ${view.hours ? 'opacity-70' : 'text-xs font-semibold'}`}>{round2(dayUnits)} units</span>}
+                                  </>
                                 ) : (
-                                  <span className="block py-1">{isHoliday ? 'Holiday' : m.isManager && totalDayVal > 0 ? 'No production' : 'Available'}</span>
+                                  <span className="block py-1">{isHoliday ? 'Holiday' : m.isManager && totalDayVal > 0 ? (view.hours ? 'No production' : '') : unav ? 'Unavailable' : 'Available'}</span>
                                 )}
                               </InlineNumber>
-                              {m.isManager && (
+                              {m.isManager && view.mgrTotal && (
                                 <InlineNumber value={totalDayVal || ''} onChange={v => setMgrTotalDH(m.id, thisWeekOffset, di, v)} placeholder="total h"
                                   title="Total hours (production + managerial) — click to edit"
                                   className="mt-0.5 block text-[10px] font-medium text-violet-700">
                                   {totalDayVal > 0 ? `${round2(totalDayVal)}h total` : '+ total'}
                                 </InlineNumber>
                               )}
+                              {view.actuals && <ProductionActual value={actualFor(m.name, thisWeekDates[di])} loading={resinActuals.loading} unit="u"
+                                drill={{ name: m.name, start: thisWeekDates[di], end: thisWeekDates[di], department: RESIN_MT_DEPARTMENT }} />}
+                              <AvailabilityChips entries={avail} iso={thisWeekIsos[di]} scheduled={working} list={unavailability} onChange={setUnavailability} />
                               {isHoliday && <div className="text-[10px] text-amber-700">holiday pay</div>}
                               {hoursOff > 0 && <div className="text-[10px] font-semibold text-red-500" title="Hours off on the Days off calendar">{hoursOff}h off</div>}
                             </ShiftBlock>
-                            <ProductionActual value={actualFor(m.name, thisWeekDates[di])} loading={resinActuals.loading} unit="u"
-                              drill={{ name: m.name, start: thisWeekDates[di], end: thisWeekDates[di], department: RESIN_MT_DEPARTMENT }} />
+                            )}
                           </td>
                         );
                       })}
                       <td className="px-3 py-2 text-center">
                         <div className="font-medium text-violet-700">{Math.round(units * 100) / 100} units</div>
-                        <div className="text-slate-400 text-[10px]">{round2(weekTotal)}h</div>
+                        <div className="text-slate-400 text-[10px]">{round2(weekTotalHrs)}h</div>
                         <ProductionActual
                           value={sumActuals(thisWeekDates.map(iso => actualFor(m.name, iso)))}
                           loading={resinActuals.loading}
@@ -963,7 +905,8 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                       </td>
                     </tr>
                   );
-                })}
+                  });
+                })()}
                 <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
                   <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Planned total</td>
                   {[0,1,2,3,4,5,6].map(di => {

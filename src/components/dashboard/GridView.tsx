@@ -21,6 +21,9 @@ const LABELS: Record<GridViewKey | 'availability', { label: string; hint: string
   availability: { label: 'Availability',        hint: 'Available / unavailable, and people with no hours' },
 };
 
+// Day grids are name | Mon–Sun | week, so Sat/Sun are always the 7th and 8th cells
+export const HIDE_WEEKEND = '[&_tr>*:nth-child(7)]:hidden [&_tr>*:nth-child(8)]:hidden';
+
 const DEFAULT_VIEW: GridView = { times: true, hours: true, output: true, mgrTotal: true, actuals: true, checks: true, weekend: true };
 const VIEW_KEY = 'pf-grid-view';
 const VIEW_EVENT = 'pf-grid-view-change';

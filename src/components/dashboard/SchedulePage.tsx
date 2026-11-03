@@ -13,15 +13,15 @@ import { useKpiMetrics } from '@/hooks/useKpiMetrics';
 import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
 import { getMondayDate, isoMonday, isoMondayFromDate, getWeekLabel, getMonthKey, getISOWeekNumber } from '@/lib/weekDates';
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
-import { activeRuleForDay, distributeHours, resolveDayHours, resolveWeekHours, resolveWeekHoursBoth, isWithinEmployment, applyTimeOff, hoursOffOn, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
+import { distributeHours, resolveDayHours, resolveWeekHours, resolveWeekHoursBoth, isWithinEmployment, applyTimeOff, hoursOffOn, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
 import { BloomUpdateModal, BloomHistoryModal, type BloomUpdateRow } from './BloomUpdateModal';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { TimeOffCalendar, toTimeOffMember, type TimeOffPatch } from './TimeOffCalendar';
 import { AddTimeOffButton } from './AddTimeOff';
 import { MemberTierBadges, useIsFlexing } from './MemberTierBadge';
-import { AddUnavailabilityButton, AvailabilityChips, ScheduledTimeBox, entriesOn, isUnavailableAllDay, withStandardPreferred, withDefaultUnavailable, useShowAvailability, type UnavailabilityEntry } from './Unavailability';
-import { GridViewMenu, useGridView } from './GridView';
-import { ArchiveButton, ArchivedMembers, PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock, SHIFT_TONE, SHIFT_LABEL, type ShiftTone } from './ScheduleBlocks';
+import { AddUnavailabilityButton, AvailabilityChips, ScheduledTimeBox, entriesOn, isUnavailableAllDay, withStandardPreferred, withDefaultUnavailable, useShowAvailability, standardHoursOn, availableOn, type UnavailabilityEntry } from './Unavailability';
+import { GridViewMenu, useGridView, HIDE_WEEKEND } from './GridView';
+import { ArchiveButton, ArchivedMembers, PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock, SHIFT_TONE, SHIFT_LABEL, useDraggableOrder, useRowDrag, type ShiftTone } from './ScheduleBlocks';
 import { useVisibleManagerCPO } from '@/hooks/useVisibleManagerCPO';
 import {
   addDays, UTAH_HISTORICAL_INTAKE, GEORGIA_HISTORICAL_INTAKE,
@@ -1405,51 +1405,6 @@ function DeptHistoricalsTab({ department, location, teamMembers, teamActuals, on
 
 // ─── PreservationSection ───────────────────────────────────────────────────────
 
-// ─── useDraggableOrder ────────────────────────────────────────────────────────
-function useDraggableOrder<T extends { id: string }>(
-  items: T[],
-  onReorder: (newOrder: string[]) => void
-) {
-  const dragId = useRef<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
-  function handleDragStart(id: string) { dragId.current = id; }
-  function handleDragOver(e: React.DragEvent, id: string) { e.preventDefault(); setDragOverId(id); }
-  function handleDrop(targetId: string) {
-    if (!dragId.current || dragId.current === targetId) { setDragOverId(null); return; }
-    const ids = items.map(i => i.id);
-    const fromIdx = ids.indexOf(dragId.current);
-    const toIdx   = ids.indexOf(targetId);
-    if (fromIdx === -1 || toIdx === -1) { setDragOverId(null); return; }
-    const next = [...ids];
-    next.splice(fromIdx, 1);
-    next.splice(toIdx, 0, dragId.current);
-    dragId.current = null;
-    setDragOverId(null);
-    onReorder(next);
-  }
-  function handleDragEnd() { dragId.current = null; setDragOverId(null); }
-  return { dragOverId, handleDragStart, handleDragOver, handleDrop, handleDragEnd };
-}
-
-// Standard-schedule hours for one day (schedule rule first, then the plain
-// template), 0 outside the employment window — the basis for preferred hours.
-function standardHoursOn(r: { standardWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> } | undefined, weekIso: string, di: number): number {
-  const employment = { weekIso, startDate: r?.startDate, endDate: r?.endDate, rules: r?.scheduleRules, daysOff: r?.daysOff, hoursOff: r?.hoursOff };
-  if (!isWithinEmployment(di, employment)) return 0;
-  return activeRuleForDay(di, employment)?.hours[di] ?? r?.standardWeeklyHours?.[di] ?? 0;
-}
-
-// Available that day: has available time (entered, or standard-schedule
-// hours) and isn't marked unavailable all day.
-function availableOn(list: UnavailabilityEntry[] | undefined, personId: string, iso: string, standardHours: number) {
-  const es = entriesOn(list, personId, iso);
-  if (es.some(e => e.kind === 'unavailable' && e.allDay)) return false;
-  return standardHours > 0 || es.some(e => e.kind === 'preferred');
-}
-
-// Day grids are name | Mon–Sun | week, so Sat/Sun are always the 7th and 8th cells
-const HIDE_WEEKEND = '[&_tr>*:nth-child(7)]:hidden [&_tr>*:nth-child(8)]:hidden';
-
 // Sorts a team by the `_order` saved on its roster (set by dragging rows);
 // members without one keep their default position after the ordered ones.
 function sortByRosterOrder<T extends { id: string }>(list: T[], roster: Record<string, { _order?: number } | undefined>): T[] {
@@ -1457,28 +1412,6 @@ function sortByRosterOrder<T extends { id: string }>(list: T[], roster: Record<s
     .map((m, i) => ({ m, i, o: roster[m.id]?._order }))
     .sort((a, b) => (a.o ?? Infinity) - (b.o ?? Infinity) || a.i - b.i)
     .map(x => x.m);
-}
-
-// Drag-to-reorder for schedule grid rows. The row only becomes draggable
-// while the name cell is held, so clicks and inputs in day cells are unaffected.
-function useRowDrag<T extends { id: string }>(items: T[], onReorder: (newOrder: string[]) => void) {
-  const drag = useDraggableOrder(items, onReorder);
-  const [armed, setArmed] = useState<string | null>(null);
-  return {
-    rowProps: (id: string) => ({
-      draggable: armed === id,
-      onDragStart: (e: React.DragEvent) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', id); drag.handleDragStart(id); },
-      onDragOver:  (e: React.DragEvent) => drag.handleDragOver(e, id),
-      onDrop:      (e: React.DragEvent) => { e.preventDefault(); drag.handleDrop(id); },
-      onDragEnd:   () => { drag.handleDragEnd(); setArmed(null); },
-    }),
-    isOver: (id: string) => drag.dragOverId === id,
-    handleProps: (id: string) => ({
-      onMouseDown: () => setArmed(id),
-      onMouseUp:   () => setArmed(null),
-      title:       'Drag to reorder',
-    }),
-  };
 }
 
 // ─── PresRosterEditor ─────────────────────────────────────────────────────────
@@ -6933,7 +6866,11 @@ export function SchedulePage({
       {dept === 'resin' && (
         <>
         <DeptKpiBars dept="resin" location="Utah" kpiState={kpiMetrics} showCPO={hasAnyRates} />
-        <ResinPage canViewCPO={canViewCPO} canSeeManagerCPO={canSeeManagerCPO} />
+        <ResinPage canViewCPO={canViewCPO} canSeeManagerCPO={canSeeManagerCPO} userRole={userRole}
+          // Resin is Utah-only; share this page's list only while it holds Utah's.
+          {...(location === 'Utah' && settingsLocation === 'Utah'
+            ? { unavailability: settings.unavailability ?? [], onUnavailabilityChange: (n: UnavailabilityEntry[]) => update('unavailability', n) }
+            : {})} />
         </>
       )}
       {/* Utah-only, like Resin — shows regardless of the location toggle */}
