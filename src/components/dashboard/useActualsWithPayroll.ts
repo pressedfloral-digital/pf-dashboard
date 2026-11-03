@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { DEPARTMENT_MANAGERS, deptMatches, STANDARD_WEEKLY_HOURS } from '@/lib/managers';
+import { DEPARTMENT_MANAGERS, deptMatches, ptoAdjustmentDetail, STANDARD_WEEKLY_HOURS, type PtoAdjustment } from '@/lib/managers';
 import { samePayrollPerson } from '@/lib/payrollNames';
 
 export interface ActualRow {
@@ -11,6 +11,8 @@ export interface ActualRow {
   location:      string;
   actual_hours:  number;
   actual_orders: number;
+  /** Raw production-app count, before order-number adjustments (auto rows). */
+  synced_orders?: number | null;
   hours_source?: string;
   orders_source?: string;
 }
@@ -135,6 +137,11 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  // /api/actuals?type=team rows carry no location (the query is already
+  // scoped to one), but the shared manager-cost helpers filter by it — stamp
+  // it on so the PTO adjustment sees this location's rows.
+  const actualsWithLocation = useMemo(() => actuals.map(r => ({ ...r, location })), [actuals, location]);
+
   // A salaried manager's weekly pay, split between their home department(s)
   // and any department they actually clocked hours in that isn't one of
   // those — e.g. Bella DePrima (home: Fulfillment) picking up hours in
@@ -148,6 +155,7 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
     effectiveHourlyRate: number;
     awayCostByDept: Record<string, number>;
     homeRemainingPerDept: number;
+    pto: PtoAdjustment | null;
   } {
     const annualSalary = resolveRate(mgr.name, mgr.departments[0] ?? '', weekOf)?.annualSalary ?? mgr.annualSalary;
     const weeklySalary = annualSalary / 52;
@@ -165,8 +173,12 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
       totalAwayCost += cost;
     }
 
-    const homeRemainingPerDept = Math.max(0, weeklySalary - totalAwayCost) / mgr.departments.length;
-    return { weeklySalary, effectiveHourlyRate, awayCostByDept, homeRemainingPerDept };
+    // Weeks with recorded PTO charge the time off at their normal cost per
+    // order instead of full salary — see ptoAdjustmentDetail.
+    const fullHomeCost = Math.max(0, weeklySalary - totalAwayCost);
+    const pto = ptoAdjustmentDetail({ ...mgr, annualSalary }, location, weekOf, fullHomeCost, actualsWithLocation, normalizeActualsDept);
+    const homeRemainingPerDept = (pto?.adjustedCost ?? fullHomeCost) / mgr.departments.length;
+    return { weeklySalary, effectiveHourlyRate, awayCostByDept, homeRemainingPerDept, pto };
   }
 
   // Get weekly cost per dept including G&A and salary managers
@@ -251,6 +263,28 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
       : { cost: awayCostByDept[dept] ?? 0, isHome: false };
   }
 
+  // Salaried managers with recorded PTO this week whose cost was adjusted in
+  // `dept` (a home department), for Historicals' Week-total info bubble.
+  // fullCost/adjustedCost are this department's share.
+  function getPtoAdjustments(dept: string, weekOf: string): PtoAdjustment[] {
+    const applicableManagers: SalaryManager[] = [
+      ...salaryMgrs,
+      ...GEORGIA_MANAGER_HISTORY.filter(mgr => {
+        const after  = !mgr.from || weekOf >= mgr.from;
+        const before = !mgr.to   || weekOf <= mgr.to;
+        return after && before;
+      }),
+    ].filter(mgr => mgr.location === location && deptMatches(mgr.departments, dept));
+    const out: PtoAdjustment[] = [];
+    for (const mgr of applicableManagers) {
+      const { pto } = computeManagerCostSplit(mgr, weekOf);
+      if (!pto) continue;
+      const n = mgr.departments.length;
+      out.push({ ...pto, fullCost: pto.fullCost / n, adjustedCost: pto.adjustedCost / n });
+    }
+    return out;
+  }
+
   // Compute CPO for a week across all depts
   function getWeekCPO(weekOf: string, ordersByDept: Record<string, number>): { cpo: number | null; isActual: boolean } | null {
     const weekCosts = getWeekCosts(weekOf);
@@ -319,6 +353,7 @@ export function useActualsWithPayroll(location: 'Utah' | 'Georgia') {
     getWeekCosts,
     getWeekCPO,
     getManagerDeptCost,
+    getPtoAdjustments,
     loading,
     refresh: fetchAll,
   };

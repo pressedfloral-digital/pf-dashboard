@@ -1,0 +1,543 @@
+'use client';
+
+import { useState } from 'react';
+import { qtyDueBy, type PlanRow } from '@/lib/katanaPlan';
+import { addWeeks } from '@/lib/designInventory';
+import { HelpTip } from './HelpTip';
+
+// "Oct 26", or "Feb 1, 2027" when the date isn't in the current year.
+export function fmtWeek(iso: string): string {
+  const d = new Date(iso + 'T12:00:00');
+  const otherYear = d.getFullYear() !== new Date().getFullYear();
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(otherYear ? { year: 'numeric' } : {}) });
+}
+
+function fmtQty(n: number): string {
+  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+export function label(r: PlanRow): string {
+  return r.options ? `${r.name} — ${r.options}` : r.name;
+}
+
+// ── Order-by flag ────────────────────────────────────────────────────────────
+
+export type Urgency = 'late' | 'now' | 'soon' | 'later';
+
+export function urgency(orderBy: string | null, thisWeek: string): Urgency {
+  if (!orderBy) return 'later';
+  if (orderBy < thisWeek) return 'late';
+  if (orderBy === thisWeek) return 'now';
+  const twoWeeksOut = new Date(thisWeek + 'T12:00:00Z');
+  twoWeeksOut.setUTCDate(twoWeeksOut.getUTCDate() + 14);
+  return orderBy <= twoWeeksOut.toISOString().slice(0, 10) ? 'soon' : 'later';
+}
+
+const URGENCY_STYLE: Record<Urgency, string> = {
+  late:  'bg-rose-600 text-white',
+  now:   'bg-amber-500 text-white',
+  soon:  'bg-amber-100 text-amber-800',
+  later: 'bg-slate-100 text-slate-600',
+};
+
+// Whole weeks from this week to the week stock runs short (0 or less = this week).
+export function weeksUntilShort(needBy: string, thisWeek: string): number {
+  return Math.round((Date.parse(needBy + 'T12:00:00Z') - Date.parse(thisWeek + 'T12:00:00Z')) / (7 * 864e5));
+}
+
+// Late means the order-by date has passed — an order placed now arrives after
+// stock runs short. needBy (the week it runs short) says how soon: "short now"
+// means stock already doesn't cover this week; "short in 4 wks" means there's
+// still stock on hand, just not enough to last until a new order arrives.
+export function OrderByBadge({ orderBy, needBy, thisWeek }: { orderBy: string | null; needBy?: string | null; thisWeek: string }) {
+  if (!orderBy) return null;
+  const u = urgency(orderBy, thisWeek);
+  if (u === 'late') {
+    const wks = needBy ? weeksUntilShort(needBy, thisWeek) : null;
+    const shortNow = wks !== null && wks <= 0;
+    const text = wks === null ? `Late: was due ${fmtWeek(orderBy)}`
+      : shortNow ? 'Late · short now'
+      : `Late · short in ${wks} wk${wks === 1 ? '' : 's'}`;
+    const title = `Should have been ordered by ${fmtWeek(orderBy)}`
+      + (needBy ? (shortNow ? ' — stock doesn’t cover this week' : ` — stock runs short the week of ${fmtWeek(needBy)}`) : '');
+    return (
+      <span title={title} className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap ${shortNow ? 'bg-rose-800 text-white' : URGENCY_STYLE.late}`}>
+        {text}
+      </span>
+    );
+  }
+  const text = u === 'now' ? 'Order this week' : `Order by ${fmtWeek(orderBy)}`;
+  return <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap ${URGENCY_STYLE[u]}`}>{text}</span>;
+}
+
+// ── PO quantities ────────────────────────────────────────────────────────────
+
+// Katana POs are in the purchase unit (rolls of thread), stock is in the
+// stock unit (yards) — round up to whole purchase units.
+// ── Coverage beyond the schedule ─────────────────────────────────────────────
+// Items stock covers through the end of the schedule have no shortfall to
+// date an order from, so project forward at their average weekly use over
+// the schedule: how long the leftover lasts, and when to reorder given the
+// supplier's lead time. These are estimates (shown with ~).
+
+const FAR_OFF_WEEKS = 104;
+
+export interface Coverage {
+  weeklyUse:    number;          // average per schedule week
+  coveredUntil: string | null;   // last Monday stock lasts (null = not used by the schedule)
+  orderBy:      string | null;   // Monday to order by so it arrives before it runs out
+  farOff:       boolean;         // lasts more than two years at this rate
+}
+
+export function projectCoverage(r: PlanRow, through: string, scheduleWeeks: number): Coverage {
+  const weeklyUse = scheduleWeeks > 0 ? r.totalNeeded / scheduleWeeks : 0;
+  if (weeklyUse <= 0) return { weeklyUse: 0, coveredUntil: null, orderBy: null, farOff: false };
+  const leftover = Math.max(0, r.inStock + r.onOrder - r.totalNeeded);
+  const extraWeeks = Math.floor(leftover / weeklyUse);
+  if (extraWeeks > FAR_OFF_WEEKS) return { weeklyUse, coveredUntil: null, orderBy: null, farOff: true };
+  const coveredUntil = addWeeks(through, extraWeeks);
+  return { weeklyUse, coveredUntil, orderBy: addWeeks(coveredUntil, 1 - r.leadWeeks), farOff: false };
+}
+
+function NextOrderBadge({ orderBy, thisWeek }: { orderBy: string | null; thisWeek: string }) {
+  if (!orderBy) return <span className="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-100 text-emerald-800">Covered well ahead</span>;
+  const u = urgency(orderBy, thisWeek);
+  const style = u === 'late' || u === 'now' ? 'bg-amber-500 text-white' : u === 'soon' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800';
+  const text = u === 'late' || u === 'now' ? 'Next order: this week (est.)' : `Next order by ~${fmtWeek(orderBy)}`;
+  return <span title="Estimated from average weekly use in the current schedule" className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap ${style}`}>{text}</span>;
+}
+
+// First week the schedule's cumulative use outruns `available`, or null if it lasts through the plan.
+function runsOutWeek(r: PlanRow, available: number): string | null {
+  let used = 0;
+  for (const wk of Object.keys(r.needed).sort()) {
+    used += r.needed[wk];
+    if (used > available + 1e-9) return wk;
+  }
+  return null;
+}
+
+// Stock unit label for the context line ("" for each/pcs).
+function unitSuffix(r: PlanRow): string {
+  return r.uom && r.uom !== 'each' && r.uom !== 'pcs' ? ` ${r.uom}` : '';
+}
+
+function poUnit(r: PlanRow): string {
+  return r.purchaseUom && r.purchaseConversion ? r.purchaseUom : (r.uom || 'each');
+}
+function toPoQty(r: PlanRow, stockQty: number): number {
+  return Math.ceil(r.purchaseUom && r.purchaseConversion ? stockQty / r.purchaseConversion : stockQty);
+}
+function fromPoQty(r: PlanRow, poQty: number): number {
+  return r.purchaseUom && r.purchaseConversion ? poQty * r.purchaseConversion : poQty;
+}
+
+export type EditAction = 'setQty' | 'remove' | 'reset';
+
+// ── Combining upcoming orders ────────────────────────────────────────────────
+// How far ahead one PO reaches: everything whose order-by date falls on or
+// before the cutoff is ticked, at the quantity short through then — so items
+// not due yet can ride along with what has to go out this week.
+
+type Horizon = 'now' | 'week' | 'month' | 'all';
+const HORIZON_WEEKS: Record<Exclude<Horizon, 'all'>, number> = { now: 0, week: 1, month: 4 };
+
+function horizonCutoff(h: Horizon, thisWeek: string): string | null {
+  return h === 'all' ? null : addWeeks(thisWeek, HORIZON_WEEKS[h]);
+}
+
+// Stock-unit quantity a PO placed now covers for `h` (everything for 'all').
+function qtyForHorizon(r: PlanRow, h: Horizon, thisWeek: string): number {
+  const cutoff = horizonCutoff(h, thisWeek);
+  return cutoff === null ? r.totalToOrder : qtyDueBy(r.toOrder, r.leadWeeks, cutoff);
+}
+
+interface Created { orderNo: string; total: number }
+
+export default function SupplierPoCard({ supplier, supplierId, rows: allRows, location, weeks, thisWeek, canOrder, through, thruShort, onEdit }: {
+  supplier:   string;
+  supplierId: number | null;
+  rows:       PlanRow[];        // every item from this supplier the schedule uses
+  location:   string;
+  weeks:      string[];
+  thisWeek:   string;
+  canOrder:   boolean;
+  through:    string;   // last Monday of the schedule
+  thruShort:  string;   // "YE" / "Jan 4"
+  // Saves a hand edit (qty in stock units); omitted when edits can't be saved.
+  onEdit?:    (variantId: number, action: EditAction, qty?: number) => Promise<void>;
+}) {
+  // Items edited by hand stay in the list even at 0, so the edit can be seen and reset.
+  const rows = allRows.filter(r => !r.removed && (r.totalToOrder > 0 || r.computedToOrder !== undefined));
+  const removed = allRows.filter(r => r.removed);
+  // Covered items with their projected reorder dates, soonest first.
+  const scheduleWeeks = Math.max(1, weeksUntilShort(through, thisWeek) + 1);
+  const covered = allRows
+    .filter(r => !r.removed && !rows.includes(r))
+    .map(r => ({ r, c: projectCoverage(r, through, scheduleWeeks) }))
+    .sort((a, b) => (a.c.orderBy ?? '~') < (b.c.orderBy ?? '~') ? -1 : (a.c.orderBy ?? '~') > (b.c.orderBy ?? '~') ? 1 : 0);
+  const nextCovered = covered.find(x => x.c.orderBy) ?? null;
+  const [showCovered, setShowCovered] = useState(false);
+  const [showRemoved, setShowRemoved] = useState(false);
+  const [editing, setEditing] = useState<Record<number, string>>({});   // variantId → draft qty (purchase units)
+  const [saving, setSaving] = useState<number | null>(null);
+  const canEdit = !!onEdit && canOrder;
+
+  async function save(r: PlanRow, action: EditAction, qty?: number) {
+    if (!onEdit) return;
+    setSaving(r.variantId);
+    setError(null);
+    try {
+      await onEdit(r.variantId, action, qty);
+      setEditing(e => { const { [r.variantId]: _, ...rest } = e; return rest; });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  // Pre-select what's due now (order-by this week or past) at the due-now
+  // quantity; later items start unticked at their full year-end quantity.
+  // Picking a wider horizon ticks and sizes everything due within it.
+  const [horizon, setHorizon] = useState<Horizon>('now');
+  const selectionFor = (h: Horizon) => Object.fromEntries(rows.map(r => [r.variantId, qtyForHorizon(r, h, thisWeek) > 0]));
+  const qtyFor = (h: Horizon) => Object.fromEntries(rows.map(r => {
+    const q = qtyForHorizon(r, h, thisWeek);
+    return [r.variantId, String(toPoQty(r, q > 0 ? q : r.totalToOrder))];
+  }));
+  const [selected, setSelected] = useState<Record<number, boolean>>(() => selectionFor('now'));
+  const [qty, setQty] = useState<Record<number, string>>(() => qtyFor('now'));
+  function chooseHorizon(h: Horizon) {
+    setHorizon(h);
+    setSelected(selectionFor(h));
+    setQty(qtyFor(h));
+  }
+  const horizonCount = (h: Horizon) => rows.filter(r => qtyForHorizon(r, h, thisWeek) > 0).length;
+  // An option that ticks the same items at the same PO quantities as "Due
+  // now" adds nothing (more yards of thread can still be one roll), so it's
+  // greyed out rather than hidden.
+  const nowSelection = selectionFor('now'), nowQty = qtyFor('now');
+  const addsNothing = (h: Horizon) => {
+    if (h === 'now') return false;
+    const sel = selectionFor(h), q = qtyFor(h);
+    return rows.every(r => sel[r.variantId] === nowSelection[r.variantId] && (!sel[r.variantId] || q[r.variantId] === nowQty[r.variantId]));
+  };
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<Created | null>(null);
+
+  const chosen = rows.filter(r => selected[r.variantId] && Number(qty[r.variantId]) > 0);
+  const soonest = rows.filter(r => r.orderBy).sort((a, b) => (a.orderBy! < b.orderBy! ? -1 : a.orderBy! > b.orderBy! ? 1 : 0))[0];
+  const earliest = soonest?.orderBy ?? null;
+  const leadWeeks = allRows[0]?.leadWeeks;
+
+  async function createPo() {
+    if (!supplierId || !chosen.length) return;
+    const needBy = chosen.map(r => r.firstShortWeek).filter(Boolean).sort()[0] ?? thisWeek;
+    const lines = chosen.map(r => `• ${qty[r.variantId]} ${poUnit(r)} — ${label(r)}`).join('\n');
+    if (!window.confirm(
+      `Create a purchase order in Katana?\n\n${supplier} · ${location}\nNeeded by the week of ${fmtWeek(needBy)}\n\n${lines}\n\n` +
+      `It's created as Not Received and isn't sent to the supplier. Check the prices in Katana before you send it.`,
+    )) return;
+
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/katana/purchase-orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          location, supplierId, needBy,
+          rows: chosen.map(r => ({ variantId: r.variantId, quantity: Number(qty[r.variantId]) })),
+        }),
+      });
+      const json = await res.json().catch(() => ({ error: `Server returned ${res.status}` }));
+      if (!res.ok) throw new Error(json.error ?? `Server returned ${res.status}`);
+      setCreated({ orderNo: json.orderNo, total: json.total });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white flex flex-col">
+      <div className="px-4 py-2 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold text-slate-700">{supplier}</div>
+          <div className="text-[11px] text-slate-400">
+            {leadWeeks}-week lead time · {rows.length ? `${rows.length} to order` : 'nothing to order'}
+            {covered.length > 0 && <> · {covered.length} covered by stock</>}
+            {removed.length > 0 && <> · {removed.length} deleted</>}
+            {!rows.length && nextCovered?.c.coveredUntil && <> · covered until ~{fmtWeek(nextCovered.c.coveredUntil)}</>}
+          </div>
+        </div>
+        {rows.length
+          ? <OrderByBadge orderBy={earliest} needBy={soonest?.firstShortWeek} thisWeek={thisWeek} />
+          : <NextOrderBadge orderBy={nextCovered?.c.orderBy ?? null} thisWeek={thisWeek} />}
+      </div>
+
+      {rows.length > 0 && canOrder && supplierId && !created && (
+        <div className="px-4 py-2 border-b border-slate-100 text-xs">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-slate-500 mr-1">Combine into one PO:</span>
+            {([
+              ['now',   'Due now'],
+              ['week',  '+ next week'],
+              ['month', '+ next 4 weeks'],
+              ['all',   `Everything thru ${thruShort}`],
+            ] as const).map(([h, name]) => (
+              <button
+                key={h}
+                onClick={() => chooseHorizon(h)}
+                disabled={addsNothing(h)}
+                title={addsNothing(h) ? 'Nothing else comes due by then' : undefined}
+                className={`px-2 py-0.5 rounded-full font-medium disabled:opacity-40 disabled:cursor-not-allowed ${horizon === h ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+              >
+                {name} ({horizonCount(h)})
+              </button>
+            ))}
+          </div>
+          {horizon !== 'now' && (
+            <div className="mt-1 text-[11px] text-slate-500">
+              {horizon === 'all'
+                ? <>Ticked every item at its full quantity through {thruShort}.</>
+                : <>Ticked every item with an order-by date through {fmtWeek(horizonCutoff(horizon, thisWeek)!)}, sized to cover its shortfall through then.</>}
+              {' '}You can still untick items or change quantities below.
+            </div>
+          )}
+        </div>
+      )}
+
+      {rows.length > 0 && <table className="min-w-full text-xs">
+        <thead className="text-slate-400">
+          <tr>
+            <th className="w-6 pl-4 py-1.5" />
+            <th className="px-2 py-1.5 text-left font-medium">Component</th>
+            <th className="px-2 py-1.5 text-left font-medium"><HelpTip id="inv.col.orderBy">Order by</HelpTip></th>
+            <th className="px-4 py-1.5 text-right font-medium"><HelpTip id="inv.col.poQty">PO qty</HelpTip></th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-50">
+          {rows.map(r => (
+            <tr key={r.variantId} className="align-top">
+              <td className="pl-4 py-1.5">
+                <input
+                  type="checkbox"
+                  aria-label={`Include ${label(r)}`}
+                  checked={!!selected[r.variantId]}
+                  disabled={!!created}
+                  onChange={e => setSelected(s => ({ ...s, [r.variantId]: e.target.checked }))}
+                />
+              </td>
+              <td className="px-2 py-1.5 text-slate-700">
+                {label(r)}
+                {r.sku && <span className="text-slate-400"> · {r.sku}</span>}
+                <StockContext r={r} thruShort={thruShort} />
+                <div className="text-[11px] text-slate-400">
+                  Short by week: {weeks.filter(w => r.toOrder[w]).map(w => `${fmtWeek(w)} ${fmtQty(r.toOrder[w])}`).join(' · ') || 'nothing'}
+                  {r.orderNowQty > 0 && r.orderNowQty < r.totalToOrder && <> · {fmtQty(r.orderNowQty)} due now</>}
+                </div>
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+                  {editing[r.variantId] !== undefined ? (
+                    <>
+                      <span className="text-slate-500">To order:</span>
+                      <input
+                        type="number" min={0} step="any" autoFocus
+                        value={editing[r.variantId]}
+                        onChange={e => setEditing(d => ({ ...d, [r.variantId]: e.target.value }))}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && editing[r.variantId] !== '') save(r, 'setQty', fromPoQty(r, Number(editing[r.variantId])));
+                          if (e.key === 'Escape') setEditing(({ [r.variantId]: _, ...rest }) => rest);
+                        }}
+                        className="w-16 rounded border border-indigo-300 px-1.5 py-0.5 text-right text-slate-800"
+                      />
+                      <span className="text-slate-400">{poUnit(r)}</span>
+                      <button
+                        onClick={() => save(r, 'setQty', fromPoQty(r, Number(editing[r.variantId])))}
+                        disabled={saving === r.variantId || editing[r.variantId] === '' || Number(editing[r.variantId]) < 0}
+                        className="rounded bg-indigo-600 px-2 py-0.5 font-medium text-white disabled:bg-slate-200"
+                      >
+                        {saving === r.variantId ? 'Saving…' : 'Save'}
+                      </button>
+                      <button onClick={() => setEditing(({ [r.variantId]: _, ...rest }) => rest)} className="text-slate-500 underline">Cancel</button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-slate-600">
+                        To order: <span className="font-semibold">{fmtQty(toPoQty(r, r.totalToOrder))} {poUnit(r)}</span>
+                      </span>
+                      {r.computedToOrder !== undefined && (
+                        <span className="rounded-full bg-indigo-100 px-1.5 py-0.5 font-semibold text-indigo-800" title={r.edit ? `Edited by ${r.edit.by}, ${new Date(r.edit.at).toLocaleDateString()}` : undefined}>
+                          edited (was {fmtQty(toPoQty(r, r.computedToOrder))})
+                        </span>
+                      )}
+                      {canEdit && !created && (
+                        <button onClick={() => setEditing(d => ({ ...d, [r.variantId]: String(toPoQty(r, r.totalToOrder)) }))} className="text-indigo-600 underline">
+                          Edit
+                        </button>
+                      )}
+                      {canEdit && !created && r.computedToOrder !== undefined && (
+                        <button onClick={() => save(r, 'reset')} disabled={saving === r.variantId} className="text-slate-500 underline">Reset</button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </td>
+              <td className="px-2 py-1.5 whitespace-nowrap">
+                <OrderByBadge orderBy={r.orderBy} needBy={r.firstShortWeek} thisWeek={thisWeek} />
+                {r.firstShortWeek && <div className="text-[10px] text-slate-400 mt-0.5">need by {fmtWeek(r.firstShortWeek)}</div>}
+              </td>
+              <td className="px-4 py-1.5 text-right whitespace-nowrap">
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={qty[r.variantId] ?? ''}
+                  disabled={!!created}
+                  onChange={e => setQty(q => ({ ...q, [r.variantId]: e.target.value }))}
+                  className="w-16 rounded border border-slate-200 px-1.5 py-0.5 text-right text-slate-800"
+                />
+                <span className="ml-1 text-slate-400">{poUnit(r)}</span>
+                {canEdit && !created && (
+                  <button
+                    onClick={() => save(r, 'remove')}
+                    disabled={saving === r.variantId}
+                    title="Delete from the order list"
+                    aria-label={`Delete ${label(r)} from the order list`}
+                    className="ml-2 px-1 text-base leading-none text-slate-300 hover:text-rose-600"
+                  >
+                    ×
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>}
+
+      {removed.length > 0 && (
+        <div className="px-4 py-2 border-t border-slate-100 text-xs">
+          <button onClick={() => setShowRemoved(s => !s)} className="text-slate-500 hover:text-slate-700">
+            {showRemoved ? '▾' : '▸'} {removed.length} item{removed.length === 1 ? '' : 's'} deleted from the list
+          </button>
+          {error && !rows.length && <div className="mt-1 text-rose-600">{error}</div>}
+          {showRemoved && (
+            <ul className="mt-1 divide-y divide-slate-50">
+              {removed.map(r => (
+                <li key={r.variantId} className="flex flex-wrap items-center gap-x-2 py-1">
+                  <span className="text-slate-500 line-through">{label(r)}</span>
+                  {r.edit && <span className="text-slate-400">· {r.edit.by}, {new Date(r.edit.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>}
+                  {canEdit && (
+                    <button onClick={() => save(r, 'reset')} disabled={saving === r.variantId} className="ml-auto text-indigo-600 underline">
+                      {saving === r.variantId ? 'Restoring…' : 'Restore'}
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {covered.length > 0 && (
+        <div className="px-4 py-2 border-t border-slate-100 text-xs">
+          <button onClick={() => setShowCovered(s => !s)} className="text-slate-500 hover:text-slate-700">
+            {showCovered ? '▾' : '▸'} {covered.length} item{covered.length === 1 ? '' : 's'} covered by stock
+            {nextCovered?.c.orderBy && <span className="text-slate-400"> · next order by ~{fmtWeek(nextCovered.c.orderBy)}</span>}
+          </button>
+          {showCovered && (
+            <>
+              <table className="mt-1 min-w-full">
+                <thead className="text-slate-400">
+                  <tr>
+                    <th className="py-1 text-left font-medium">Component</th>
+                    <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.inStock">In stock</HelpTip></th>
+                    <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.onOrder">On order</HelpTip></th>
+                    <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.usePerWk">Use / wk</HelpTip></th>
+                    <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.coveredUntil">Covered until</HelpTip></th>
+                    <th className="pl-2 py-1 text-right font-medium"><HelpTip id="inv.col.orderBy">Order by</HelpTip></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {covered.map(({ r, c }) => (
+                    <tr key={r.variantId}>
+                      <td className="py-1 text-slate-700">{label(r)}</td>
+                      <td className="px-2 py-1 text-right text-slate-600">{fmtQty(r.inStock)}{unitSuffix(r)}</td>
+                      <td className="px-2 py-1 text-right text-slate-500">{r.onOrder ? fmtQty(r.onOrder) : ''}</td>
+                      <td className="px-2 py-1 text-right text-slate-500">{c.weeklyUse ? fmtQty(Math.round(c.weeklyUse * 10) / 10) : '—'}</td>
+                      <td className="px-2 py-1 text-right text-slate-600 whitespace-nowrap">
+                        {c.coveredUntil ? `~${fmtWeek(c.coveredUntil)}` : c.farOff ? '2+ yrs' : 'not used'}
+                      </td>
+                      <td className="pl-2 py-1 text-right whitespace-nowrap">
+                        {c.orderBy
+                          ? <span className={`font-medium ${urgency(c.orderBy, thisWeek) === 'later' ? 'text-emerald-700' : 'text-amber-700'}`}>
+                              {c.orderBy <= thisWeek ? 'this week' : `~${fmtWeek(c.orderBy)}`}
+                            </span>
+                          : <span className="text-slate-400">—</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="mt-1 text-[10px] text-slate-400">
+                Estimated from each item&apos;s average use per week in the schedule (through {thruShort}), using {supplier}&apos;s lead time.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
+      {rows.length > 0 && <div className="mt-auto px-4 py-2 border-t border-slate-100 flex flex-wrap items-center justify-end gap-2 text-xs">
+        {created ? (
+          <span className="text-emerald-700 font-medium">
+            Created {created.orderNo} in Katana ({created.total.toLocaleString(undefined, { style: 'currency', currency: 'USD' })}).
+            It&apos;s in Purchasing as Not Received and hasn&apos;t been sent.
+          </span>
+        ) : (
+          <>
+            {error && <span className="text-rose-600 mr-auto">{error}</span>}
+            {!supplierId && <span className="text-slate-400 mr-auto">Set a default supplier in Katana to create a PO.</span>}
+            {supplierId && !canOrder && <span className="text-slate-400 mr-auto">Only admins and {location} managers can create POs.</span>}
+            <button
+              onClick={createPo}
+              disabled={busy || !supplierId || !canOrder || chosen.length === 0}
+              className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-medium hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400"
+            >
+              {busy ? 'Creating…' : `Create PO in Katana${chosen.length ? ` (${chosen.length})` : ''}`}
+            </button>
+          </>
+        )}
+      </div>}
+    </div>
+  );
+}
+
+// What we have vs. what the schedule uses, for context next to a PO line:
+// stock, on order, total need, how far short, and when it runs out — on
+// stock alone, and with open orders counted (their arrival dates aren't known).
+function StockContext({ r, thruShort }: { r: PlanRow; thruShort: string }) {
+  const u = unitSuffix(r);
+  const shortBy = Math.max(0, r.totalNeeded - r.inStock - r.onOrder);
+  const outOnHand = runsOutWeek(r, r.inStock);
+  const outWithOrders = r.onOrder > 0 ? runsOutWeek(r, r.inStock + r.onOrder) : outOnHand;
+  const when = (wk: string | null) => wk ? `wk of ${fmtWeek(wk)}` : `lasts thru ${thruShort}`;
+  return (
+    <div className="mt-0.5 rounded bg-slate-50 px-2 py-1 text-[11px] text-slate-600">
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+        <span title={r.negativeStock !== null ? `Katana shows ${fmtQty(r.negativeStock)}, counted as 0` : undefined}>
+          In stock <span className={`font-semibold ${r.negativeStock !== null ? 'text-amber-600' : 'text-slate-800'}`}>{fmtQty(r.inStock)}{r.negativeStock !== null ? '*' : ''}</span>{u}
+        </span>
+        <span>On order <span className="font-semibold text-slate-800">{fmtQty(r.onOrder)}</span>{u}</span>
+        <span>Needed thru {thruShort} <span className="font-semibold text-slate-800">{fmtQty(r.totalNeeded)}</span>{u}</span>
+        <span>Short <span className="font-semibold text-rose-700">{fmtQty(shortBy)}</span>{u}</span>
+      </div>
+      <div className="mt-0.5">
+        Runs out: <span className="font-semibold text-slate-800">{when(outOnHand)}</span> on stock alone
+        {r.onOrder > 0 && <>, <span className="font-semibold text-slate-800">{when(outWithOrders)}</span> once the {fmtQty(r.onOrder)}{u} on order arrives</>}
+      </div>
+    </div>
+  );
+}

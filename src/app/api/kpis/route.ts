@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
-import { DEPARTMENT_MANAGERS, isActiveGm, getSalaryMgrCostSplitForWeeks, getGmCostForWeeks } from '@/lib/managers';
+import { DEPARTMENT_MANAGERS, isActiveGm, getSalaryMgrCostSplitForWeeks, getGmCostForWeeks, PTO_RATE_TRAILING_WEEKS, type WeekPtoAdjustment } from '@/lib/managers';
 import { getWeekMondays } from '@/lib/weekDates';
 import { projectDept, buildManagerHomeDept, type DesignRosterEntry, type PresRosterEntry, type HoursMap, type DailyHoursMap } from '@/lib/scheduleProjection';
 import { fetchAllRows } from '@/lib/fetchAllRows';
@@ -50,6 +50,52 @@ interface ScheduleSettingRow {
   value:    unknown;
 }
 
+// Pre-dashboard weekly cost + production per dept, backfilled from the Ops
+// Google Sheet (see the cpo_sheet_backfill migration). Already includes
+// salaried managers, so salary injection is skipped for weeks it's used.
+interface SheetBackfillRow {
+  week_of:    string;
+  location:   string;
+  department: string;
+  labor_cost: number;
+  production: number | null;
+  // true for pre-W/C 2025-08-11 rows, whose cost is estimated from sheet
+  // hours × pay rates rather than real payroll (see the
+  // cpo_estimate_backfill migration). Absent until that migration runs.
+  is_estimate?: boolean;
+}
+
+// Pre-dashboard weekly manager-free hours + production per dept, backfilled
+// from each location's master-calculations Google Sheet (see the
+// ratio_sheet_backfill migration) — feeds the ratio only.
+interface RatioSheetBackfillRow {
+  week_of:          string;
+  location:         string;
+  department:       string;
+  ratio_hours:      number;
+  ratio_production: number;
+}
+
+// What buildWindowResult needs to fold sheet history into a window: the
+// sheet rows plus every `${location}|${week_of}` the dashboard has its own
+// labor or actuals rows for — a sheet week is only ever used where that
+// set has no entry, so dashboard-tracked data always wins.
+interface SheetBackfill {
+  rows:          SheetBackfillRow[];
+  ratioRows:     RatioSheetBackfillRow[];
+  realWeekKeys:  Set<string>;
+}
+
+// Weeks of a window, per location, that came from a sheet backfill.
+interface SheetBackfillCount {
+  totalWeeks: number;
+  utah:       number;
+  georgia:    number;
+  // Of those, weeks whose cost is an estimate (SheetBackfillRow.is_estimate).
+  // CPO only; absent when none are.
+  estimated?: { utah: number; georgia: number };
+}
+
 export interface KpiMetrics {
   hours:        number;
   production:   number;
@@ -73,6 +119,11 @@ export interface KpiMetrics {
   cpoWithBonus:   number | null; // (laborCost + bonusCost) / production
   cpoWithGMBonus: number | null; // (laborCost + bonusCost + GM share) / production — combined only
   hasData:      boolean;
+  // A salaried manager's recorded PTO lowered this dept's laborCost (see
+  // ptoAdjustmentDetail): the adjustments, plus CPO at their full pay. It
+  // reveals manager pay, so GET strips it for anyone but admins and that
+  // location's GM — see stripPtoForViewer.
+  pto?: { adjustments: WeekPtoAdjustment[]; fullCpo: number | null };
 }
 
 export interface PeriodKpis {
@@ -99,6 +150,14 @@ export interface WindowResult {
   // window instead of a future one. Weekly/monthly/quarterly series only
   // (see buildWindowResult's plannedCtx param); undefined for MTD/QTD/YTD.
   planned?:    PlannedResult;
+  // How many of this window's weeks came from the Ops Google Sheet backfill
+  // (cpo_sheet_backfill) rather than dashboard-tracked payroll/production,
+  // per location, out of `totalWeeks`. Weekly/monthly/quarterly series only;
+  // absent when no week in the window used the sheet.
+  sheetBackfill?: SheetBackfillCount;
+  // Same, for the ratio's hours/production (ratio_sheet_backfill — the
+  // per-location master-calculations sheets, which reach back further).
+  ratioSheetBackfill?: SheetBackfillCount;
 }
 
 export interface PlannedResult {
@@ -247,7 +306,9 @@ function computePeriodKpis(
   location:     string,
   weekOfs:      string[],
   managerNames: Set<string>,  // `${location}|${dept}|${name lowercased}` — see buildManagerNameSet
-  bonusByDept?: Record<string, number>   // dept -> $ — Monthly-series callers only, see buildWindowResult
+  bonusByDept?: Record<string, number>,  // dept -> $ — Monthly-series callers only, see buildWindowResult
+  sheetRows:    SheetBackfillRow[] = [],  // this location's sheet rows for weeks with no dashboard data — see sheetRowsFor
+  sheetRatioRows: RatioSheetBackfillRow[] = []  // same, for the ratio
 ): PeriodKpis {
   const PROD_DEPTS = ['Design', 'Preservation', 'Fulfillment'] as const;
   const ALL_DEPTS  = [...PROD_DEPTS, 'G&A', 'Resin'] as const;
@@ -268,11 +329,15 @@ function computePeriodKpis(
   // Inject salary manager costs (never in weekly_labor_cost). Hours-aware:
   // a manager's pay follows them to any department they actually clocked
   // hours in that week that isn't their home department — see
-  // getSalaryMgrCostSplitForWeeks.
+  // getSalaryMgrCostSplitForWeeks. Sheet-backfilled weeks are skipped — the
+  // sheet's cost already includes salaried managers.
+  const sheetWeeks = new Set(sheetRows.map(r => r.week_of));
+  const ptoAdjustments: WeekPtoAdjustment[] = [];
   const mgrCostByDept = getSalaryMgrCostSplitForWeeks(
-    SALARY_MANAGERS, location, weekOfs,
+    SALARY_MANAGERS, location, weekOfs.filter(w => !sheetWeeks.has(w)),
     actualRows.filter(r => r.location === location),
-    normDept
+    normDept,
+    ptoAdjustments
   );
   for (const [dept, mgrCost] of Object.entries(mgrCostByDept)) {
     if (mgrCost > 0) laborByDept[dept] = (laborByDept[dept] ?? 0) + mgrCost;
@@ -298,6 +363,21 @@ function computePeriodKpis(
     }
   }
 
+  // Sheet backfill: the cost sheet has cost + production but no hours, so it
+  // stays out of hours and the ratio. The ratio sheet's hours/production are
+  // already manager-free, so they feed only the ratio sums — not hours/
+  // production, which would double-count the cost sheet's production.
+  for (const row of sheetRows) {
+    const dept = normDept(row.department);
+    laborByDept[dept] = (laborByDept[dept] ?? 0) + row.labor_cost;
+    if (row.production != null) prodByDept[dept] = (prodByDept[dept] ?? 0) + row.production;
+  }
+  for (const row of sheetRatioRows) {
+    const dept = normDept(row.department);
+    ratioHoursByDept[dept] = (ratioHoursByDept[dept] ?? 0) + row.ratio_hours;
+    ratioProdByDept[dept]  = (ratioProdByDept[dept]  ?? 0) + row.ratio_production;
+  }
+
   function makeMetrics(dept: string, overrideProduction?: number): KpiMetrics {
     const hours          = hoursByDept[dept] ?? 0;
     const production     = overrideProduction ?? (prodByDept[dept] ?? 0);
@@ -305,7 +385,12 @@ function computePeriodKpis(
     const bonusCost       = bonusByDept?.[dept] ?? 0;
     const ratioHours      = ratioHoursByDept[dept] ?? 0;
     const ratioProduction = ratioProdByDept[dept] ?? 0;
+    const deptPto         = ptoAdjustments.filter(a => a.department === dept);
+    const ptoCredit       = deptPto.reduce((s, a) => s + a.fullCost - a.adjustedCost, 0);
     return {
+      ...(deptPto.length > 0 && {
+        pto: { adjustments: deptPto, fullCpo: (laborCost + ptoCredit > 0 && production > 0) ? (laborCost + ptoCredit) / production : null },
+      }),
       hours,
       production,
       laborCost,
@@ -317,7 +402,7 @@ function computePeriodKpis(
       cpoWithGM:      null,
       cpoWithBonus:   ((laborCost + bonusCost) > 0 && production > 0) ? (laborCost + bonusCost) / production : null,
       cpoWithGMBonus: null,
-      hasData:        hours > 0 || production > 0 || laborCost > 0 || bonusCost > 0,
+      hasData:        hours > 0 || production > 0 || laborCost > 0 || bonusCost > 0 || ratioHours > 0,
     };
   }
 
@@ -404,7 +489,7 @@ function computePeriodKpis(
     cpoWithGM:  blendedCPOWithGM,
     cpoWithBonus:   blendedCPOWithBonus,
     cpoWithGMBonus: blendedCPOWithGMBonus,
-    hasData:    totalHours > 0 || totalProdOrders > 0 || combinedLaborCost > 0,
+    hasData:    totalHours > 0 || totalProdOrders > 0 || combinedLaborCost > 0 || combinedRatioHours > 0,
   };
 
   return { design, preservation, fulfillment, resin, ga, combined };
@@ -425,7 +510,7 @@ function poolLocations(utah: PeriodKpis, georgia: PeriodKpis): PeriodKpis {
       cpoWithGM:      null,
       cpoWithBonus:   ((laborCost + bonusCost) > 0 && production > 0) ? (laborCost + bonusCost) / production : null,
       cpoWithGMBonus: null,
-      hasData:        hours > 0 || production > 0 || laborCost > 0 || bonusCost > 0,
+      hasData:        hours > 0 || production > 0 || laborCost > 0 || bonusCost > 0 || ratioHours > 0,
     };
   }
 
@@ -522,14 +607,51 @@ function buildWindowResult(
   actualRows:   ActualRow[],
   managerNames: Set<string>,
   bonusByLocDept?: Record<string, Record<string, number>>,  // location -> dept -> $ — Monthly-series only
-  plannedCtx?:  PlannedCtx
+  plannedCtx?:  PlannedCtx,
+  sheet?:       SheetBackfill   // weekly/monthly/quarterly series only
 ): WindowResult {
   const weekOfs = getWeekMondays(start, end);
-  const utah    = computePeriodKpis(laborRows, actualRows, 'Utah',    weekOfs, managerNames, bonusByLocDept?.['Utah']);
-  const georgia = computePeriodKpis(laborRows, actualRows, 'Georgia', weekOfs, managerNames, bonusByLocDept?.['Georgia']);
+  const utahSheet         = sheetRowsFor(sheet, sheet?.rows,      'Utah',    weekOfs);
+  const georgiaSheet      = sheetRowsFor(sheet, sheet?.rows,      'Georgia', weekOfs);
+  const utahRatioSheet    = sheetRowsFor(sheet, sheet?.ratioRows, 'Utah',    weekOfs);
+  const georgiaRatioSheet = sheetRowsFor(sheet, sheet?.ratioRows, 'Georgia', weekOfs);
+  const utah    = computePeriodKpis(laborRows, actualRows, 'Utah',    weekOfs, managerNames, bonusByLocDept?.['Utah'],    utahSheet,    utahRatioSheet);
+  const georgia = computePeriodKpis(laborRows, actualRows, 'Georgia', weekOfs, managerNames, bonusByLocDept?.['Georgia'], georgiaSheet, georgiaRatioSheet);
   const result: WindowResult = { label, periodStart: start, periodEnd: end, utah, georgia, combined: poolLocations(utah, georgia) };
   if (plannedCtx) result.planned = buildPlannedWindowResult(plannedCtx, weekOfs, actualRows, utah.ga.laborCost, georgia.ga.laborCost);
+  result.sheetBackfill      = countSheetWeeks(weekOfs, utahSheet,      georgiaSheet);
+  result.ratioSheetBackfill = countSheetWeeks(weekOfs, utahRatioSheet, georgiaRatioSheet);
   return result;
+}
+
+// A location's sheet-backfill rows (from either sheet table) for the given
+// weeks, limited to weeks the dashboard has no labor or actuals rows of its
+// own for that location.
+function sheetRowsFor<T extends { location: string; week_of: string }>(
+  sheet: SheetBackfill | undefined, rows: T[] | undefined, location: string, weekOfs: string[]
+): T[] {
+  if (!sheet || !rows) return [];
+  const weeks = new Set(weekOfs);
+  return rows.filter(r =>
+    r.location === location && weeks.has(r.week_of) && !sheet.realWeekKeys.has(`${location}|${r.week_of}`));
+}
+
+// undefined when no week in the window used the sheet.
+function countSheetWeeks(
+  weekOfs: string[],
+  utahRows:    { week_of: string; is_estimate?: boolean }[],
+  georgiaRows: { week_of: string; is_estimate?: boolean }[]
+): SheetBackfillCount | undefined {
+  if (utahRows.length === 0 && georgiaRows.length === 0) return undefined;
+  const weeks = (rows: { week_of: string }[]) => new Set(rows.map(r => r.week_of)).size;
+  const estUtah    = weeks(utahRows.filter(r => r.is_estimate));
+  const estGeorgia = weeks(georgiaRows.filter(r => r.is_estimate));
+  return {
+    totalWeeks: weekOfs.length,
+    utah:       weeks(utahRows),
+    georgia:    weeks(georgiaRows),
+    ...(estUtah > 0 || estGeorgia > 0 ? { estimated: { utah: estUtah, georgia: estGeorgia } } : {}),
+  };
 }
 
 // A member's own ratio can improve (or slip) fast enough that today's
@@ -817,11 +939,31 @@ function projectPeriodForLocation(
 //
 // Returns: { windows: WindowResult[], estimated: { current?, next? } }
 
+// Manager PTO details show a manager's pay, so they only go to admins and the
+// GM of that manager's location — never other managers, the other
+// location's GM, or the Scorecards sync caller. Mutates `windows` in place.
+function stripPtoForViewer(windows: WindowResult[], visibleLocations: Set<string>) {
+  for (const w of windows) {
+    for (const [loc, kpis] of [['Utah', w.utah], ['Georgia', w.georgia]] as const) {
+      if (visibleLocations.has(loc)) continue;
+      for (const m of Object.values(kpis)) delete (m as KpiMetrics).pto;
+    }
+  }
+}
+
 export async function GET(req: NextRequest) {
   const isSyncCaller = req.headers.get('authorization') === `Bearer ${process.env.SCORECARDS_SYNC_SECRET}`;
+  const ptoVisibleLocations = new Set<string>();
   if (!isSyncCaller) {
     const { userId } = await auth();
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { data: viewer } = await supabase
+      .from('user_profiles')
+      .select('role, location')
+      .eq('clerk_user_id', userId)
+      .maybeSingle();
+    if (viewer?.role === 'admin') { ptoVisibleLocations.add('Utah'); ptoVisibleLocations.add('Georgia'); }
+    else if (viewer?.role === 'general_manager' && viewer.location) ptoVisibleLocations.add(viewer.location);
   }
 
   const windowsParam = req.nextUrl.searchParams.get('windows')
@@ -852,6 +994,12 @@ export async function GET(req: NextRequest) {
     isoDate(new Date(now.getFullYear(), now.getMonth() - quartersBack * 3, 1)),
     isoDate(new Date(now.getTime() - weeksBack * 7 * 24 * 60 * 60 * 1000)),
   ].sort()[0];
+  // Actuals reach PTO_RATE_TRAILING_WEEKS further back than everything else,
+  // so a manager's PTO week early in range can still find their normal cost
+  // per order (see ptoAdjustedHomeCost). Every other actuals use is bounded
+  // to its own weeks, so the extra rows only feed that — and realWeekKeys
+  // below skips them.
+  const actualsStart = isoDate(new Date(new Date(earliestDate + 'T12:00:00').getTime() - PTO_RATE_TRAILING_WEEKS * 7 * 24 * 60 * 60 * 1000));
 
   try {
     // Single set of queries — all computation happens in memory. Roster is
@@ -865,7 +1013,7 @@ export async function GET(req: NextRequest) {
     // up to a year. A plain unranged .select() was silently dropping
     // whichever rows landed past row 1000 (arbitrary order, no error), which
     // is what made Georgia Design's MTD CPO read a third of its real value.
-    const [laborRows, actualRows, rosterRes, bonusRows] = await Promise.all([
+    const [laborRows, actualRows, rosterRes, bonusRows, sheetRows, ratioSheetRows] = await Promise.all([
       fetchAllRows<LaborRow>((from, to) =>
         supabase
           .from('weekly_labor_cost')
@@ -877,7 +1025,7 @@ export async function GET(req: NextRequest) {
         supabase
           .from('team_member_week_actuals')
           .select('week_of,member_name,department,location,actual_hours,actual_orders')
-          .gte('week_of', earliestDate)
+          .gte('week_of', actualsStart)
           .range(from, to)
       ),
       supabase
@@ -893,6 +1041,32 @@ export async function GET(req: NextRequest) {
           .gte('bonus_month', earliestDate)
           .range(from, to)
       ),
+      // Pre-dashboard history from the Ops Google Sheet — weekly/monthly/
+      // quarterly series only, see SheetBackfill. Optional history: if the
+      // table isn't there (migration not applied yet) KPIs still load,
+      // just without the backfill.
+      fetchAllRows<SheetBackfillRow>((from, to) =>
+        supabase
+          .from('cpo_sheet_backfill')
+          // '*' rather than naming is_estimate, so the backfill still loads
+          // if the cpo_estimate_backfill migration hasn't run yet.
+          .select('*')
+          .gte('week_of', earliestDate)
+          .range(from, to)
+      ).catch(e => {
+        console.warn('cpo_sheet_backfill unavailable, skipping sheet backfill:', e);
+        return [] as SheetBackfillRow[];
+      }),
+      fetchAllRows<RatioSheetBackfillRow>((from, to) =>
+        supabase
+          .from('ratio_sheet_backfill')
+          .select('week_of,location,department,ratio_hours,ratio_production')
+          .gte('week_of', earliestDate)
+          .range(from, to)
+      ).catch(e => {
+        console.warn('ratio_sheet_backfill unavailable, skipping ratio sheet backfill:', e);
+        return [] as RatioSheetBackfillRow[];
+      }),
     ]);
 
     if (rosterRes.error)  throw rosterRes.error;
@@ -902,6 +1076,14 @@ export async function GET(req: NextRequest) {
     // All KPIs counts exactly the production/hours Historicals shows — see
     // src/lib/historicalsRows.ts for the rule (shared with Scorecards).
     const confirmedActualRows = filterToHistoricalsRows(actualRows, rosterRes.data ?? []);
+
+    // Raw (unfiltered) labor + actuals, so a week the dashboard tracked at
+    // all — even one Historicals filters down — never falls back to the sheet.
+    const realWeekKeys = new Set<string>();
+    for (const r of laborRows)  realWeekKeys.add(`${r.location}|${r.week_of}`);
+    for (const r of actualRows) if (r.week_of >= earliestDate) realWeekKeys.add(`${r.location}|${r.week_of}`);
+    const sheet: SheetBackfill = { rows: sheetRows, ratioRows: ratioSheetRows, realWeekKeys };
+    const dashboardStart = [...realWeekKeys].map(k => k.split('|')[1]).sort()[0] ?? null;
 
     const results: WindowResult[] = [];
 
@@ -974,7 +1156,7 @@ export async function GET(req: NextRequest) {
         d.setDate(d.getDate() - i * 7);
         const monday = isoDate(d);
         const sunday = getSundayOf(monday);
-        results.push(buildWindowResult(weekLabel(monday), monday, sunday, laborRows, confirmedActualRows, managerNames, undefined, plannedCtx));
+        results.push(buildWindowResult(weekLabel(monday), monday, sunday, laborRows, confirmedActualRows, managerNames, undefined, plannedCtx, sheet));
       }
     }
 
@@ -1004,7 +1186,7 @@ export async function GET(req: NextRequest) {
           Utah:    bonusByLocDeptMonth['Utah']?.[key],
           Georgia: bonusByLocDeptMonth['Georgia']?.[key],
         };
-        results.push(buildWindowResult(monthLabel(key), isoDate(first), isoDate(last), laborRows, confirmedActualRows, managerNames, bonusForMonth, plannedCtx));
+        results.push(buildWindowResult(monthLabel(key), isoDate(first), isoDate(last), laborRows, confirmedActualRows, managerNames, bonusForMonth, plannedCtx, sheet));
       }
     }
 
@@ -1016,7 +1198,7 @@ export async function GET(req: NextRequest) {
         const qDate  = new Date(now.getFullYear(), now.getMonth() - i * 3, 1);
         const qStart = getQuarterStart(qDate);
         const qEnd   = new Date(qStart.getFullYear(), qStart.getMonth() + 3, 0);
-        results.push(buildWindowResult(getQuarterLabel(qStart), isoDate(qStart), isoDate(qEnd), laborRows, confirmedActualRows, managerNames, undefined, plannedCtx));
+        results.push(buildWindowResult(getQuarterLabel(qStart), isoDate(qStart), isoDate(qEnd), laborRows, confirmedActualRows, managerNames, undefined, plannedCtx, sheet));
       }
     }
 
@@ -1084,10 +1266,14 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    stripPtoForViewer(results, ptoVisibleLocations);
     return NextResponse.json({
       ok:        true,
       windows:   results,
       estimated,
+      // Where the sheet backfill hands off to dashboard-tracked data, for the
+      // "backfilled from Google Sheets" marker on the historical tables.
+      sheetBackfill: { dashboardStart },
       meta: { generatedAt: new Date().toISOString(), windowCount: results.length },
     }, { headers: { 'Cache-Control': 'no-store, must-revalidate' } });
 

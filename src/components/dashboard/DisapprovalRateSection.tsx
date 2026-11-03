@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { useDisapprovalStats } from './useDisapprovalStats';
+import { HelpTip } from './HelpTip';
 
 // ── Name normalization (PF API name → roster name) ───────────────────────────
 const PF_NAME_MAP: Record<string, string> = {
@@ -223,7 +224,7 @@ export function DisapprovalRateSection({ location, memberNames }: DisapprovalRat
       <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-100 flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-slate-700">Disapproval Rate — Weekly · {location}</h3>
+            <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.disapproval">Disapproval Rate — Weekly · {location}</HelpTip></h3>
             <p className="text-xs text-slate-400 mt-0.5">
               disapprovals ÷ approvals per week.{' '}
               <span className="text-green-600 font-medium">Green ≤15%</span>{' '}
@@ -330,7 +331,7 @@ export function DisapprovalRateSection({ location, memberNames }: DisapprovalRat
       {/* ── MONTHLY SUMMARY ── */}
       <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-100">
-          <h3 className="text-sm font-semibold text-slate-700">Disapproval Rate — Monthly Summary · {location}</h3>
+          <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.disapproval">Disapproval Rate — Monthly Summary · {location}</HelpTip></h3>
           <p className="text-xs text-slate-400 mt-0.5">
             Monthly disapproval rate per designer with raw counts and AI theme analysis.
           </p>

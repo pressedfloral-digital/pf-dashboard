@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { HelpTip } from './HelpTip';
+import { statusHelpKey, type HelpKey } from './dashboardHelp';
 
 interface UuidOrderEntry {
   uuid:      string;
@@ -151,8 +153,10 @@ function LocationColumn({
   return (
     <div className="space-y-3">
       <div className="flex items-baseline gap-2">
-        <h3 className="text-sm font-semibold text-slate-700">{name}</h3>
-        <span className="text-xs text-slate-400">{total.toLocaleString()} total</span>
+        <HelpTip id="sorted.location" className="flex items-baseline gap-2">
+          <h3 className="text-sm font-semibold text-slate-700">{name}</h3>
+          <span className="text-xs text-slate-400">{total.toLocaleString()} total</span>
+        </HelpTip>
       </div>
       {Object.entries(DEPT_STATUSES).map(([dept, statuses]) => {
         const deptTotal = statuses.reduce((s, st) => s + (counts[st] ?? 0), 0);
@@ -160,7 +164,7 @@ function LocationColumn({
           <Card key={dept} className={`border ${DEPT_COLORS[dept]}`}>
             <CardHeader className="pb-1 pt-3 px-4">
               <CardTitle className={`text-xs font-semibold uppercase tracking-wide ${DEPT_TEXT[dept]}`}>
-                {dept} — {deptTotal.toLocaleString()}
+                <HelpTip id={`pipeline.dept.${dept}` as HelpKey}>{dept} — {deptTotal.toLocaleString()}</HelpTip>
               </CardTitle>
             </CardHeader>
             <CardContent className="px-4 pb-3 space-y-1">
@@ -171,7 +175,7 @@ function LocationColumn({
                 return (
                   <div key={st}>
                     <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-600">{STATUS_LABELS[st] ?? st}</span>
+                      <HelpTip id={statusHelpKey(st) ?? 'sorted.location'} className="text-slate-600">{STATUS_LABELS[st] ?? st}</HelpTip>
                       {count > 0 ? (
                         <button
                           onClick={() => setExpandedStatus(prev => prev === st ? null : st)}
@@ -418,9 +422,9 @@ export function SortedLocationSection() {
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-baseline gap-4">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-            Sorted by Location
+            <HelpTip id="sorted.title">Sorted by Location</HelpTip>
           </h2>
-          <span className="text-xs text-slate-400">PF counts + resolved unassigned orders</span>
+          <HelpTip id="sorted.title" className="text-xs text-slate-400">PF counts + resolved unassigned orders</HelpTip>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           {syncMsg    && <span className="text-xs text-slate-400 max-w-xs truncate">{syncMsg}</span>}
@@ -435,7 +439,7 @@ export function SortedLocationSection() {
                   : 'border-orange-300 bg-orange-50 text-orange-700 hover:bg-orange-100'
               }`}
             >
-              {unsortedButtonLabel}
+              <HelpTip id="sorted.unsorted">{unsortedButtonLabel}</HelpTip>
             </button>
           )}
 
@@ -444,21 +448,21 @@ export function SortedLocationSection() {
             disabled={resolving}
             className="px-3 py-1 text-xs border border-amber-300 rounded text-amber-700 bg-amber-50 hover:bg-amber-100 disabled:opacity-40 transition-colors"
           >
-            {resolving ? 'Resolving…' : 'Resolve Unassigned'}
+            <HelpTip id="sorted.resolve">{resolving ? 'Resolving…' : 'Resolve Unassigned'}</HelpTip>
           </button>
           <button
             onClick={() => void runSync()}
             disabled={syncing}
             className="px-3 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-100 disabled:opacity-50 transition-colors"
           >
-            {syncing ? 'Syncing…' : 'Sync UUIDs'}
+            <HelpTip id="sorted.sync">{syncing ? 'Syncing…' : 'Sync UUIDs'}</HelpTip>
           </button>
           <button
             onClick={() => void load()}
             disabled={loading}
             className="px-3 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-100 disabled:opacity-50 transition-colors"
           >
-            {loading ? 'Loading…' : 'Refresh'}
+            <HelpTip id="sorted.refresh">{loading ? 'Loading…' : 'Refresh'}</HelpTip>
           </button>
         </div>
       </div>

@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:assignment-counts": "node --experimental-strip-types --test tests/*.test.ts tests/*.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.2.0",

@@ -20,6 +20,12 @@ export const PRESERVATION_STATUSES = new Set(['bouquetReceived', 'checkedOn', 'p
 // counting them would eat design capacity and pad the inventory list.
 export const NON_DESIGN_PRODUCTS = new Set(['Floral Preservation Deposit', 'Pre-paid Overnight Shipping Label']);
 
+// Gift cards (digital or physical) sometimes ride on an order in a Design
+// status, but there's nothing to build.
+export function isNonDesignProduct(productTitle: string): boolean {
+  return NON_DESIGN_PRODUCTS.has(productTitle) || /gift ?card/i.test(productTitle);
+}
+
 const SHAPES = new Set(['Rectangle', 'Oval', 'Square', 'Round', 'Circle', 'Heart', 'Arch']);
 const SIZE_RE = /^\d+(\.\d+)?x\d+(\.\d+)?$/;
 
@@ -80,11 +86,18 @@ const NO_BACKING_GLASS = new Set(['Custom Ornament', 'Custom Mini Frame']);
 const BACKING_GLASS_IN_VARIANT = new Set(['Custom Square Single', 'Custom Footprint Frame']);
 
 export const NOT_ON_ORDER = 'Not on order';
+// The order's add-ons couldn't be loaded, so whether it has backing/glass is
+// unknown — never shown or counted as "none".
+export const ADDONS_UNKNOWN = "Couldn't load";
 
 export interface Materials {
   sizeLabel: string;         // "16x20", or the product name when it has no size (Boutonniere, Custom Square Single…)
   backing:   string | null;  // null = product has no backing
   glass:     string | null;  // null = product has no glass
+  // The matched add-on products themselves, for looking up their Katana recipes.
+  backingAddOn?: OrderAddOn;
+  glassAddOn?:   OrderAddOn;
+  addOnsUnknown?: true;      // backing/glass are ADDONS_UNKNOWN
 }
 
 export function sizeLabel(line: Pick<QueueLine, 'product' | 'size'>): string {
@@ -100,7 +113,8 @@ function lastPart(v: string | null): string {
 
 // Pairs every line with its backing and glass. `used` is shared across all
 // of one order's lines so two same-size frames never claim the same add-on.
-export function matchMaterials(line: QueueLine, addOns: OrderAddOn[], used: Set<string>): Materials {
+// `addOns` is null when the order's add-ons couldn't be loaded.
+export function matchMaterials(line: QueueLine, addOns: OrderAddOn[] | null, used: Set<string>): Materials {
   const label = sizeLabel(line);
   if (NO_BACKING_GLASS.has(line.product)) return { sizeLabel: label, backing: null, glass: null };
 
@@ -112,6 +126,8 @@ export function matchMaterials(line: QueueLine, addOns: OrderAddOn[], used: Set<
     return { sizeLabel: label, backing: NOT_ON_ORDER, glass: opts[1] || NOT_ON_ORDER };
   }
 
+  if (addOns === null) return { sizeLabel: label, backing: ADDONS_UNKNOWN, glass: ADDONS_UNKNOWN, addOnsUnknown: true };
+
   const boutonniere = line.product.startsWith('Boutonniere');
   const pick = (titles: string[]) => {
     const match = addOns.find(a => {
@@ -119,14 +135,17 @@ export function matchMaterials(line: QueueLine, addOns: OrderAddOn[], used: Set<
       const { shape, size } = parseVariant(a.variantTitle);
       return (!line.shape || !shape || shape === line.shape) && (!line.size || !size || size === line.size);
     });
-    if (!match) return NOT_ON_ORDER;
-    used.add(match.uuid);
-    return lastPart(match.variantTitle) || NOT_ON_ORDER;
+    if (match) used.add(match.uuid);
+    return match;
   };
+  const backingAddOn = pick(boutonniere ? ['Boutonniere Backing'] : ['Backing', 'Frame Backing']);
+  const glassAddOn   = pick(boutonniere ? ['Boutonniere Glass']   : ['Glass', 'Frame Glass']);
   return {
     sizeLabel: label,
-    backing: pick(boutonniere ? ['Boutonniere Backing'] : ['Backing', 'Frame Backing']),
-    glass:   pick(boutonniere ? ['Boutonniere Glass']   : ['Glass', 'Frame Glass']),
+    backing: (backingAddOn && lastPart(backingAddOn.variantTitle)) || NOT_ON_ORDER,
+    glass:   (glassAddOn && lastPart(glassAddOn.variantTitle)) || NOT_ON_ORDER,
+    backingAddOn,
+    glassAddOn,
   };
 }
 

@@ -79,8 +79,11 @@ function parseHoursXLSX(file: File): Promise<HoursRow[]> {
         const rows = XLSX.utils.sheet_to_json<Record<string,unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: '' });
         // Keep Checks & Unboxing shifts — hours-upload files them as
         // 'checks_unboxing', which counts toward Preservation everywhere.
+        // Recreation and Baby Feet Design hours go only to the Bloom Stock
+        // Products tab (the server routes them to bloom_stock_week_actuals,
+        // never a team dept); GEM Studio hours count as Resin.
         const isProductionDept = (raw: string) =>
-          /design|preservation|fulfillment|resin|checks|unboxing/i.test(raw);
+          /design|preservation|fulfillment|resin|checks|unboxing|recreation|gem\s*studio/i.test(raw);
         const parsed = rows
           .filter(r => r['Employee'] && r['Time entry clock in date'] && isProductionDept(String(r['Department (Worked)'] ?? '')))
           .map(r => ({
@@ -217,7 +220,9 @@ function UploadCard({ type, title, description, frequency, accentColor }: Upload
                 <p><span className="font-medium">{String(result.inserted)}</span> employees synced to directory</p>
               </>}
               {type === 'hours' && <>
-                <p><span className="font-medium">{String(result.people)}</span> people · <span className="font-medium">{String(result.upserted)}</span> week entries updated</p>
+                <p><span className="font-medium">{String(result.people)}</span> people · <span className="font-medium">{String(result.upserted)}</span> week entries updated
+                  {Number(result.skippedOtherLocation) > 0 && <span className="text-amber-600"> · {String(result.skippedOtherLocation)} shifts skipped (not Utah or Georgia, e.g. Remote)</span>}
+                </p>
                 {result.weeks && <p>Weeks: {fmtDate(String((result.weeks as {from:string}).from))} – {fmtDate(String((result.weeks as {to:string}).to))}</p>}
                 <p>Total hours: <span className="font-medium">{String(result.totalHours)}</span></p>
               </>}

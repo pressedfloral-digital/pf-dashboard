@@ -4,15 +4,19 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
 import { getMondayDate, isoMonday, getWeekLabel } from '@/lib/weekDates';
 import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
-import { resolveDayHours, resolveWeekHours, resolveWeekPayHours, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap } from '@/lib/scheduleResolution';
+import { resolveDayHours, resolveWeekHours, isDayOff, applyTimeOff, hoursOffOn, resolveWeekPayHours, baseDailyArray, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
 import { HistoricalsSection } from './HistoricalsSection';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
+import { ScheduleRulesEditor } from './ScheduleRulesEditor';
+import { TimeOffCalendar, toTimeOffMember } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
+import { WeekCell, WeekHead } from './WeekCell';
+import { PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock } from './ScheduleBlocks';
+import { HelpTip } from './HelpTip';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
 import { ProductionActual, ProductionActualsStatus, sumActuals } from './ProductionActual';
-import { WeekBubble, WeekTotalBubble } from './WeekBubble';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -35,6 +39,12 @@ export interface ResinMember {
   // Employment window, both ISO 'YYYY-MM-DD' and inclusive — see scheduleResolution.ts.
   startDate?: string;
   endDate?:   string;
+  // Date-bounded, toggleable replacements for standardWeeklyHours — see scheduleResolution.ts.
+  scheduleRules?: ScheduleRule[];
+  // ISO dates marked off on the Time Off calendar — see EmploymentWindow.daysOff.
+  daysOff?: string[];
+  // ISO date → hours off that day (partial day off) — see EmploymentWindow.hoursOff.
+  hoursOff?: Record<string, number>;
 }
 
 interface CohortRow {
@@ -202,7 +212,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
       dailyMap: resinDailyHours, weekKey: `${weekIso}-${m.id}`,
       legacyWeeklyValue: hours[weekIso]?.[m.id],
       standardWeeklyHours: m.standardWeeklyHours,
-      employment: { weekIso, startDate: m.startDate, endDate: m.endDate },
+      employment: { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules, daysOff: m.daysOff, hoursOff: m.hoursOff },
       holidays: paidHolidays,
     };
   }
@@ -379,7 +389,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate }, paidHolidays).hours;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules, daysOff: m?.daysOff, hoursOff: m?.hoursOff }, paidHolidays).hours;
   }
 
   // Guaranteed-pay basis for the day — see resolveDayHours' payHours.
@@ -387,21 +397,25 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate }, paidHolidays).payHours;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules, daysOff: m?.daysOff, hoursOff: m?.hoursOff }, paidHolidays).payHours;
   }
 
   function isDHOverride(memberId: string, weekIdx: number, di: number): boolean {
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate }, paidHolidays).isOverride;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules, daysOff: m?.daysOff, hoursOff: m?.hoursOff }, paidHolidays).isOverride;
   }
 
+  function isDHDayOff(memberId: string, weekIdx: number, di: number): boolean {
+    const m = roster.find(m => m.id === memberId);
+    return isDayOff(di, { weekIso: isoMonday(weekIdx), daysOff: m?.daysOff, hoursOff: m?.hoursOff });
+  }
   function isDHHoliday(memberId: string, weekIdx: number, di: number): boolean {
     const m = roster.find(m => m.id === memberId);
     const weekIso = isoMonday(weekIdx);
     return resolveDayHours(resinDailyHours, `${weekIso}-${memberId}`, di, m?.standardWeeklyHours,
-      { weekIso, startDate: m?.startDate, endDate: m?.endDate }, paidHolidays).isHoliday;
+      { weekIso, startDate: m?.startDate, endDate: m?.endDate, rules: m?.scheduleRules, daysOff: m?.daysOff, hoursOff: m?.hoursOff }, paidHolidays).isHoliday;
   }
 
   // Member-agnostic holiday check for a whole day column (header, Day total
@@ -426,7 +440,9 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
   function getMgrTotalDH(m: ResinMember, weekIdx: number, di: number): number {
     const override = mgrTotalDailyHours[`${isoMonday(weekIdx)}-${m.id}`]?.[di];
     if (override != null) return override;
-    if (m.standardTotalWeeklyHours) return m.standardTotalWeeklyHours[di] ?? 0;
+    if (m.standardTotalWeeklyHours) {
+      return applyTimeOff(m.standardTotalWeeklyHours[di] ?? 0, di, { weekIso: isoMonday(weekIdx), daysOff: m.daysOff, hoursOff: m.hoursOff });
+    }
     return getDHPay(m.id, weekIdx, di);
   }
 
@@ -566,9 +582,17 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
 
   const hasRates = canViewCPO && roster.some(m => m.hourlyRate > 0 || m.annualSalary > 0);
 
+  // ISO dates of the This Week days, for the day-header pills
+  const thisWeekIsos = WEEKDAY_LABELS.map((_, di) => {
+    const d = getMondayDate(thisWeekOffset);
+    d.setDate(d.getDate() + di);
+    return d.toISOString().split('T')[0];
+  });
+  const todayIso = (() => { const t = new Date(); t.setHours(0, 0, 0, 0); return t.toISOString().split('T')[0]; })();
+
   const TABS = [
-    { id: 'thisweek'    as const, label: 'This week' },
-    { id: 'schedule'    as const, label: '52-week planner' },
+    { id: 'thisweek'    as const, label: 'This Week' },
+    { id: 'schedule'    as const, label: 'Weekly Schedule' },
     { id: 'queue'       as const, label: 'Queue & Turnaround' },
     { id: 'historicals' as const, label: 'Historicals' },
   ];
@@ -589,7 +613,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-purple-500" />
-          <h2 className="text-sm font-semibold text-slate-700">Resin Scheduling</h2>
+          <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="resin.title">Resin Scheduling</HelpTip></h2>
           {saveState === 'saving' && <span className="text-xs text-slate-400">Saving…</span>}
           {saveState === 'saved'  && <span className="text-xs text-emerald-500">Saved</span>}
           {saveState === 'error'  && <span className="text-xs text-red-500">Save failed</span>}
@@ -752,6 +776,14 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                     onEndDateChange={val => updateRosterField(m.id, 'endDate', val)}
                   />
                 </div>
+                <div className="flex items-start gap-1.5 pl-1">
+                  <span className="text-[10px] text-slate-400 w-32 shrink-0 pt-0.5">Schedule rules</span>
+                  <ScheduleRulesEditor
+                    rules={m.scheduleRules}
+                    standardWeeklyHours={m.standardWeeklyHours}
+                    onChange={rules => setRoster(roster.map(x => x.id === m.id ? { ...x, scheduleRules: rules } : x))}
+                  />
+                </div>
                 </div>
               ))}
             </div>
@@ -760,27 +792,31 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
               + Add member
             </button>
             <p className="mt-3 text-xs text-slate-400">Pay rates &amp; titles come from Rippling upload. Ratio = hours per unit.</p>
+            <div className="mt-5">
+              <TimeOffCalendar
+                members={roster.map(m => toTimeOffMember(m.id, m.name, m))}
+                dailyMap={resinDailyHours} holidays={paidHolidays} canEdit
+                onChange={(id, next) => setRoster(roster.map(m => m.id === id ? { ...m, ...next } : m))} />
+            </div>
           </div>
         )}
       </div>
 
       {/* ── Tabs ──────────────────────────────────────────────────────────────── */}
-      <div className="border-b border-slate-100">
-        <div className="flex gap-0">
-          {TABS.map(({ id, label }) => (
-            <button
-              key={id}
-              onClick={() => setActiveTab(id)}
-              className={`px-4 py-2 text-xs font-medium border-b-2 transition-colors ${
-                activeTab === id
-                  ? 'border-purple-600 text-purple-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+      <div className="flex border-b border-slate-200">
+        {TABS.map(({ id, label }) => (
+          <button
+            key={id}
+            onClick={() => setActiveTab(id)}
+            className={`px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              activeTab === id
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <HelpTip id={id === 'schedule' ? 'resin.tab.schedule' : `sched.tab.${id}`}>{label}</HelpTip>
+          </button>
+        ))}
       </div>
 
       {/* ── THIS WEEK TAB ────────────────────────────────────────────────────── */}
@@ -805,37 +841,26 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
           <div className="overflow-x-auto">
             <table className="min-w-full text-xs">
               <thead>
-                <tr className="bg-slate-50 border-b border-slate-100">
-                  <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 min-w-[160px]">Team Member</th>
-                  {WEEKDAY_LABELS.map((d, di) => {
-                    const date = getMondayDate(thisWeekOffset);
-                    date.setDate(date.getDate() + di);
-                    const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                    const isHoliday = isHolidayColumn(thisWeekOffset, di);
-                    return (
-                      <th key={d} className={`px-3 py-2 text-center font-medium whitespace-nowrap min-w-[70px] ${
-                        isHoliday ? 'bg-amber-50 text-amber-700' : 'text-slate-500'
-                      }`}>
-                        {d}<br /><span className={`font-normal text-[10px] ${isHoliday ? 'text-amber-500' : 'text-slate-400'}`}>{dateStr}</span>
-                        {isHoliday && <div className="text-[9px] font-semibold text-amber-600 mt-0.5">Holiday</div>}
-                      </th>
-                    );
-                  })}
-                  <th className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap">Week total</th>
+                <tr className="border-b border-slate-100">
+                  <th className="sticky left-0 z-10 bg-white px-4 py-3 text-left text-[13px] font-medium text-slate-500 min-w-[190px]">Team member</th>
+                  {WEEKDAY_LABELS.map((d, di) => (
+                    <th key={d} className="px-1.5 py-3 min-w-[104px]">
+                      <DayHead label={d} iso={thisWeekIsos[di]} today={thisWeekIsos[di] === todayIso} holiday={isHolidayColumn(thisWeekOffset, di)} />
+                    </th>
+                  ))}
+                  <th className="px-3 py-3 text-center text-[13px] font-medium text-slate-500 whitespace-nowrap">Week total</th>
                 </tr>
               </thead>
               <tbody>
-                {productionRoster.map((m, mi) => {
+                {productionRoster.map((m) => {
                   const weekTotal = [0,1,2,3,4,5,6].reduce((s, di) => s + getDH(m.id, thisWeekOffset, di), 0);
                   const units = m.ratio > 0 ? weekTotal / m.ratio : 0;
-                  const weekCost = [0,1,2,3,4,5,6].reduce((s, di) => s + dailyCost(m, thisWeekOffset, di), 0);
-                  const weekCPO = (!m.isManager || canSeeManagerCPO(m.name)) && units > 0 && weekCost > 0 ? weekCost / units : null;
                   return (
-                    <tr key={m.id} className={`border-b border-slate-50 ${mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
-                      <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? 'bg-white' : 'bg-slate-50'} px-4 py-2 font-medium text-slate-700 whitespace-nowrap`}>
-                        {m.name}
-                        <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
-                        <div className="text-[10px] text-slate-400 font-normal">{m.ratio}h/unit</div>
+                    <tr key={m.id} className="border-b border-slate-100">
+                      <td className="sticky left-0 z-10 bg-white px-4 py-2 whitespace-nowrap">
+                        <PersonCell name={m.name}>
+                          <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
+                        </PersonCell>
                         {resinActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
                       </td>
                       {[0,1,2,3,4,5,6].map(di => {
@@ -844,67 +869,76 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                         const isHoliday = isDHHoliday(m.id, thisWeekOffset, di);
                         const dayUnits = m.ratio > 0 ? dayVal / m.ratio : 0;
                         const totalDayVal = m.isManager ? getMgrTotalDH(m, thisWeekOffset, di) : dayVal;
-                        const cost = dailyCost(m, thisWeekOffset, di);
-                        const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && dayUnits > 0 && cost > 0 ? cost / dayUnits : null;
+                        if (isDHDayOff(m.id, thisWeekOffset, di)) {
+                          return <td key={di} className="p-1 align-top"><OffBlock sub={isHoliday ? 'Holiday' : 'Time off'} /></td>;
+                        }
+                        const hoursOff = hoursOffOn(di, { weekIso: isoMonday(thisWeekOffset), hoursOff: m.hoursOff });
+                        const working = dayVal > 0 || (m.isManager && totalDayVal > 0);
                         return (
-                          <td key={di} className={`px-1 py-1.5 text-center ${isHoliday ? 'bg-amber-50/50' : di === 0 ? 'bg-indigo-50/20' : ''}`}>
-                            <input type="number"
-                              value={resinInputMode === 'output' ? (dayUnits ? round2(dayUnits) : '') : (dayVal || '')}
-                              placeholder="0" min={0} step={resinInputMode === 'output' ? 0.1 : 0.5}
-                              title={isHoliday
-                                ? (isOverride ? 'Paid holiday — worked hours, paid on top of guaranteed holiday pay' : 'Paid holiday — no production expected, staff still paid. Enter hours if someone worked.')
-                                : (isOverride ? 'Explicit override for this day' : 'Following the standard weekly schedule — edit to override just this day')}
-                              onChange={e => {
-                                const raw = parseFloat(e.target.value) || 0;
-                                const newHours = resinInputMode === 'output' ? hoursFromOutput(raw, m.ratio) : raw;
-                                setDH(m.id, thisWeekOffset, di, newHours);
-                              }}
-                              className={`w-12 text-center border rounded px-1 py-1 text-xs focus:outline-none ${
-                                isOverride ? 'bg-white border-slate-100 hover:border-purple-300 focus:border-purple-400 text-slate-700'
-                                           : 'bg-white border-slate-50 text-slate-400 italic hover:border-purple-300 focus:border-purple-400'
-                              }`} />
-                            {m.isManager && (
-                              <input type="number" value={totalDayVal || ''} min={0} step={0.5} placeholder="total h"
-                                title="Total hours (production + managerial)"
-                                onChange={e => setMgrTotalDH(m.id, thisWeekOffset, di, parseFloat(e.target.value) || 0)}
-                                className="w-12 mt-0.5 text-center bg-violet-50 border border-violet-200 rounded px-1 py-0.5 text-[10px] text-violet-600 focus:outline-none focus:ring-1 focus:ring-violet-300" />
-                            )}
-                            {resinInputMode === 'output'
-                              ? (dayVal > 0 && <div className="text-[10px] text-slate-400 mt-0.5">{round2(dayVal)}h</div>)
-                              : (dayUnits > 0 && <div className="text-[10px] text-slate-400 mt-0.5">{round2(dayUnits)}u</div>)}
+                          <td key={di} className="p-1 align-top">
+                            <ShiftBlock tone={working ? 'resin' : isHoliday ? 'holiday' : null} edited={isOverride && dayVal > 0}>
+                              <InlineNumber
+                                value={resinInputMode === 'output' ? (dayUnits ? round2(dayUnits) : '') : (dayVal || '')}
+                                step={resinInputMode === 'output' ? '0.1' : '0.5'}
+                                title={isHoliday
+                                  ? (isOverride ? 'Paid holiday — worked hours, paid on top of guaranteed holiday pay' : 'Paid holiday — no production expected, staff still paid. Click to enter hours if someone worked.')
+                                  : isOverride ? 'Changed for this day only — click to edit' : 'Following the standard weekly schedule — click to override just this day'}
+                                onChange={raw => setDH(m.id, thisWeekOffset, di, resinInputMode === 'output' ? hoursFromOutput(raw, m.ratio) : raw)}
+                                className="block w-full">
+                                {dayVal > 0 ? (
+                                  resinInputMode === 'output' ? (
+                                    <>
+                                      <span className="block text-xs font-semibold">{round2(dayUnits)} units</span>
+                                      <span className="block opacity-70">{round2(dayVal)}h</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span className="block text-xs font-semibold">{round2(dayVal)}h</span>
+                                      <span className="block opacity-70">{round2(dayUnits)} units</span>
+                                    </>
+                                  )
+                                ) : (
+                                  <span className="block py-1">{isHoliday ? 'Holiday' : m.isManager && totalDayVal > 0 ? 'No production' : 'Available'}</span>
+                                )}
+                              </InlineNumber>
+                              {m.isManager && (
+                                <InlineNumber value={totalDayVal || ''} onChange={v => setMgrTotalDH(m.id, thisWeekOffset, di, v)} placeholder="total h"
+                                  title="Total hours (production + managerial) — click to edit"
+                                  className="mt-0.5 block text-[10px] font-medium text-violet-700">
+                                  {totalDayVal > 0 ? `${round2(totalDayVal)}h total` : '+ total'}
+                                </InlineNumber>
+                              )}
+                              {isHoliday && <div className="text-[10px] text-amber-700">holiday pay</div>}
+                              {hoursOff > 0 && <div className="text-[10px] font-semibold text-red-500" title="Hours off on the Days off calendar">{hoursOff}h off</div>}
+                            </ShiftBlock>
                             <ProductionActual value={actualFor(m.name, thisWeekDates[di])} loading={resinActuals.loading} unit="u"
                               drill={{ name: m.name, start: thisWeekDates[di], end: thisWeekDates[di], department: RESIN_MT_DEPARTMENT }} />
-                            {hasRates && cpo !== null && <div className="text-[10px] text-purple-500">${cpo.toFixed(2)}</div>}
-                            {isHoliday && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay</div>}
                           </td>
                         );
                       })}
-                      <td className="px-2 py-1.5 text-center text-xs font-medium text-indigo-700">
-                        {weekTotal > 0 ? weekTotal.toFixed(1) : '—'}
-                        {units > 0 && <div className="text-[10px] text-slate-400">{units.toFixed(1)}u</div>}
+                      <td className="px-3 py-2 text-center">
+                        <div className="font-medium text-violet-700">{Math.round(units * 100) / 100} units</div>
+                        <div className="text-slate-400 text-[10px]">{round2(weekTotal)}h</div>
                         <ProductionActual
                           value={sumActuals(thisWeekDates.map(iso => actualFor(m.name, iso)))}
                           loading={resinActuals.loading}
                           unit="u"
                           drill={{ name: m.name, start: thisWeekDates[0], end: thisWeekDates[6], department: RESIN_MT_DEPARTMENT }}
                         />
-                        {hasRates && weekCPO !== null && <div className="text-[10px] text-purple-500">${weekCPO.toFixed(2)}</div>}
                       </td>
                     </tr>
                   );
                 })}
-                <tr className="bg-purple-50 border-t border-purple-100 font-medium">
-                  <td className="sticky left-0 bg-purple-50 px-4 py-2 text-xs text-purple-700">Day total</td>
+                <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
+                  <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Planned total</td>
                   {[0,1,2,3,4,5,6].map(di => {
                     const dayTotal = roster.reduce((s, m) => s + getDH(m.id, thisWeekOffset, di), 0);
                     const dayUnits = roster.reduce((s, m) => s + (m.ratio > 0 ? getDH(m.id, thisWeekOffset, di) / m.ratio : 0), 0);
                     const dayCost  = roster.reduce((s, m) => s + dailyCost(m, thisWeekOffset, di), 0);
-                    const dayCPO   = dayUnits > 0 && dayCost > 0 ? dayCost / dayUnits : null;
                     const isHoliday = isHolidayColumn(thisWeekOffset, di);
                     return (
                       <td key={di} className={`px-2 py-2 text-center text-xs text-purple-700 ${isHoliday ? 'bg-amber-50/50' : ''}`}>
                         {dayTotal > 0 ? <><div>{dayTotal.toFixed(1)}h</div><div className="text-[10px]">{dayUnits.toFixed(1)}u</div></> : <span className="text-slate-300">—</span>}
-                        {hasRates && dayCPO !== null && <div className="text-[10px]">${dayCPO.toFixed(2)}</div>}
                         {isHoliday && dayCost > 0 && <div className="text-[9px] text-amber-600">${dayCost.toFixed(2)} paid</div>}
                       </td>
                     );
@@ -935,6 +969,34 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                     />
                   </td>
                 </tr>
+                {/* CPO — team labor cost ÷ planned units per day, moved out of Day
+                    total; the week cell averages the days that have one. */}
+                {hasRates && (() => {
+                  const dayCPOs = [0,1,2,3,4,5,6].map(di => {
+                    const dayUnits = roster.reduce((s, m) => s + (m.ratio > 0 ? getDH(m.id, thisWeekOffset, di) / m.ratio : 0), 0);
+                    const dayCost  = roster.reduce((s, m) => s + dailyCost(m, thisWeekOffset, di), 0);
+                    return dayUnits > 0 && dayCost > 0 ? dayCost / dayUnits : null;
+                  });
+                  const withCPO = dayCPOs.filter((c): c is number => c !== null);
+                  const avgCPO = withCPO.length > 0 ? withCPO.reduce((s, c) => s + c, 0) / withCPO.length : null;
+                  return (
+                    <tr className="border-t border-slate-200 bg-white">
+                      <td className="sticky left-0 bg-white px-4 py-2 text-xs font-semibold text-slate-600">
+                        <div>CPO</div>
+                        <div className="text-[9px] font-normal text-slate-400">planned</div>
+                      </td>
+                      {dayCPOs.map((c, di) => (
+                        <td key={di} className={`px-2 py-2 text-center ${isHolidayColumn(thisWeekOffset, di) ? 'bg-amber-50/50' : ''}`}>
+                          {c !== null ? <div className="font-semibold text-amber-700">${c.toFixed(2)}</div> : <div className="text-slate-300">—</div>}
+                        </td>
+                      ))}
+                      <td className="px-3 py-2 text-center whitespace-nowrap">
+                        {avgCPO !== null ? <div className="font-semibold text-amber-700">${avgCPO.toFixed(2)}</div> : <div className="text-slate-300">—</div>}
+                        <div className="text-[10px] text-slate-400">day avg</div>
+                      </td>
+                    </tr>
+                  );
+                })()}
               </tbody>
             </table>
           </div>
@@ -946,7 +1008,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
         <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 flex-wrap gap-2">
             <div className="flex items-center gap-4">
-              <h3 className="text-sm font-semibold text-slate-700">Hours per team member per week</h3>
+              <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.hoursPerMember">Hours per team member per week</HelpTip></h3>
               {hasRates && (
                 <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer">
                   <input type="checkbox" checked={showCPO} onChange={e => setShowCPO(e.target.checked)} className="rounded" />
@@ -980,9 +1042,8 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                     Team Member
                   </th>
                   {windowWeeks.map(w => (
-                    <th key={w} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[90px]">
-                      {getWeekLabel(w)}
-                      {w === 0 && <span className="ml-1 text-[10px] bg-purple-100 text-purple-600 rounded px-1">now</span>}
+                    <th key={w} className="px-1 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[110px]">
+                      <WeekHead label={getWeekLabel(w)} now={w === 0} />
                     </th>
                   ))}
                 </tr>
@@ -990,10 +1051,10 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
               <tbody>
                 {productionRoster.map((m, mi) => (
                   <tr key={m.id} className={`border-b border-slate-50 ${mi % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
-                    <td className="sticky left-0 bg-white px-4 py-1.5 font-medium text-slate-700 whitespace-nowrap">
-                      {m.name}
-                      <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
-                      <div className="text-[10px] text-slate-400 font-normal">{m.ratio}h/unit</div>
+                    <td className="sticky left-0 z-10 bg-white px-4 py-2 whitespace-nowrap">
+                      <PersonCell name={m.name}>
+                        <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
+                      </PersonCell>
                     </td>
                     {windowWeeks.map(w => {
                       const h    = memberWeekHours(w, m);
@@ -1001,19 +1062,10 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                       const { cpo }  = weekMemberStats(w, m);
                       const totalH = m.isManager ? resolveMgrTotalWeekHours(w, m, h) : h;
                       return (
-                        <td key={w} className="px-1 py-1 text-center">
-                          <WeekBubble value={resinInputMode === 'output' ? round2(units) : round2(h)} />
-                          {m.isManager && totalH !== h && <WeekTotalBubble value={round2(totalH)} />}
-                          {resinInputMode === 'output'
-                            ? (h > 0 && <div className="text-[10px] text-slate-400 mt-0.5">{round2(h)}h</div>)
-                            : (h > 0 && (
-                              <div className="text-[10px] text-slate-400 mt-0.5">
-                                {units.toFixed(0)}u
-                                {showCPO && cpo !== null && (
-                                  <span className="ml-1 text-purple-500">${cpo.toFixed(2)}</span>
-                                )}
-                              </div>
-                            ))}
+                        <td key={w} className="p-1 align-top">
+                          <WeekCell tone="resin" mode={resinInputMode} hours={h} output={units} outputUnit="units"
+                            totalHours={m.isManager ? totalH : undefined}
+                            cpo={showCPO && cpo !== null ? `$${cpo.toFixed(2)}` : null} />
                         </td>
                       );
                     })}
@@ -1021,8 +1073,8 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                 ))}
 
                 {/* Totals row */}
-                <tr className="bg-purple-50 border-t border-purple-100 font-medium">
-                  <td className="sticky left-0 bg-purple-50 px-4 py-2 text-xs text-purple-700">Week total</td>
+                <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
+                  <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Week total</td>
                   {windowWeeks.map(w => {
                     const cap = weeklyCapacity(w);
                     const { totalCPO } = weekTotals(w);
@@ -1083,7 +1135,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
           <div className="bg-white border border-slate-100 rounded-xl p-5">
             <div className="flex items-start justify-between gap-4 flex-wrap mb-1">
               <h3 className="text-sm font-semibold text-slate-700">
-                Turnaround — by event-date intake week
+                <HelpTip id="resin.turnaround">Turnaround — by event-date intake week</HelpTip>
               </h3>
               <label className="flex items-center gap-1.5 text-xs text-slate-500 shrink-0">
                 Currently designing as of
@@ -1255,7 +1307,7 @@ function ResinQueueTable({ queueFrontWeek }: { queueFrontWeek: string | null }) 
   return (
     <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
       <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
-        <h3 className="text-sm font-semibold text-slate-700">Queue — all {total.toLocaleString()} units</h3>
+        <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="resin.queue">Queue — all {total.toLocaleString()} units</HelpTip></h3>
         <div className="flex items-center gap-2 text-xs text-slate-400">
           <button onClick={() => { setPage(p => Math.max(1, p - 1)); fetchPage(Math.max(1, page - 1)); }}
             disabled={page === 1} className="disabled:opacity-30 hover:text-slate-600">← Prev</button>

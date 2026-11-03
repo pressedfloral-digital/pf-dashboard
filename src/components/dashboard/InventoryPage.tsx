@@ -1,7 +1,11 @@
 'use client';
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { PRESERVATION_WEEKS, NOT_ON_ORDER, sizeLabel, type QueueLine } from '@/lib/designInventory';
+import { PRESERVATION_WEEKS, NOT_ON_ORDER, ADDONS_UNKNOWN, sizeLabel, type QueueLine } from '@/lib/designInventory';
+import type { OrderEdits, OrderPlan } from '@/lib/katanaPlan';
+import OrderPlanView from './OrderPlanView';
+import SupplierForecastView from './SupplierForecastView';
+import { HelpTip } from './HelpTip';
 
 interface InventoryWeek {
   weekOf:    string;
@@ -16,10 +20,20 @@ interface InventoryResponse {
   designedThisWeek: number;
   weeks:            InventoryWeek[];
   unscheduledCount: number;
+  through?: string;
+  orderPlan:        OrderPlan | null;
+  katanaError:      string | null;
+  orderEdits:       OrderEdits;
   totals: {
     lines: number; inDesignQueue: number; inPreservation: number;
-    intakeFromEventDate: number; missingLocation: number; missingOrderDetail: number;
+    intakeFromEventDate: number; missingLocation: number;
   };
+  // Absent on copies saved before backing/glass were cached.
+  addOns?: {
+    orders: number; unknownOrders: number; unknownLines: number;
+    oldestFetchedAt: string | null; newestFetchedAt: string | null; refreshHours: number;
+  };
+  savedCopy?: true;   // the last successful build, not a fresh one
   error?: string;
 }
 
@@ -42,6 +56,30 @@ const STATUS_LABELS: Record<string, string> = {
 
 function fmtWeek(iso: string): string {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function fmtTime(iso: string): string {
+  return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+// "Not on order" (the order has none) and "Couldn't load" (unknown) must
+// never look alike.
+function materialClass(v: string | null | undefined): string {
+  if (v === ADDONS_UNKNOWN) return 'text-rose-600 font-medium';
+  if (v === NOT_ON_ORDER) return 'text-amber-600';
+  return 'text-slate-700';
+}
+
+async function fetchInventory(url: string): Promise<InventoryResponse> {
+  const r = await fetch(url);
+  // A non-JSON body is Next's HTML error page (e.g. a timeout); report the
+  // status rather than a JSON parse error.
+  if (!r.headers.get('content-type')?.includes('application/json')) {
+    throw new Error(`the server returned ${r.status}`);
+  }
+  const d = await r.json() as InventoryResponse;
+  if (!r.ok) throw new Error(d.error ?? `the server returned ${r.status}`);
+  return d;
 }
 
 // One countable item per line for a material, or null when the line's
@@ -103,21 +141,44 @@ export default function InventoryPage() {
   // other location's numbers, and a slow earlier response can't overwrite a
   // newer one.
   const [loaded, setLoaded] = useState<{ location: string; data: InventoryResponse } | null>(null);
+  // The fresh build runs alongside; until it lands the last saved copy shows,
+  // and if it fails that copy stays up with the error.
+  const [refresh, setRefresh] = useState<{ location: string; state: 'failed' | 'done'; error?: string } | null>(null);
   const [selectedWeek, setSelectedWeek] = useState<string | null>(null);
   const [material, setMaterial] = useState<Material>('frame');
+  const [view, setView] = useState<'order' | 'supplier' | 'schedule'>('order');
+  // Edits made on What to order this visit, so the supplier forecast (and
+  // What to order when it remounts) shows them without a reload.
+  const [liveEdits, setLiveEdits] = useState<{ location: string; edits: OrderEdits } | null>(null);
   const data = loaded?.location === location ? loaded.data : null;
+  const orderEdits = (liveEdits?.location === location ? liveEdits.edits : data?.orderEdits) ?? {};
+  // No result yet for this location means the fresh build is still running.
+  const refreshState = refresh?.location === location ? refresh : null;
   const loading = !data;
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/design-inventory?location=${location}`)
-      .then(r => r.json())
-      .then((d: InventoryResponse) => {
+    const show = (d: InventoryResponse) => {
+      setLoaded(prev => {
+        // A saved copy never replaces a fresh one that already arrived.
+        if (d.savedCopy && prev?.location === location && !prev.data.savedCopy) return prev;
+        return { location, data: d };
+      });
+      setSelectedWeek(prev => {
+        const ws = d.weeks?.filter(w => w.lines.length > 0) ?? [];
+        return prev && ws.some(w => w.weekOf === prev) ? prev : ws[0]?.weekOf ?? null;
+      });
+    };
+    fetchInventory(`/api/design-inventory?location=${location}&saved=1`)
+      .then(d => { if (!cancelled) show(d); })
+      .catch(() => {}); // no saved copy yet — wait for the fresh build
+    fetchInventory(`/api/design-inventory?location=${location}`)
+      .then(d => {
         if (cancelled) return;
-        setLoaded({ location, data: d });
-        setSelectedWeek(d.weeks?.find(w => w.lines.length > 0)?.weekOf ?? null);
+        show(d);
+        setRefresh({ location, state: 'done' });
       })
-      .catch(e => { if (!cancelled) setLoaded({ location, data: { error: String(e) } as InventoryResponse }); });
+      .catch(e => { if (!cancelled) setRefresh({ location, state: 'failed', error: e instanceof Error ? e.message : String(e) }); });
     return () => { cancelled = true; };
   }, [location]);
 
@@ -154,18 +215,66 @@ export default function InventoryPage() {
             </button>
           ))}
         </div>
-        {data && !data.error && (
+        <div className="flex rounded-lg border border-slate-200 overflow-hidden">
+          {([['order', 'What to order'], ['schedule', 'Frames, backing & glass'], ['supplier', 'Supplier forecast']] as const).map(([id, name]) => (
+            <button
+              key={id}
+              onClick={() => setView(id)}
+              className={`px-4 py-1.5 text-sm font-medium ${view === id ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+            >
+              <HelpTip id={`inv.view.${id}`}>{name}</HelpTip>
+            </button>
+          ))}
+        </div>
+        {data && !data.error && view === 'schedule' && (
           <button
             onClick={() => downloadCsv(data)}
             className="ml-auto px-3 py-1.5 text-sm rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
           >
-            Download CSV
+            <HelpTip id="inv.csv">Download CSV</HelpTip>
           </button>
         )}
       </div>
 
+      {loading && refreshState?.state !== 'failed' && (
+        <div className="py-12 text-center text-sm text-slate-500">Loading orders from the production app and stock from Katana… this can take a few minutes.</div>
+      )}
+      {loading && refreshState?.state === 'failed' && (
+        <div className="py-12 text-center text-sm text-rose-600">Couldn&apos;t load inventory: {refreshState.error}. Try again in a minute.</div>
+      )}
+
+      {data && (
+        data.savedCopy && refreshState?.state === 'failed' ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <span className="font-semibold">Couldn&apos;t refresh — showing the last saved version from {fmtTime(data.generatedAt)}.</span>{' '}
+            <span className="text-xs">{refreshState.error && refreshState.error[0].toUpperCase() + refreshState.error.slice(1)}. Reload the page to try again.</span>
+          </div>
+        ) : (
+          <div className="text-xs text-slate-500">
+            {data.savedCopy
+              ? <>Showing the saved version from <span className="font-medium text-slate-700">{fmtTime(data.generatedAt)}</span> · <span className="text-indigo-600">refreshing…</span></>
+              : <>Updated <span className="font-medium text-slate-700">{fmtTime(data.generatedAt)}</span></>}
+            {data.addOns?.oldestFetchedAt && (
+              <> · backing &amp; glass last checked {data.addOns.oldestFetchedAt.slice(0, 16) === data.addOns.newestFetchedAt?.slice(0, 16)
+                ? fmtTime(data.addOns.oldestFetchedAt)
+                : <>between {fmtTime(data.addOns.oldestFetchedAt)} and {fmtTime(data.addOns.newestFetchedAt!)}</>} (rechecked about every {data.addOns.refreshHours} hours)</>
+            )}
+          </div>
+        )
+      )}
+
+      {(view === 'order' || view === 'supplier') && data && !data.error && (
+        !data.orderPlan
+          ? <div className="py-12 text-center text-sm text-rose-600">Couldn&apos;t load Katana: {data.katanaError ?? 'unknown error'}</div>
+          : view === 'order'
+            ? <OrderPlanView key={data.location} plan={data.orderPlan} generatedAt={data.generatedAt} edits={orderEdits}
+                onEditsChange={e => setLiveEdits({ location: data.location, edits: e })} />
+            : <SupplierForecastView key={data.location} plan={data.orderPlan} generatedAt={data.generatedAt} edits={orderEdits} />
+      )}
+
+      {view === 'schedule' && <>
       <div>
-        <h2 className="text-sm font-semibold text-slate-700">Design inventory — frames, backing &amp; glass needed each week</h2>
+        <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="inv.schedule.title">Design inventory — frames, backing &amp; glass needed each week</HelpTip></h2>
         <p className="text-xs text-slate-500 mt-1 max-w-3xl">
           Orders in Ready to Frame, plus orders still in Preservation once they&apos;re {PRESERVATION_WEEKS} weeks past bouquet received,
           scheduled oldest intake first against each week&apos;s Design capacity from the Weekly Schedule. Backing and glass come from
@@ -174,9 +283,6 @@ export default function InventoryPage() {
         </p>
       </div>
 
-      {loading && <div className="py-12 text-center text-sm text-slate-500">Loading orders from the production app… this can take up to a minute.</div>}
-      {data?.error && <div className="py-12 text-center text-sm text-rose-600">Couldn&apos;t load inventory: {data.error}</div>}
-
       {data && !data.error && (
         <>
           <div className="text-xs text-slate-500">
@@ -184,8 +290,100 @@ export default function InventoryPage() {
             {data.designedThisWeek > 0 && <> · {Math.round(data.designedThisWeek)} already designed this week</>}
             {data.totals.intakeFromEventDate > 0 && <> · {data.totals.intakeFromEventDate} with no bouquet-received date (event date used)</>}
             {data.totals.missingLocation > 0 && <> · {data.totals.missingLocation} lines with no location skipped</>}
-            {data.totals.missingOrderDetail > 0 && <> · {data.totals.missingOrderDetail} lines whose order details couldn&apos;t be loaded (backing/glass show as {NOT_ON_ORDER})</>}
-            {data.unscheduledCount > 0 && <> · {data.unscheduledCount} not scheduled before year end</>}
+            {(data.addOns?.unknownLines ?? 0) > 0 && (
+              <> · <span className="text-rose-600 font-medium">{data.addOns!.unknownLines} lines ({data.addOns!.unknownOrders} orders) whose backing &amp; glass couldn&apos;t be loaded</span> — shown as &ldquo;{ADDONS_UNKNOWN}&rdquo;, not counted as none</>
+            )}
+            {data.unscheduledCount > 0 && <> · {data.unscheduledCount} not scheduled{data.through ? <> by the week of {fmtWeek(data.through)}</> : ' in the plan window'}</>}
+          </div>
+
+          {/* ── One week: totals + orders ── */}
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-1.5">
+              {weeks.map(w => (
+                <button
+                  key={w.weekOf}
+                  onClick={() => setSelectedWeek(w.weekOf)}
+                  className={`px-3 py-1 text-xs rounded-full font-medium ${
+                    selectedWeek === w.weekOf ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {fmtWeek(w.weekOf)} · {w.lines.length}
+                </button>
+              ))}
+            </div>
+
+            {week && (
+              <>
+                <div className="grid gap-3 md:grid-cols-3">
+                  {weekSummary.map(m => (
+                    <div key={m.id} className="rounded-xl border border-slate-200 bg-white">
+                      <div className="px-4 py-2 border-b border-slate-100 flex justify-between text-sm font-semibold text-slate-700">
+                        <span>{m.label} — week of {fmtWeek(week.weekOf)}</span>
+                        <span>{m.total}</span>
+                      </div>
+                      <ul className="px-4 py-2 text-xs divide-y divide-slate-50">
+                        {m.rows.map(r => (
+                          <li key={`${r.size}|${r.shape}|${r.type}`} className="flex justify-between py-1">
+                            <span className={materialClass(r.type)}>
+                              {r.size} {r.type}{m.id === 'backing' && r.type !== NOT_ON_ORDER && r.type !== ADDONS_UNKNOWN ? ' backing' : ''}
+                              {r.shape !== 'Rectangle' && r.shape !== '—' && <span className="text-slate-400"> ({r.shape})</span>}
+                            </span>
+                            <span className="font-semibold text-slate-800">{r.total}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
+                  <div className="px-4 py-3 border-b border-slate-100 text-sm font-semibold text-slate-700">
+                    Week of {fmtWeek(week.weekOf)} — {selectedOrders.length} orders
+                  </div>
+                  <table className="min-w-full text-xs">
+                    <thead className="bg-slate-50 text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-medium">Order #</th>
+                        <th className="px-3 py-2 text-left font-medium">Customer</th>
+                        <th className="px-3 py-2 text-left font-medium">Frame</th>
+                        <th className="px-3 py-2 text-left font-medium">Backing</th>
+                        <th className="px-3 py-2 text-left font-medium">Glass</th>
+                        <th className="px-3 py-2 text-left font-medium">Status</th>
+                        <th className="px-3 py-2 text-left font-medium"><HelpTip id="inv.col.intake">Intake</HelpTip></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {selectedOrders.map(([num, lines]) => (
+                        <tr key={num} className="align-top">
+                          <td className="px-3 py-2 font-medium text-slate-800">{num}</td>
+                          <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{lines[0].customer}</td>
+                          <td className="px-3 py-2 text-slate-700">
+                            {lines.map((l, i) => (
+                              <div key={i} className="whitespace-nowrap">
+                                {l.product}
+                                <span className="text-slate-500">{[l.shape, l.size, l.finish, l.options].filter(Boolean).map(p => ` · ${p}`).join('')}</span>
+                              </div>
+                            ))}
+                          </td>
+                          {(['backing', 'glass'] as const).map(k => (
+                            <td key={k} className="px-3 py-2 whitespace-nowrap">
+                              {lines.map((l, i) => {
+                                const v = l.materials?.[k];
+                                return <div key={i} className={materialClass(v)}>{v ?? '—'}</div>;
+                              })}
+                            </td>
+                          ))}
+                          <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{STATUS_LABELS[lines[0].status] ?? lines[0].status}</td>
+                          <td className="px-3 py-2 text-slate-500 whitespace-nowrap" title={lines[0].intakeSource === 'eventDate' ? 'No bouquet-received date on record — event date used' : 'Bouquet received'}>
+                            {fmtWeek(lines[0].intakeDate)}{lines[0].intakeSource === 'eventDate' ? '*' : ''}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </div>
 
           {/* ── Materials × week ── */}
@@ -213,7 +411,7 @@ export default function InventoryPage() {
                     {weeks.map(w => (
                       <th key={w.weekOf} className="px-2 py-2 text-center font-medium whitespace-nowrap">{fmtWeek(w.weekOf)}</th>
                     ))}
-                    <th className="px-3 py-2 text-center font-medium">Total</th>
+                    <th className="px-3 py-2 text-center font-medium"><HelpTip id="inv.col.total">Total</HelpTip></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -225,7 +423,7 @@ export default function InventoryPage() {
                           <tr key={`${r.size}|${r.shape}|${r.type}`} className="border-t border-slate-100 hover:bg-slate-50">
                             <td className="sticky left-0 bg-white px-3 py-1.5 text-slate-700 whitespace-nowrap">{r.size}</td>
                             <td className="px-3 py-1.5 text-slate-600">{r.shape}</td>
-                            <td className={`px-3 py-1.5 whitespace-nowrap ${r.type === NOT_ON_ORDER ? 'text-amber-600' : 'text-slate-700'}`}>{r.type}</td>
+                            <td className={`px-3 py-1.5 whitespace-nowrap ${materialClass(r.type)}`}>{r.type}</td>
                             {weeks.map(w => (
                               <td key={w.weekOf} className="px-2 py-1.5 text-center text-slate-700">{r.byWeek[w.weekOf] ?? ''}</td>
                             ))}
@@ -258,98 +456,9 @@ export default function InventoryPage() {
               </table>
             </div>
           </div>
-
-          {/* ── One week: totals + orders ── */}
-          <div className="space-y-3">
-            <div className="flex flex-wrap gap-1.5">
-              {weeks.map(w => (
-                <button
-                  key={w.weekOf}
-                  onClick={() => setSelectedWeek(w.weekOf)}
-                  className={`px-3 py-1 text-xs rounded-full font-medium ${
-                    selectedWeek === w.weekOf ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  {fmtWeek(w.weekOf)} · {w.lines.length}
-                </button>
-              ))}
-            </div>
-
-            {week && (
-              <>
-                <div className="grid gap-3 md:grid-cols-3">
-                  {weekSummary.map(m => (
-                    <div key={m.id} className="rounded-xl border border-slate-200 bg-white">
-                      <div className="px-4 py-2 border-b border-slate-100 flex justify-between text-sm font-semibold text-slate-700">
-                        <span>{m.label} — week of {fmtWeek(week.weekOf)}</span>
-                        <span>{m.total}</span>
-                      </div>
-                      <ul className="px-4 py-2 text-xs divide-y divide-slate-50">
-                        {m.rows.map(r => (
-                          <li key={`${r.size}|${r.shape}|${r.type}`} className="flex justify-between py-1">
-                            <span className={r.type === NOT_ON_ORDER ? 'text-amber-600' : 'text-slate-700'}>
-                              {r.size} {r.type}{m.id === 'backing' && r.type !== NOT_ON_ORDER ? ' backing' : ''}
-                              {r.shape !== 'Rectangle' && r.shape !== '—' && <span className="text-slate-400"> ({r.shape})</span>}
-                            </span>
-                            <span className="font-semibold text-slate-800">{r.total}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
-                  <div className="px-4 py-3 border-b border-slate-100 text-sm font-semibold text-slate-700">
-                    Week of {fmtWeek(week.weekOf)} — {selectedOrders.length} orders
-                  </div>
-                  <table className="min-w-full text-xs">
-                    <thead className="bg-slate-50 text-slate-500">
-                      <tr>
-                        <th className="px-3 py-2 text-left font-medium">Order #</th>
-                        <th className="px-3 py-2 text-left font-medium">Customer</th>
-                        <th className="px-3 py-2 text-left font-medium">Frame</th>
-                        <th className="px-3 py-2 text-left font-medium">Backing</th>
-                        <th className="px-3 py-2 text-left font-medium">Glass</th>
-                        <th className="px-3 py-2 text-left font-medium">Status</th>
-                        <th className="px-3 py-2 text-left font-medium">Intake</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {selectedOrders.map(([num, lines]) => (
-                        <tr key={num} className="align-top">
-                          <td className="px-3 py-2 font-medium text-slate-800">{num}</td>
-                          <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{lines[0].customer}</td>
-                          <td className="px-3 py-2 text-slate-700">
-                            {lines.map((l, i) => (
-                              <div key={i} className="whitespace-nowrap">
-                                {l.product}
-                                <span className="text-slate-500">{[l.shape, l.size, l.finish, l.options].filter(Boolean).map(p => ` · ${p}`).join('')}</span>
-                              </div>
-                            ))}
-                          </td>
-                          {(['backing', 'glass'] as const).map(k => (
-                            <td key={k} className="px-3 py-2 whitespace-nowrap">
-                              {lines.map((l, i) => {
-                                const v = l.materials?.[k];
-                                return <div key={i} className={v === NOT_ON_ORDER ? 'text-amber-600' : 'text-slate-700'}>{v ?? '—'}</div>;
-                              })}
-                            </td>
-                          ))}
-                          <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{STATUS_LABELS[lines[0].status] ?? lines[0].status}</td>
-                          <td className="px-3 py-2 text-slate-500 whitespace-nowrap" title={lines[0].intakeSource === 'eventDate' ? 'No bouquet-received date on record — event date used' : 'Bouquet received'}>
-                            {fmtWeek(lines[0].intakeDate)}{lines[0].intakeSource === 'eventDate' ? '*' : ''}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
-          </div>
         </>
       )}
+      </>}
     </div>
   );
 }

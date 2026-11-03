@@ -23,6 +23,14 @@
     {
       "path": "/api/cron/sync-state-sales",
       "schedule": "0 13 1 * *"
+    },
+    {
+      "path": "/api/cron/refresh-order-addons",
+      "schedule": "10,40 * * * *"
+    },
+    {
+      "path": "/api/cron/sync-bouquet-received",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

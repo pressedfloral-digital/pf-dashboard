@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { HelpTip } from './HelpTip';
+import { statusHelpKey } from './dashboardHelp';
 
 interface PipelineCount {
   status: string;
@@ -214,25 +216,25 @@ export function PipelineSection({ pipeline, location, departmentFilter }: { pipe
     <section>
       <div className="flex items-center gap-3 mb-3 flex-wrap">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-          Pipeline — {location}
+          <HelpTip id="pipeline.title">Pipeline — {location}</HelpTip>
         </h2>
-        <span className="text-xs text-slate-400">
+        <HelpTip id="pipeline.inQueue" className="text-xs text-slate-400">
           {inQueue.toLocaleString()} orders in queue (awaiting bouquet)
-        </span>
+        </HelpTip>
         <div className="ml-auto flex gap-2">
           <button
             onClick={handleShopifyCheck}
             disabled={shopifyChecking}
             className="text-xs font-medium px-3 py-1 rounded border border-violet-300 bg-white text-violet-600 hover:bg-violet-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            {shopifyChecking ? 'Checking Shopify…' : shopifyResults ? 'Hide Shopify Check' : 'Check Shopify Status'}
+            <HelpTip id="pipeline.shopifyCheck">{shopifyChecking ? 'Checking Shopify…' : shopifyResults ? 'Hide Shopify Check' : 'Check Shopify Status'}</HelpTip>
           </button>
           <button
             onClick={handleExport}
             disabled={exporting}
             className="text-xs font-medium px-3 py-1 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            {exporting ? 'Exporting…' : 'Export Ready to Frame + Seal'}
+            <HelpTip id="pipeline.export">{exporting ? 'Exporting…' : 'Export Ready to Frame + Seal'}</HelpTip>
           </button>
         </div>
       </div>
@@ -298,15 +300,17 @@ export function PipelineSection({ pipeline, location, departmentFilter }: { pipe
           return (
             <Card key={dept} className={`border ${DEPT_COLORS[dept]}`}>
               <CardHeader className="pb-2">
-                <CardTitle className={`text-base font-semibold ${DEPT_TEXT[dept]}`}>{dept}</CardTitle>
-                <p className="text-2xl font-bold text-slate-900">{total.toLocaleString()}</p>
+                <HelpTip id={`pipeline.dept.${dept}` as 'pipeline.dept.Design'} className="block">
+                  <CardTitle className={`text-base font-semibold ${DEPT_TEXT[dept]}`}>{dept}</CardTitle>
+                  <p className="text-2xl font-bold text-slate-900">{total.toLocaleString()}</p>
+                </HelpTip>
                 {dept === 'Fulfillment' && holdCount !== null && holdCount > 0 && (
                   <div className="mt-0.5">
                     <button
                       onClick={() => setHoldExpanded(e => !e)}
                       className="text-xs font-medium text-rose-600 hover:text-rose-800 transition-colors"
                     >
-                      {holdCount.toLocaleString()} on hold (Shopify) {holdExpanded ? '▲' : '▼'}
+                      <HelpTip id="pipeline.onHold">{holdCount.toLocaleString()} on hold (Shopify) {holdExpanded ? '▲' : '▼'}</HelpTip>
                     </button>
                     {holdExpanded && (
                       <div className="mt-1 rounded border border-rose-100 bg-white overflow-auto max-h-48">
@@ -364,12 +368,11 @@ export function PipelineSection({ pipeline, location, departmentFilter }: { pipe
                   return (
                     <div key={st}>
                       <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-600">{STATUS_LABELS[st] ?? st}</span>
+                        <StatusLabel status={st} />
                         {count > 0 ? (
                           <button
                             onClick={() => handleStatusClick(st)}
                             className="rounded px-2 py-0.5 text-xs font-semibold bg-slate-200 hover:bg-slate-300 text-slate-700 transition-colors cursor-pointer"
-                            title="Click to see order numbers"
                           >
                             {isLoading ? '…' : count.toLocaleString()}
                           </button>
@@ -447,4 +450,12 @@ export function PipelineSection({ pipeline, location, departmentFilter }: { pipe
       </div>
     </section>
   );
+}
+
+function StatusLabel({ status }: { status: string }) {
+  const label = STATUS_LABELS[status] ?? status;
+  const key   = statusHelpKey(status);
+  return key
+    ? <HelpTip id={key} className="text-slate-600">{label}</HelpTip>
+    : <span className="text-slate-600">{label}</span>;
 }

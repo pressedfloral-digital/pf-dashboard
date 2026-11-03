@@ -15,15 +15,26 @@ export function sumActuals(values: (number | null)[]): number | null {
 // A single person's count can open the orders behind it; team totals can't.
 interface ActualDrill { name: string; start: string; end: string; department: AssignmentDepartment }
 
-export function ProductionActual({ value, loading, unit, drill }: { value: number | null; loading: boolean; unit: string; drill?: ActualDrill }) {
+// Colour for an actual against its goal: green at/above goal, yellow within
+// 90% of it, red further behind. null (no colour) when there's no goal to
+// compare against — e.g. a day that hasn't happened yet.
+export function actualGoalTone(value: number | null, goal: number | null | undefined): string | null {
+  if (goal == null || value === null) return null;
+  if (goal <= 0) return value > 0 ? 'text-green-600' : null;
+  const pct = value / goal;
+  return pct >= 1 ? 'text-green-600' : pct >= 0.9 ? 'text-amber-500' : 'text-red-600';
+}
+
+export function ProductionActual({ value, loading, unit, drill, goal }: { value: number | null; loading: boolean; unit: string; drill?: ActualDrill; goal?: number | null }) {
   const [open, setOpen] = useState(false);
   const label = `Actual ${loading && value === null ? '…' : `${value ?? '—'}${value === null ? '' : unit}`}`;
-  const cls = 'mt-0.5 text-[10px] font-semibold text-sky-600 tabular-nums';
+  const tone = actualGoalTone(value, goal);
+  const cls = `mt-0.5 text-[10px] font-semibold ${tone ?? 'text-sky-600'} tabular-nums`;
   if (!drill || !value) return <div className={cls} title="Live assignment count from the production app">{label}</div>;
   return (
     <>
       <button type="button" onClick={() => setOpen(true)}
-        className={`${cls} block mx-auto underline decoration-dotted underline-offset-2 hover:text-sky-800 cursor-pointer`}
+        className={`${cls} inline-block underline decoration-dotted underline-offset-2 ${tone ? 'hover:opacity-80' : 'hover:text-sky-800'} cursor-pointer`}
         title="Live assignment count from the production app — click to see the orders">
         {label}
       </button>

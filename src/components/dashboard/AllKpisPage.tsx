@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { Fragment, useState, useMemo } from 'react';
 import {
   useKpiMetrics,
   getWindowsByType,
@@ -17,6 +17,8 @@ import {
   RATIO_DEPTS,
   CPO_DEPTS,
   showResin,
+  sheetBackfillWeeks,
+  estimatedBackfillWeeks,
   type KpiLocation,
   type KpiDept,
   type KpiMetrics,
@@ -25,6 +27,8 @@ import {
   type RatioVariant,
 } from '@/hooks/useKpiMetrics';
 import { RATIO_TARGETS, type RatioDept } from '@/lib/ratioTargets';
+import { HelpTip } from './HelpTip';
+import { PtoCpoInfo } from './PtoCpoInfo';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -196,6 +200,12 @@ function HeatLegend() {
   );
 }
 
+// "2025-12-29" -> "W/C Dec 29, 2025"
+function fmtWeekOf(iso: string): string {
+  const d = new Date(iso + 'T12:00:00');
+  return `W/C ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+}
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function TabBar<T extends string>({
@@ -238,6 +248,7 @@ function KpiCell({
   heatShaded = false,
   planned = null,
   plannedVariant = 'estimate',
+  periodLabel,
 }: {
   metrics:  KpiMetrics;
   section:  KpiSection;
@@ -248,6 +259,7 @@ function KpiCell({
   heatShaded?: boolean; // cell sits on a heatmap background — darken the muted/accent text that's tuned for a white cell
   planned?: KpiMetrics | null; // that period's own saved-schedule projection, for the "vs planned" delta line
   plannedVariant?: RatioVariant; // which projection `planned` is — Estimated/Expected/Goal, see PLANNED_VARIANT_LABEL
+  periodLabel?: string; // e.g. "W/C Oct 5" — heads the manager-PTO info bubble
 }) {
   if (!metrics.hasData) {
     return <span className="text-slate-300 text-sm">—</span>;
@@ -299,6 +311,12 @@ function KpiCell({
   // that got bonus $ while below its baseline (Specialist) tier is worth a
   // second look at how the bonus goal was set.
   const tier = showBonus ? classifyTier(dept, metrics.ratio) : null;
+  // Manager PTO lowered this cell's cost (the API only sends it to admins and
+  // that location's GM). Full-pay CPO keeps whatever GM/bonus the shown CPO
+  // has by adding the same per-unit difference the PTO adjustment removed.
+  const ptoFullCpo = cpoVal != null && metrics.pto?.fullCpo != null && metrics.cpo != null
+    ? cpoVal + (metrics.pto.fullCpo - metrics.cpo)
+    : null;
   // On the heat backgrounds, slate-400/amber-600 (tuned for a white cell)
   // fall to ~1-2:1 contrast — nearly invisible. slate-800 stays 5-10:1
   // across green/yellow/red, so secondary lines switch to it too instead of
@@ -310,7 +328,23 @@ function KpiCell({
         cpoVal == null ? 'text-slate-300' : 'text-slate-800'
       }`}>
         {fmtCPO(cpoVal)}
+        {metrics.pto && cpoVal != null && ptoFullCpo != null && (
+          <PtoCpoInfo
+            periodLabel={periodLabel ?? 'this period'}
+            department={dept.charAt(0).toUpperCase() + dept.slice(1)}
+            adjustments={metrics.pto.adjustments}
+            totalOrders={metrics.production}
+            adjustedCpo={cpoVal}
+            fullCpo={ptoFullCpo}
+            size="md"
+          />
+        )}
       </div>
+      {ptoFullCpo != null && ptoFullCpo - (cpoVal ?? 0) > 0.005 && (
+        <div className={`text-[11px] tabular-nums ${heatShaded ? 'text-slate-700' : 'text-slate-400'}`}>
+          {fmtCPO(ptoFullCpo)} with full manager pay
+        </div>
+      )}
       {cpoVal != null && dept !== 'ga' && (
         <div className={`text-xs tabular-nums ${heatShaded ? 'text-slate-800' : 'text-slate-400'}`}>
           {fmtCPO(metrics.laborCost)} / {fmtUnits(metrics.production)} {DEPT_PRODUCTION_UNIT[dept]}
@@ -348,6 +382,7 @@ function HistoricalRow({
   showBonus = false,
   plannedVariant,
   columnStats,
+  dashboardStart,
 }: {
   window:   WindowResult;
   section:  KpiSection;
@@ -357,12 +392,41 @@ function HistoricalRow({
   showBonus?: boolean;
   plannedVariant: RatioVariant;
   columnStats?: Partial<Record<KpiDept, HeatColumnStats>>;
+  dashboardStart: string | null;
 }) {
   const period        = selectLocation(w, location);
   const plannedPeriod = selectPlanned(w, location, plannedVariant);
+  const sheetWeeks    = sheetBackfillWeeks(w, location, section);
+  // CPO weeks whose cost is estimated (no payroll on file) — labeled apart
+  // from real sheet/dashboard payroll so an estimate is never mistaken for it.
+  const estWeeks      = section === 'cpo' ? estimatedBackfillWeeks(w, location) : 0;
+  // A window ending before the dashboard's own data starts is all sheet
+  // (any other weeks in it just have no data from either source).
+  const allSheet      = dashboardStart == null || w.periodEnd < dashboardStart;
+  const allEstimate   = estWeeks > 0 && estWeeks === sheetWeeks && allSheet;
+  const edge = estWeeks > 0 ? 'border-l-4 border-l-amber-400' : sheetWeeks > 0 ? 'border-l-4 border-l-sky-300' : '';
   return (
     <tr className="border-t border-slate-100 hover:bg-slate-50">
-      <td className="py-3 px-4 text-sm text-slate-600 font-medium whitespace-nowrap">{w.label}</td>
+      <td className={`py-3 px-4 text-sm text-slate-600 font-medium whitespace-nowrap ${edge}`}>
+        {w.label}
+        {estWeeks > 0 ? (
+          <div
+            className="mt-1 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800"
+            title={`Cost for ${estWeeks} of this period’s weeks is ESTIMATED — no payroll on file before W/C Aug 11, 2025. Each person’s Master Calculations hours × an estimated pay rate, plus salaried managers; no G&A.`}
+          >
+            {allEstimate ? 'Estimate' : `Estimate · ${estWeeks}/${w.sheetBackfill?.totalWeeks ?? estWeeks} wks`}
+          </div>
+        ) : sheetWeeks > 0 && (
+          <div
+            className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-sky-700"
+            title={section === 'ratio'
+              ? 'Hours and production for these weeks come from the location’s Master Calculations Google Sheet, not dashboard actuals'
+              : 'Cost and production for these weeks come from the Ops Weekly Cost per Department (Director View) Google Sheet — real payroll, not dashboard uploads'}
+          >
+            {allSheet ? 'Google Sheet' : 'Sheet + dashboard'}
+          </div>
+        )}
+      </td>
       {depts.map(dept => {
         if (!showResin(location, dept)) {
           return <td key={dept} className="py-3 px-4 text-xs text-slate-300 text-center">Utah only</td>;
@@ -380,6 +444,7 @@ function HistoricalRow({
               dept={dept}
               planned={plannedPeriod ? selectDept(plannedPeriod, dept) : null}
               plannedVariant={plannedVariant}
+              periodLabel={w.label}
             />
           </td>
         );
@@ -520,7 +585,7 @@ function ExpectationTable({
         <table className="w-full text-left">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-100">
-              <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left text-xs font-medium text-slate-500 min-w-[110px]">Metric</th>
+              <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left text-xs font-medium text-slate-500 min-w-[110px]"><HelpTip id="kpi.metricCol">Metric</HelpTip></th>
               {depts.map(dept => (
                 <th key={dept} className="px-4 py-2 text-left text-xs font-medium text-slate-500 min-w-[130px] whitespace-nowrap">
                   {DEPT_LABELS[dept]}
@@ -581,6 +646,7 @@ function HistoricalTable({
   showGM,
   showBonus = false,
   plannedVariant,
+  dashboardStart = null,
 }: {
   windows:  WindowResult[];
   section:  KpiSection;
@@ -589,11 +655,18 @@ function HistoricalTable({
   showGM:   boolean;
   showBonus?: boolean;
   plannedVariant: RatioVariant;
+  dashboardStart?: string | null;
 }) {
   if (windows.length === 0) {
     return <div className="text-sm text-slate-400 py-8 text-center">No data for this period</div>;
   }
   const columnStats = computeColumnStats(windows, location, depts, section, showGM, showBonus);
+  const rows = [...windows].reverse();
+  // Newest first, so the divider sits above the first (most recent) row
+  // that used any sheet history — everything below it is backfill.
+  const firstSheetIdx = rows.findIndex(w => sheetBackfillWeeks(w, location, section) > 0);
+  // Same, for the first row whose CPO cost is (partly) estimated.
+  const firstEstIdx   = section === 'cpo' ? rows.findIndex(w => estimatedBackfillWeeks(w, location) > 0) : -1;
   return (
     <div>
       <div className="sm:hidden flex items-center gap-1 text-[10px] text-slate-400 px-4 pt-2 pb-1.5">
@@ -604,7 +677,7 @@ function HistoricalTable({
         <table className="w-full text-left">
           <thead>
             <tr className="border-b border-slate-200">
-              <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">Period</th>
+              <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap"><HelpTip id="kpi.period">Period</HelpTip></th>
               {depts.map(dept => (
                 <th key={dept} className="py-3 px-4 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">
                   {DEPT_LABELS[dept]}
@@ -614,18 +687,39 @@ function HistoricalTable({
             </tr>
           </thead>
           <tbody>
-            {[...windows].reverse().map(w => (
-              <HistoricalRow
-                key={`${w.periodStart}-${w.periodEnd}`}
-                window={w}
-                section={section}
-                location={location}
-                depts={depts}
-                showGM={showGM}
-                showBonus={showBonus}
-                plannedVariant={plannedVariant}
-                columnStats={columnStats}
-              />
+            {rows.map((w, i) => (
+              <Fragment key={`${w.periodStart}-${w.periodEnd}`}>
+                {i === firstSheetIdx && i !== firstEstIdx && (
+                  <tr className="border-t-2 border-sky-300 bg-sky-50">
+                    <td colSpan={depts.length + 1} className="py-2 px-4 text-xs text-sky-800">
+                      <span className="font-semibold">Backfilled from Google Sheets below this line</span>
+                      {section === 'ratio'
+                        ? <>{' '}— Utah &amp; Georgia &ldquo;Master Calculations&rdquo; sheets.</>
+                        : <>{' '}— real payroll from the Ops &ldquo;Weekly Cost per Department (Director View)&rdquo; sheet.</>}
+                      {dashboardStart && <> Dashboard-tracked {section === 'ratio' ? 'hours' : 'payroll'} &amp; production starts {fmtWeekOf(dashboardStart)}.</>}
+                    </td>
+                  </tr>
+                )}
+                {i === firstEstIdx && (
+                  <tr className="border-t-2 border-amber-400 bg-amber-50">
+                    <td colSpan={depts.length + 1} className="py-2 px-4 text-xs text-amber-900">
+                      <span className="font-semibold">Estimated CPO below this line</span>
+                      {' '}— no payroll on file before W/C Aug 11, 2025, so cost is estimated from &ldquo;Master Calculations&rdquo; hours × pay rates (plus salaried managers, no G&amp;A). Production is actual.
+                    </td>
+                  </tr>
+                )}
+                <HistoricalRow
+                  window={w}
+                  section={section}
+                  location={location}
+                  depts={depts}
+                  showGM={showGM}
+                  showBonus={showBonus}
+                  plannedVariant={plannedVariant}
+                  columnStats={columnStats}
+                  dashboardStart={dashboardStart}
+                />
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -637,7 +731,7 @@ function HistoricalTable({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function AllKpisPage() {
-  const { windows, estimated, loading, error, refresh } = useKpiMetrics();
+  const { windows, estimated, dashboardStart, loading, error, refresh } = useKpiMetrics();
 
   const [location,   setLocation]   = useState<KpiLocation>('Utah');
   const [section,    setSection]    = useState<KpiSection>('ratio');
@@ -661,7 +755,7 @@ export default function AllKpisPage() {
       {/* ── Header ── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-lg font-semibold text-slate-800">All KPIs</h2>
+          <h2 className="text-lg font-semibold text-slate-800"><HelpTip id="kpi.title">All KPIs</HelpTip></h2>
           <p className="text-sm text-slate-500 mt-0.5">Ratio and CPO across all departments and locations</p>
         </div>
         <button
@@ -683,13 +777,13 @@ export default function AllKpisPage() {
       <div className="flex flex-wrap gap-4 items-start">
         {/* Location */}
         <div className="space-y-1.5">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Location</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400"><HelpTip id="kpi.location">Location</HelpTip></div>
           <TabBar tabs={LOCATIONS} active={location} onChange={setLocation} small />
         </div>
 
         {/* Section */}
         <div className="space-y-1.5">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Metric</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400"><HelpTip id="kpi.metric">Metric</HelpTip></div>
           <TabBar
             tabs={[
               { id: 'ratio' as KpiSection, label: 'Ratio' },
@@ -703,7 +797,7 @@ export default function AllKpisPage() {
 
         {/* Time window */}
         <div className="space-y-1.5">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Time window</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400"><HelpTip id="kpi.time">Time window</HelpTip></div>
           <TabBar tabs={TIME_WINDOWS} active={timeWindow} onChange={setTimeWindow} small />
         </div>
 
@@ -712,7 +806,7 @@ export default function AllKpisPage() {
             exists to compare against (see WindowResult.planned). */}
         {(timeWindow === 'weekly' || timeWindow === 'monthly' || timeWindow === 'quarterly') && (
           <div className="space-y-1.5">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Compare to</div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400"><HelpTip id="kpi.compare">Compare to</HelpTip></div>
             <TabBar
               tabs={[
                 { id: 'estimate' as RatioVariant, label: 'Estimated' },
@@ -729,7 +823,7 @@ export default function AllKpisPage() {
         {/* GM toggle — CPO only */}
         {section === 'cpo' && (
           <div className="space-y-1.5">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">GM cost</div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400"><HelpTip id="kpi.gm">GM cost</HelpTip></div>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setShowGM(false)}
@@ -756,7 +850,7 @@ export default function AllKpisPage() {
             a month has fully closed. */}
         {section === 'cpo' && timeWindow === 'monthly' && (
           <div className="space-y-1.5">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bonus cost</div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400"><HelpTip id="kpi.bonus">Bonus cost</HelpTip></div>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setShowBonus(false)}
@@ -829,7 +923,7 @@ export default function AllKpisPage() {
                 <div className="text-sm font-medium text-slate-700">Weekly — {weeklyWindows.length} weeks</div>
                 <HeatLegend />
               </div>
-              <HistoricalTable windows={weeklyWindows} section={section} location={location} depts={depts} showGM={showGM} plannedVariant={plannedVariant} />
+              <HistoricalTable windows={weeklyWindows} section={section} location={location} depts={depts} showGM={showGM} plannedVariant={plannedVariant} dashboardStart={dashboardStart} />
             </div>
           )}
 
@@ -840,7 +934,7 @@ export default function AllKpisPage() {
                 <div className="text-sm font-medium text-slate-700">Monthly — {monthlyWindows.length} months</div>
                 <HeatLegend />
               </div>
-              <HistoricalTable windows={monthlyWindows} section={section} location={location} depts={depts} showGM={showGM} showBonus={showBonus} plannedVariant={plannedVariant} />
+              <HistoricalTable windows={monthlyWindows} section={section} location={location} depts={depts} showGM={showGM} showBonus={showBonus} plannedVariant={plannedVariant} dashboardStart={dashboardStart} />
             </div>
           )}
 
@@ -851,7 +945,7 @@ export default function AllKpisPage() {
                 <div className="text-sm font-medium text-slate-700">Quarterly — {quarterlyWindows.length} quarters</div>
                 <HeatLegend />
               </div>
-              <HistoricalTable windows={quarterlyWindows} section={section} location={location} depts={depts} showGM={showGM} plannedVariant={plannedVariant} />
+              <HistoricalTable windows={quarterlyWindows} section={section} location={location} depts={depts} showGM={showGM} plannedVariant={plannedVariant} dashboardStart={dashboardStart} />
             </div>
           )}
 
@@ -884,6 +978,9 @@ export default function AllKpisPage() {
             <p><strong>Combined ratio</strong> = Design ratio + Preservation ratio + Fulfillment ratio (additive, not averaged).</p>
             <p>Resin ratio = resin hours ÷ resin production. Utah only.</p>
             {(timeWindow === 'weekly' || timeWindow === 'monthly' || timeWindow === 'quarterly') && (
+              <p><strong>Google Sheet</strong> rows (blue edge) use each week&apos;s hours and production from the Utah and Georgia &ldquo;Master Calculations&rdquo; sheets (each department&apos;s Detail tab, the same manager-excluded figures behind that sheet&apos;s Ratio: Actual) for weeks before the dashboard has its own actuals{dashboardStart ? <> (dashboard data starts {fmtWeekOf(dashboardStart)})</> : null}. Only used for a week where the dashboard has no data of its own. Sheet history starts W/C Jan 1, 2024; Resin from W/C Aug 11, 2025.</p>
+            )}
+            {(timeWindow === 'weekly' || timeWindow === 'monthly' || timeWindow === 'quarterly') && (
               <p>The delta line under each cell compares that period&apos;s actual ratio to what its own saved schedule implied, in whichever mode the <strong>Compare to</strong> toggle above has selected — <strong>Estimated</strong> (each member&apos;s own roster ratio), <strong>Expected</strong> (their role-tier target ratio), or <strong>Goal</strong> (whichever of the two is stricter), all computed from that period&apos;s scheduled hours rather than today&apos;s. ▼ green = beat the plan; ▲ red = fell short.</p>
             )}
             {(timeWindow === 'est-current' || timeWindow === 'est-next') && (
@@ -900,6 +997,12 @@ export default function AllKpisPage() {
             <p><strong>CPO</strong> = total labor cost ÷ production. Includes manager pay. Excludes GM unless &quot;Incl. GM&quot; is selected.</p>
             <p><strong>Combined CPO</strong> = Design CPO + Preservation CPO + Fulfillment CPO + (G&A cost ÷ total production).</p>
             <p>Salary manager costs are computed at annual salary ÷ 52 weeks and split across their departments.</p>
+            {(timeWindow === 'weekly' || timeWindow === 'monthly' || timeWindow === 'quarterly') && (
+              <p><strong>Google Sheet</strong> rows (blue edge) use weekly cost and production from the Ops &ldquo;Weekly Cost per Department (Director View)&rdquo; sheet for weeks before the dashboard has its own payroll uploads{dashboardStart ? <> (dashboard data starts {fmtWeekOf(dashboardStart)})</> : null}. The sheet&apos;s cost includes salaried managers but not bonus or GM; it&apos;s only used for a week where the dashboard has no data of its own, so it never replaces dashboard numbers. A &ldquo;Sheet + dashboard&rdquo; row (e.g. Dec 2025) mixes both sources. The sheet has no Resin cost before W/C Oct 13, 2025.</p>
+            )}
+            {(timeWindow === 'weekly' || timeWindow === 'monthly' || timeWindow === 'quarterly') && (
+              <p>Before W/C Aug 11, 2025 (back to W/C Jan 1, 2024; Georgia from Jun 24, 2024) there&apos;s no payroll on file, so cost is <strong>estimated</strong>: each person&apos;s weekly hours from the Utah/Georgia &ldquo;Master Calculations&rdquo; sheets × their estimated rate (current staff at today&apos;s rate, 10% lower in 2024; people who&apos;ve left at their tier&apos;s rate) plus salaried managers&apos; salary ÷ 52. Production is the sheet&apos;s own. No G&amp;A, Resin, overtime or holiday premiums in those weeks, so Combined CPO there leaves out G&amp;A. Checked against real payroll for Aug–Dec 2025, the method lands within about 1–5% per department.</p>
+            )}
             {(timeWindow === 'weekly' || timeWindow === 'monthly' || timeWindow === 'quarterly') && (
               <p>The delta line under each cell compares actual CPO to what that period&apos;s own saved schedule implied it would cost — real pay × scheduled hours ÷ production at, per the <strong>Compare to</strong> toggle above, either each member&apos;s own roster ratio (Estimated), their role-tier target ratio (Expected), or whichever of the two is stricter (Goal). G&amp;A&apos;s planned figure reuses its real cost — there&apos;s no schedule to project G&amp;A spend from — so it only shows what a difference in planned vs actual org-wide production would have done to its $/unit. Only shown Excl. GM / Excl. Bonus, since neither has a schedule-side counterpart to compare against.</p>
             )}

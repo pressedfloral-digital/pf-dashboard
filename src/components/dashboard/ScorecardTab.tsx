@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { RATIO_TARGETS } from '@/lib/ratioTargets';
 import { MemberTierBadges } from './MemberTierBadge';
+import { HelpTip } from './HelpTip';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -402,13 +403,13 @@ export default function ScorecardTab() {
                   {monthLabel(m)}
                 </th>
               ))}
-              <th className="px-3 py-2.5 text-center font-medium text-slate-400 min-w-[70px]">L3 avg</th>
-              <th className="px-3 py-2.5 text-center font-medium text-slate-400 min-w-[70px]">YTD avg</th>
+              <th className="px-3 py-2.5 text-center font-medium text-slate-400 min-w-[70px]"><HelpTip id="sc.l3">L3 avg</HelpTip></th>
+              <th className="px-3 py-2.5 text-center font-medium text-slate-400 min-w-[70px]"><HelpTip id="sc.ytd">YTD avg</HelpTip></th>
               <th className="px-3 py-2.5 text-center font-semibold text-indigo-600 min-w-[110px] bg-indigo-50/50 border-l border-indigo-100">
-                {monthLabel(nextMonth)} goal
+                <HelpTip id="sc.goal">{monthLabel(nextMonth)} goal</HelpTip>
               </th>
               <th className="px-3 py-2.5 text-center font-semibold text-slate-600 min-w-[110px] bg-slate-50 border-l border-slate-200">
-                Minimum
+                <HelpTip id="sc.minimum">Minimum</HelpTip>
               </th>
             </tr>
           </thead>
@@ -544,7 +545,7 @@ export default function ScorecardTab() {
           return (
             <div key={dept} className="bg-white border border-slate-100 rounded-xl overflow-hidden">
               <div className="px-5 py-3 border-b border-slate-100 flex items-center gap-3 flex-wrap">
-                <h3 className="text-sm font-semibold text-slate-700">{dept} — Actual Ratios</h3>
+                <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sc.ratios">{dept} — Actual Ratios</HelpTip></h3>
                 <span className="text-xs text-slate-400">hours ÷ {PROD_LABEL[dept] ?? 'orders'} · lower is better</span>
                 <div className="flex gap-3 ml-auto text-[10px] text-slate-500">
                   <span className="flex items-center gap-1">
@@ -575,7 +576,7 @@ export default function ScorecardTab() {
                           {monthLabel(m)}
                         </th>
                       ))}
-                      <th className="px-3 py-2 text-center font-medium text-slate-400 min-w-[80px]">L3 avg</th>
+                      <th className="px-3 py-2 text-center font-medium text-slate-400 min-w-[80px]"><HelpTip id="sc.l3">L3 avg</HelpTip></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -708,7 +709,7 @@ export default function ScorecardTab() {
     return (
       <div className="space-y-5">
         <div className="bg-white border border-slate-100 rounded-xl p-5">
-          <h3 className="text-sm font-semibold text-slate-700 mb-1">What-If: CPO Impact of Ratio Changes</h3>
+          <h3 className="text-sm font-semibold text-slate-700 mb-1"><HelpTip id="sc.whatIf">What-If: CPO Impact of Ratio Changes</HelpTip></h3>
           <p className="text-xs text-slate-400 mb-5">
             See how hitting a target ratio for a group of team members would change CPO.
             All inputs are editable — this is a scratch pad.
@@ -836,7 +837,7 @@ export default function ScorecardTab() {
         {/* Ratio reference table */}
         <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-slate-100">
-            <h3 className="text-sm font-semibold text-slate-700">Ratio targets by role</h3>
+            <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sc.targets">Ratio targets by role</HelpTip></h3>
             <p className="text-xs text-slate-400">Hours per order completed. Lower = more efficient.</p>
           </div>
           <table className="min-w-full text-xs">
@@ -888,7 +889,7 @@ export default function ScorecardTab() {
       {/* ── Header bar ──────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-base font-semibold text-slate-800">Scorecards</h2>
+          <h2 className="text-base font-semibold text-slate-800"><HelpTip id="sc.title">Scorecards</HelpTip></h2>
           <p className="text-xs text-slate-400 mt-0.5">
             Monthly KPI actuals, goals, and individual ratios. CPO = labor cost ÷ production.
           </p>
@@ -960,7 +961,7 @@ export default function ScorecardTab() {
           {/* Per-location table */}
           <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
             <div className="px-5 py-3 border-b border-slate-100">
-              <h3 className="text-sm font-semibold text-slate-700">{location} — CPO by Department</h3>
+              <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sc.cpoByDept">{location} — CPO by Department</HelpTip></h3>
               <p className="text-xs text-slate-400 mt-0.5">
                 Click any goal/minimum cell to edit. Quick-apply buttons use last-3-month average.
                 Green = at or below goal. Amber = between goal and minimum. Red = above minimum.
@@ -972,7 +973,7 @@ export default function ScorecardTab() {
           {/* Company-wide blended */}
           <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
             <div className="px-5 py-3 border-b border-slate-100">
-              <h3 className="text-sm font-semibold text-slate-700">Company-Wide — Blended CPO</h3>
+              <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sc.blended">Company-Wide — Blended CPO</HelpTip></h3>
               <p className="text-xs text-slate-400 mt-0.5">Utah + Georgia combined. Excludes Resin.</p>
             </div>
             <div className="sm:hidden flex items-center gap-1 text-[10px] text-slate-400 px-4 pt-2 pb-1.5">
@@ -1028,7 +1029,7 @@ export default function ScorecardTab() {
           {/* Production totals summary */}
           <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
             <div className="px-5 py-3 border-b border-slate-100">
-              <h3 className="text-sm font-semibold text-slate-700">{location} — Production Completed</h3>
+              <h3 className="text-sm font-semibold text-slate-700"><HelpTip id="sc.production">{location} — Production Completed</HelpTip></h3>
               <p className="text-xs text-slate-400 mt-0.5">
                 Design = frames · Preservation = bouquets · Fulfillment = orders shipped · Resin = pieces
               </p>

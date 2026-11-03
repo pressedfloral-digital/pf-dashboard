@@ -23,12 +23,16 @@ function normalizeLocation(raw: string): string {
 function normalizeDept(raw: string): string {
   if (!raw) return '';
   const l = raw.toLowerCase();
+  // Baby Feet Design is Bloom Stock Products work, filed with Recreation
+  // (what the Bloom Stock tab reads) — checked before 'design' so it never
+  // lands in Design's CPO.
+  if (l.includes('baby feet'))                       return 'Recreation';
   if (l.includes('design'))                          return 'Design';
   if (l.includes('preservation'))                    return 'Preservation';
   if (l.includes('fulfillment'))                     return 'Fulfillment';
   // Checked before the G&A/admin branch below — "Resin - Admin" contains
   // "admin" too, and its labor cost belongs in Resin's CPO, not G&A's.
-  if (l.includes('resin'))                           return 'Resin';
+  if (l.includes('resin') || /gem\s*studio/.test(l)) return 'Resin';
   if (l.includes('general') || l.includes('admin'))  return 'G&A';
   if (l.includes('operations'))                      return 'G&A';
   return raw;

@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { computeDailyAssignmentCounts } from '@/lib/assignment-counts';
 
-export const maxDuration = 120;
+import { assignmentDates } from '@/lib/assignment-batch';
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   const { userId } = await auth();
@@ -14,19 +14,16 @@ export async function POST(req: NextRequest) {
     const body = await req.json() as { start?: unknown; end?: unknown; names?: unknown };
     const start = typeof body.start === 'string' ? body.start : '';
     const end = typeof body.end === 'string' ? body.end : '';
-    const names = Array.isArray(body.names)
-      ? body.names.filter((name): name is string => typeof name === 'string').slice(0, 60)
-      : [];
-
-    if (!ISO_DATE.test(start) || !ISO_DATE.test(end) || start > end) {
-      return NextResponse.json({ error: 'A valid start and end date are required.' }, { status: 400 });
+    if (!Array.isArray(body.names) || body.names.length < 1 || body.names.length > 60
+        || body.names.some(name => typeof name !== 'string' || !name.trim() || name.length > 200)) {
+      return NextResponse.json({ error: 'Provide between 1 and 60 valid roster names.' }, { status: 400 });
     }
-    if (names.length === 0) {
-      return NextResponse.json({ error: 'At least one roster name is required.' }, { status: 400 });
-    }
+    const names = body.names as string[];
+    try { assignmentDates(start, end); }
+    catch { return NextResponse.json({ error: 'Provide a valid range of one to seven days.' }, { status: 400 }); }
 
     const result = await computeDailyAssignmentCounts(start, end, names);
-    return NextResponse.json({ ...result, refreshedAt: new Date().toISOString() });
+    return NextResponse.json(result);
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

@@ -6,7 +6,7 @@
 import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks } from '@/lib/managers';
 import { RATIO_TARGETS, type RatioTier } from '@/lib/ratioTargets';
 import { WAGE_TARGETS, type WageDept, type WageLocation } from '@/lib/wageTargets';
-import { resolveWeekHours, resolveWeekPayHours, isWithinEmployment } from '@/lib/scheduleResolution';
+import { resolveWeekHours, resolveWeekPayHours, isWithinEmployment, type ScheduleRule } from '@/lib/scheduleResolution';
 
 
 const VALID_ROLES = new Set<string>(['specialist', 'senior', 'master']);
@@ -28,8 +28,8 @@ export function normalizeRole(role: unknown): RatioTier {
 //   ffRoster:     { [id]: { ratio, rate, name, payType?, annualSalary? } }
 //   designHours / presHours / ffHours: { [memberId]: { [isoMonday]: hours } }
 
-export interface DesignRosterEntry  { ratio: number; payType?: string; hourlyRate?: number; annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[]; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }
-export interface PresRosterEntry    { ratio: number; rate?: number;    payType?: string;    annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[]; standardWeeklyHours?: number[]; startDate?: string; endDate?: string }
+export interface DesignRosterEntry  { ratio: number; payType?: string; hourlyRate?: number; annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[]; standardWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }
+export interface PresRosterEntry    { ratio: number; rate?: number;    payType?: string;    annualSalary?: number; name: string; isManager?: boolean; role?: RatioTier; standardTotalWeeklyHours?: number[]; standardWeeklyHours?: number[]; startDate?: string; endDate?: string; scheduleRules?: ScheduleRule[]; daysOff?: string[]; hoursOff?: Record<string, number> }
 export interface HoursMap           { [memberId: string]: Record<string, number> }
 export interface DailyHoursMap      { [weekOfMemberKey: string]: number[] }  // "${isoMonday}-${memberId}" -> [mon..fri]
 
@@ -59,7 +59,7 @@ function resolveMemberWeekHours(
     weekKey:              `${weekOf}-${memberId}`,
     legacyWeeklyValue:    hours[memberId]?.[weekOf],
     standardWeeklyHours:  member.standardWeeklyHours,
-    employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate },
+    employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate, rules: member.scheduleRules, daysOff: member.daysOff, hoursOff: member.hoursOff },
     holidays,
   });
 }
@@ -83,7 +83,7 @@ function resolveMemberWeekPayHours(
     weekKey:              `${weekOf}-${memberId}`,
     legacyWeeklyValue:    hours[memberId]?.[weekOf],
     standardWeeklyHours:  member.standardWeeklyHours,
-    employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate },
+    employment:           { weekIso: weekOf, startDate: member.startDate, endDate: member.endDate, rules: member.scheduleRules, daysOff: member.daysOff, hoursOff: member.hoursOff },
     holidays,
   });
 }
