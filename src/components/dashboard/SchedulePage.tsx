@@ -29,7 +29,8 @@ import {
 import { useGrowthSettings } from '@/hooks/useGrowthSettings';
 import { useDistributionEstimate } from '@/hooks/useDistributionEstimate';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
-import { SyncedOrdersPopover } from './SyncedOrdersPopover';
+import { ProductionActual, ProductionActualsStatus, sumActuals } from './ProductionActual';
+import { WeekBubble, WeekTotalBubble } from './WeekBubble';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -158,45 +159,6 @@ function buildDefaultGeorgiaSchedule(): WeekSchedule[] {
 
 function fmt$(n: number): string {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
-}
-
-function sumActuals(values: (number | null)[]): number | null {
-  const available = values.filter((value): value is number => value !== null);
-  return available.length > 0 ? available.reduce((sum, value) => sum + value, 0) : null;
-}
-
-// A single person's count can open the orders behind it; team totals can't.
-interface ActualDrill { name: string; start: string; end: string; department: 'design' | 'preservation' | 'fulfillment' }
-
-function ProductionActual({ value, loading, unit, drill }: { value: number | null; loading: boolean; unit: string; drill?: ActualDrill }) {
-  const [open, setOpen] = useState(false);
-  const label = `Actual ${loading && value === null ? '…' : `${value ?? '—'}${value === null ? '' : unit}`}`;
-  const cls = 'mt-0.5 text-[10px] font-semibold text-sky-600 tabular-nums';
-  if (!drill || !value) return <div className={cls} title="Live assignment count from the production app">{label}</div>;
-  return (
-    <>
-      <button type="button" onClick={() => setOpen(true)}
-        className={`${cls} block mx-auto underline decoration-dotted underline-offset-2 hover:text-sky-800 cursor-pointer`}
-        title="Live assignment count from the production app — click to see the orders">
-        {label}
-      </button>
-      {open && (
-        <SyncedOrdersPopover name={drill.name} department={drill.department} start={drill.start} end={drill.end}
-          syncedCount={value} countLabel="actual" onClose={() => setOpen(false)} />
-      )}
-    </>
-  );
-}
-
-function ProductionActualsStatus({ loading, error, refreshedAt }: { loading: boolean; error: string | null; refreshedAt: string | null }) {
-  if (error) return <span className="text-[11px] font-medium text-red-600" title={error}>Production actuals unavailable</span>;
-  if (loading) return <span className="text-[11px] text-slate-400">Loading production actuals…</span>;
-  if (!refreshedAt) return null;
-  return (
-    <span className="text-[11px] text-sky-600" title="Uses the same MT assignment totals as Support Assistant">
-      MT actuals · updated {new Date(refreshedAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-    </span>
-  );
 }
 
 function fmtDate(iso: string): string {
@@ -2518,11 +2480,10 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                             const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && orders > 0 && cost > 0 ? cost / orders : null;
                             return (
                               <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
-                                <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This Week tab (one-off exceptions) — the 52-week planner is a read-only view">
-                                  {presInputMode === 'output' ? round2(orders) : round2(prodH)}
-                                </div>
-                                {(m.isManager ? totalH !== prodH : payH > prodH) && (
-                                  <div className="text-[10px] text-violet-600">{round2(totalH)}h {m.isManager ? 'total' : 'paid'}</div>
+                                <WeekBubble value={presInputMode === 'output' ? round2(orders) : round2(prodH)} />
+                                {m.isManager && totalH !== prodH && <WeekTotalBubble value={round2(totalH)} />}
+                                {!m.isManager && payH > prodH && (
+                                  <div className="text-[10px] text-violet-600">{round2(totalH)}h paid</div>
                                 )}
                                 {presInputMode === 'output'
                                   ? (prodH > 0 && <div className="text-slate-400 mt-0.5">{round2(prodH)}h</div>)
@@ -3298,11 +3259,10 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                         const cpo = (!m.isManager || canSeeManagerCPO(m.name)) && o > 0 && cost > 0 ? cost / o : null;
                         return (
                           <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
-                            <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This Week tab (one-off exceptions) — Weekly Schedule is a read-only view">
-                              {ffInputMode === 'output' ? round2(o) : round2(prodH)}
-                            </div>
-                            {(m.isManager ? totalH !== prodH : payH > prodH) && (
-                              <div className="text-[10px] text-violet-600">{round2(totalH)}h {m.isManager ? 'total' : 'paid'}</div>
+                            <WeekBubble value={ffInputMode === 'output' ? round2(o) : round2(prodH)} />
+                            {m.isManager && totalH !== prodH && <WeekTotalBubble value={round2(totalH)} />}
+                            {!m.isManager && payH > prodH && (
+                              <div className="text-[10px] text-violet-600">{round2(totalH)}h paid</div>
                             )}
                             {ffInputMode === 'output'
                               ? (prodH > 0 && <div className="text-slate-400 mt-0.5">{round2(prodH)}h</div>)
@@ -5697,12 +5657,8 @@ export function SchedulePage({
                           const isDesignMgr = !!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager);
                           return (
                             <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
-                              <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This Week tab (one-off exceptions) — Weekly Schedule is a read-only view">
-                                {designInputMode === 'output' ? round2(frames) : round2(hrs)}
-                              </div>
-                              {isDesignMgr && totalHrs !== hrs && (
-                                <div className="text-[10px] text-violet-600" title="Total hours (production + managerial)">{round2(totalHrs)}h total</div>
-                              )}
+                              <WeekBubble value={designInputMode === 'output' ? round2(frames) : round2(hrs)} />
+                              {isDesignMgr && totalHrs !== hrs && <WeekTotalBubble value={round2(totalHrs)} />}
                               {designInputMode === 'output'
                                 ? (hrs > 0 && <div className="text-slate-400 mt-0.5">{round2(hrs)}h</div>)
                                 : (frames > 0 && <div className="text-slate-400 mt-0.5">{Math.round(frames)}f</div>)}

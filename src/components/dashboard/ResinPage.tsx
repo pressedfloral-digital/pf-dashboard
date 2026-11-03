@@ -10,6 +10,9 @@ import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocompl
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { MemberTierBadges } from './MemberTierBadge';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
+import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
+import { ProductionActual, ProductionActualsStatus, sumActuals } from './ProductionActual';
+import { WeekBubble, WeekTotalBubble } from './WeekBubble';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -60,6 +63,22 @@ interface QueueSummary {
 
 const WEEKS = 52;
 const WINDOW = 8;  // weeks visible in the schedule grid at once
+
+// The production app has no Resin stage — resin pieces are assigned to the
+// resin team member as the designer, so live Resin actuals read the Design
+// assignment count for the resin roster.
+const RESIN_MT_DEPARTMENT = 'design' as const;
+
+// Mon–Sun ISO dates for a "This week" offset, built the same way as
+// SchedulePage's getWeekdays so both pages ask MT for identical days.
+function weekIsoDates(weekOffset: number): string[] {
+  const monday = getMondayDate(weekOffset);
+  return [0, 1, 2, 3, 4, 5, 6].map(di => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + di);
+    return d.toISOString().split('T')[0];
+  });
+}
 
 export const DEFAULT_RESIN_ROSTER: ResinMember[] = [
   { id: 'resin-1', name: 'Preslee Peterson', ratio: 1.5, payType: 'hourly', hourlyRate: 0, annualSalary: 0, isManager: true, role: 'master' },
@@ -148,6 +167,14 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
 
   // App/technology staff are kept off every roster view (see nonProductionStaff.ts).
   const productionRoster = roster.filter(m => !isNonProductionStaff(m.name));
+
+  const thisWeekDates = weekIsoDates(thisWeekOffset);
+  const resinActuals = useProductionAssignmentCounts({
+    names: productionRoster.map(m => m.name),
+    dates: thisWeekDates,
+    enabled: activeTab === 'thisweek',
+  });
+  const actualFor = (name: string, iso: string) => resinActuals.getCount(name, iso, RESIN_MT_DEPARTMENT);
 
   // Fetch queue summary — re-fetches whenever queueFrontWeek changes so the
   // top summary cards (total/Utah/Georgia) stay consistent with the
@@ -760,9 +787,12 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
       {activeTab === 'thisweek' && (
         <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
-            <h3 className="text-sm font-semibold text-slate-700">
-              Hours — {thisWeekOffset === 0 ? 'this week' : thisWeekOffset === 1 ? 'next week' : `week +${thisWeekOffset}`}
-            </h3>
+            <div>
+              <h3 className="text-sm font-semibold text-slate-700">
+                Hours — {thisWeekOffset === 0 ? 'this week' : thisWeekOffset === 1 ? 'next week' : `week +${thisWeekOffset}`}
+              </h3>
+              <ProductionActualsStatus loading={resinActuals.loading} error={resinActuals.error} refreshedAt={resinActuals.refreshedAt} />
+            </div>
             <div className="flex items-center gap-2">
               {hasRates && <span className="text-xs text-slate-400 mr-2">CPO shown when rate is set</span>}
               <InputModeToggle mode={resinInputMode} onChange={setResinInputMode} unitLabel="Orders" />
@@ -806,6 +836,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                         {m.name}
                         <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
                         <div className="text-[10px] text-slate-400 font-normal">{m.ratio}h/unit</div>
+                        {resinActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
                       </td>
                       {[0,1,2,3,4,5,6].map(di => {
                         const dayVal = getDH(m.id, thisWeekOffset, di);
@@ -841,6 +872,8 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                             {resinInputMode === 'output'
                               ? (dayVal > 0 && <div className="text-[10px] text-slate-400 mt-0.5">{round2(dayVal)}h</div>)
                               : (dayUnits > 0 && <div className="text-[10px] text-slate-400 mt-0.5">{round2(dayUnits)}u</div>)}
+                            <ProductionActual value={actualFor(m.name, thisWeekDates[di])} loading={resinActuals.loading} unit="u"
+                              drill={{ name: m.name, start: thisWeekDates[di], end: thisWeekDates[di], department: RESIN_MT_DEPARTMENT }} />
                             {hasRates && cpo !== null && <div className="text-[10px] text-purple-500">${cpo.toFixed(2)}</div>}
                             {isHoliday && <div className="text-[9px] text-amber-600 mt-0.5">holiday pay</div>}
                           </td>
@@ -849,6 +882,12 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                       <td className="px-2 py-1.5 text-center text-xs font-medium text-indigo-700">
                         {weekTotal > 0 ? weekTotal.toFixed(1) : '—'}
                         {units > 0 && <div className="text-[10px] text-slate-400">{units.toFixed(1)}u</div>}
+                        <ProductionActual
+                          value={sumActuals(thisWeekDates.map(iso => actualFor(m.name, iso)))}
+                          loading={resinActuals.loading}
+                          unit="u"
+                          drill={{ name: m.name, start: thisWeekDates[0], end: thisWeekDates[6], department: RESIN_MT_DEPARTMENT }}
+                        />
                         {hasRates && weekCPO !== null && <div className="text-[10px] text-purple-500">${weekCPO.toFixed(2)}</div>}
                       </td>
                     </tr>
@@ -872,6 +911,28 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                   })}
                   <td className="px-2 py-2 text-center text-xs text-purple-700">
                     {weeklyCapacity(thisWeekOffset) > 0 ? `${weeklyCapacity(thisWeekOffset).toFixed(0)}u` : <span className="text-slate-300">—</span>}
+                  </td>
+                </tr>
+                <tr className="border-t-2 border-sky-200 bg-sky-50/60 font-semibold">
+                  <td className="sticky left-0 bg-sky-50 px-4 py-2 text-xs text-sky-800">
+                    <div>Actual total</div>
+                    <div className="text-[9px] font-normal text-sky-600">MT production</div>
+                  </td>
+                  {thisWeekDates.map(iso => (
+                    <td key={iso} className="px-2 py-2 text-center">
+                      <ProductionActual
+                        value={sumActuals(productionRoster.map(m => actualFor(m.name, iso)))}
+                        loading={resinActuals.loading}
+                        unit="u"
+                      />
+                    </td>
+                  ))}
+                  <td className="px-2 py-2 text-center">
+                    <ProductionActual
+                      value={sumActuals(productionRoster.flatMap(m => thisWeekDates.map(iso => actualFor(m.name, iso))))}
+                      loading={resinActuals.loading}
+                      unit="u"
+                    />
                   </td>
                 </tr>
               </tbody>
@@ -941,12 +1002,8 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                       const totalH = m.isManager ? resolveMgrTotalWeekHours(w, m, h) : h;
                       return (
                         <td key={w} className="px-1 py-1 text-center">
-                          <div className="text-slate-700 font-medium" title="Set on the Roster (standard schedule) or the This week tab (one-off exceptions) — the 52-week planner is a read-only view">
-                            {resinInputMode === 'output' ? round2(units) : round2(h)}
-                          </div>
-                          {m.isManager && totalH !== h && (
-                            <div className="text-[10px] text-violet-600">{round2(totalH)}h total</div>
-                          )}
+                          <WeekBubble value={resinInputMode === 'output' ? round2(units) : round2(h)} />
+                          {m.isManager && totalH !== h && <WeekTotalBubble value={round2(totalH)} />}
                           {resinInputMode === 'output'
                             ? (h > 0 && <div className="text-[10px] text-slate-400 mt-0.5">{round2(h)}h</div>)
                             : (h > 0 && (
