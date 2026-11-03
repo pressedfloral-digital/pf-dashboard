@@ -151,7 +151,8 @@ export function projectDept(
   breakdown?: MemberCostLine[],
   // Paid hours that aren't production, keyed like dailyHours — Preservation's
   // check/unboxing time (presCheckHours), which the Scheduling page's This
-  // Week cost already includes. Adds to pay only, never to hours/production.
+  // Week cost already includes. Adds to pay, hours and the ratio's hours,
+  // never to production.
   payOnlyDailyHours?: DailyHoursMap
 ): { hours: number; production: number; laborCost: number; ratioHours: number; ratioProduction: number } {
   const holidays = Array.from(holidaySet);
@@ -179,8 +180,11 @@ export function projectDept(
       : 0;
     const memberPayHours = weekOfs.reduce((sum, w) => sum + resolveMemberWeekPayHours(memberId, w, hours, dailyHours, member, holidays), 0) + payOnlyHours;
 
-    totalHours += memberHours;
-    if (!member.isManager) ratioHours += memberHours;
+    // Scheduled check/unboxing time counts toward hours and the ratio (never
+    // production), the same way actual Preservation ratios include
+    // checks_unboxing hours — so Expected/Goal compare like for like.
+    totalHours += memberHours + payOnlyHours;
+    if (!member.isManager) ratioHours += memberHours + payOnlyHours;
     // A member's own ratio can improve (or slip) fast enough that today's
     // roster ratio is a poor stand-in for what it was as of a past window —
     // prefer their trailing-actual ratio there when one's available (see
