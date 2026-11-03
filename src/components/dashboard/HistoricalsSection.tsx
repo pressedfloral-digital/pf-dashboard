@@ -660,6 +660,13 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                                 C&amp;U only
                               </div>
                             )}
+                            {/* Orders credited but no hours filed under this department — usually a
+                                flex helper whose payroll hours all went to their home department. */}
+                            {e.orders > 0 && totalHours === 0 && (
+                              <div className="text-[8px] leading-none text-amber-500 text-center pb-0.5" title="Orders were credited this week, but payroll filed no hours under this department — usually all of the person's hours went to their home department. Type hours here to calculate h/ord.">
+                                no hours logged
+                              </div>
+                            )}
                             {totalHours > 0 && e.orders > 0 && (
                               <div className={`text-[9px] px-1 text-center ${(totalHours / e.orders) <= 1.0 ? 'text-green-700' : (totalHours / e.orders) <= 2.0 ? 'text-amber-700' : 'text-red-700'}`}>
                                 {(totalHours / e.orders).toFixed(2)} h/ord
