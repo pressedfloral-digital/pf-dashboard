@@ -298,40 +298,52 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     }
     projectedCohorts.sort((a, b) => a.weekOf.localeCompare(b.weekOf));
 
-    // Cumulative units from the front of the (active) queue through each
-    // cohort, matched against cumulative real capacity going forward — a
-    // cohort's completion week is whenever running capacity first reaches its
-    // running unit total. This is true FIFO: cumulative units only grows as
-    // you move toward newer cohorts, so newer cohorts correctly land later,
-    // not sooner. Horizon extends past the tracked schedule (assuming the
-    // last tracked week's capacity holds) so a large backlog doesn't read as
-    // "never clears" just because the capacity array ran out.
+    // Week-by-week FIFO: each week's scheduled capacity works the oldest
+    // cohorts that have actually arrived by then, and whatever capacity is
+    // left over once the arrived queue is empty is lost (idle hours can't be
+    // spent on flowers that haven't shown up yet). A cumulative-capacity vs
+    // cumulative-units match would instead bank those idle hours against
+    // future cohorts, so extra staff early on (or a light week before a
+    // busy season) would make every later cohort read weeks too fast.
+    // Horizon extends past the tracked schedule (assuming the last tracked
+    // week's capacity holds) so a large backlog doesn't read as "never
+    // clears" just because the capacity array ran out.
     const horizon = capacityByWeek.length * 2;
     const capAt = (w: number) => w < capacityByWeek.length ? capacityByWeek[w] : (capacityByWeek[capacityByWeek.length - 1] ?? 0);
-    const cumCapByWeek: number[] = [];
-    let runningCap = 0;
-    for (let w = 0; w < horizon; w++) { runningCap += capAt(w); cumCapByWeek.push(runningCap); }
 
     const today = getMondayDate(0);
-    let cumulativeUnits = 0;
-    return projectedCohorts.map(({ weekOf, units, estimated }) => {
-      cumulativeUnits += units;
-      const rawWeeksFromNow = cumCapByWeek.findIndex(cc => cc >= cumulativeUnits);
-      const weeksElapsed = Math.round((today.getTime() - mondayOf(weekOf).getTime()) / (7 * 24 * 60 * 60 * 1000));
-      // A cohort can't finish before its own intake week arrives — matters
-      // once projected weeks push cohorts far enough out that capacity
-      // "catches up" to cumulative demand before the cohort itself is even
-      // received, which would otherwise read as a negative total turnaround.
-      const weeksFromNow = rawWeeksFromNow === -1 ? -1 : Math.max(rawWeeksFromNow, -weeksElapsed);
-      return {
-        weekOf,
-        weekLabel: mondayOf(weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        units,
-        weeksElapsed,
-        weeksToComplete: weeksFromNow === -1 ? null : weeksFromNow,
-        estimated,
-      };
-    });
+    const weeksElapsedOf = (weekOf: string) =>
+      Math.round((today.getTime() - mondayOf(weekOf).getTime()) / (7 * 24 * 60 * 60 * 1000));
+    // Past/current cohorts are already in hand at week 0; future ones arrive
+    // in their own intake week.
+    const arrivalWeek = projectedCohorts.map(c => Math.max(0, -weeksElapsedOf(c.weekOf)));
+    const remaining = projectedCohorts.map(c => c.units);
+    const doneWeek: (number | null)[] = projectedCohorts.map(() => null);
+    let front = 0;  // first cohort with work left — FIFO, so everything before it is done
+    for (let w = 0; w < horizon && front < projectedCohorts.length; w++) {
+      let cap = capAt(w);
+      for (let i = front; i < projectedCohorts.length && cap > 0; i++) {
+        if (arrivalWeek[i] > w) break;  // sorted by week, so nothing later has arrived either
+        if (remaining[i] <= 0) continue;
+        const take = Math.min(cap, remaining[i]);
+        remaining[i] -= take;
+        cap -= take;
+        if (remaining[i] <= 1e-9) doneWeek[i] = w;
+      }
+      while (front < projectedCohorts.length && remaining[front] <= 1e-9) {
+        if (doneWeek[front] === null) doneWeek[front] = Math.max(w, arrivalWeek[front]);
+        front++;
+      }
+    }
+
+    return projectedCohorts.map(({ weekOf, units, estimated }, i) => ({
+      weekOf,
+      weekLabel: mondayOf(weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      units,
+      weeksElapsed: weeksElapsedOf(weekOf),
+      weeksToComplete: doneWeek[i],
+      estimated,
+    }));
   })();
 
   // ── Handlers ──────────────────────────────────────────────────────────────
