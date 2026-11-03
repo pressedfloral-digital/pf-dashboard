@@ -1,3 +1,4 @@
+import { reportingFetch } from '@/lib/pf-budget';
 import { NextRequest, NextResponse } from 'next/server';
 import { auth }                      from '@clerk/nextjs/server';
 import { supabase }                  from '@/lib/supabase';
@@ -23,7 +24,7 @@ let _cachedToken: { token: string; expiresAt: number } | null = null;
 
 async function getPFToken(): Promise<string> {
   if (_cachedToken && Date.now() < _cachedToken.expiresAt) return _cachedToken.token;
-  const res  = await fetch(`${PF_BASE}Authentication/Login`, {
+  const res  = await reportingFetch(`${PF_BASE}Authentication/Login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: process.env.PF_API_EMAIL, password: process.env.PF_API_PASSWORD }),
@@ -37,7 +38,7 @@ async function getPFToken(): Promise<string> {
 }
 
 async function pfGet<T>(path: string, token: string): Promise<T> {
-  const res = await fetch(`${PF_BASE}${path}`, {
+  const res = await reportingFetch(`${PF_BASE}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
   });
@@ -46,7 +47,7 @@ async function pfGet<T>(path: string, token: string): Promise<T> {
 }
 
 async function pfPost<T>(path: string, body: unknown, token: string): Promise<T> {
-  const res = await fetch(`${PF_BASE}${path}`, {
+  const res = await reportingFetch(`${PF_BASE}${path}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

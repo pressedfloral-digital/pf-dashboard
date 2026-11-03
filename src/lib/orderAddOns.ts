@@ -8,6 +8,7 @@
  * records the error on the row — its last good add-ons and fetched_at stay.
  */
 import { pfGet } from '@/lib/pf-api';
+import { ReportingDeferredError } from '@/lib/pf-budget';
 import { supabase } from '@/lib/supabase';
 import type { OrderAddOn } from '@/lib/designInventory';
 
@@ -65,9 +66,10 @@ export async function fetchAddOns(
   const failed: string[] = [];
   const errors: Record<string, string> = {};
   let next = 0;
+  let deferred = false;
 
   const worker = async () => {
-    while (next < orders.length && Date.now() < opts.deadline) {
+    while (!deferred && next < orders.length && Date.now() < opts.deadline) {
       const { num, uuid } = orders[next++];
       try {
         const order = await pfGet<{ nonStatusOrderProducts?: OrderAddOn[] }>(`/Orders/${uuid}`, { fresh: true });
@@ -76,6 +78,7 @@ export async function fetchAddOns(
           fetchedAt: new Date().toISOString(),
         };
       } catch (e) {
+        if (e instanceof ReportingDeferredError) deferred = true;
         failed.push(num);
         errors[num] = e instanceof Error ? e.message : String(e);
       }
@@ -93,7 +96,7 @@ export async function fetchAddOns(
     }));
     for (let i = 0; i < rows.length; i += 500) {
       const { error } = await supabase.from(TABLE).upsert(rows.slice(i, i + 500), { onConflict: 'order_number' });
-      if (error) { console.warn(`${TABLE} save failed:`, error.message); break; }
+      if (error) throw new Error('Add-on refresh could not save results; prior saved data retained.');
     }
     // Only rows that already exist are touched, so a never-fetched order that
     // fails stays absent (and shows as couldn't-load) rather than empty.

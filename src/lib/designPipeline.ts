@@ -1,9 +1,10 @@
+import { sharedReportSnapshot } from '@/lib/report-refresh-store';
 /**
  * Every order line in Preservation or Design, from the PF API's monthly
  * WeeklyReport. Shared by /api/design-inventory (one location's schedule) and
  * the order add-on refresh cron (every location's orders).
  */
-import { pfGetAll, fmtDate } from '@/lib/pf-api';
+import { pfGet, fmtDate } from '@/lib/pf-api';
 import { DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, isNonDesignProduct } from '@/lib/designInventory';
 
 // Orders are placed around the event date, so anything still in
@@ -30,14 +31,21 @@ export interface PipelineLine {
 
 /** Design/Preservation lines across all locations, deduped by key.
  *  `failedMonths` > 0 means some months' orders are missing from `lines`. */
-export async function loadPipelineLines(): Promise<{ lines: PipelineLine[]; failedMonths: number; totalMonths: number }> {
+async function scanPipelineLines(): Promise<{ lines: PipelineLine[]; failedMonths: number; totalMonths: number }> {
   const today = new Date();
   const paths = Array.from({ length: ORDER_LOOKBACK_MONTHS }, (_, m) => {
     const first = new Date(today.getFullYear(), today.getMonth() - m, 1);
     const last  = m === 0 ? today : new Date(today.getFullYear(), today.getMonth() - m + 1, 0);
     return `/OrderProducts/WeeklyReport?startDate=${fmtDate(first)}&endDate=${fmtDate(last)}`;
   });
-  const reports = await pfGetAll<WeeklyReportItem[]>(paths);
+  const reports: WeeklyReportItem[][] = [];
+  const deadline = Date.now() + 120_000;
+  for (const path of paths) {
+    if (Date.now() >= deadline) throw new Error('Complete report refresh exceeded its time budget.');
+    const items = await pfGet<WeeklyReportItem[]>(path, { fresh: true });
+    if (!Array.isArray(items)) throw new Error('Monthly report response is incomplete.');
+    reports.push(items);
+  }
 
   const seen = new Set<string>();
   const lines: PipelineLine[] = [];
@@ -55,4 +63,11 @@ export async function loadPipelineLines(): Promise<{ lines: PipelineLine[]; fail
     }
   }
   return { lines, failedMonths: reports.filter(r => r === null).length, totalMonths: paths.length };
+}
+
+// Shared across Vercel instances; only a complete 15-month scan is published.
+// Failure leaves the previous snapshot intact and fails the refresh explicitly.
+export async function loadPipelineLines() {
+  const snapshot = await sharedReportSnapshot('design-pipeline-v1', scanPipelineLines);
+  return { ...snapshot.value, refreshedAt: snapshot.completedAt };
 }

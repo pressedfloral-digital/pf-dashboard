@@ -1,3 +1,4 @@
+import { reportingFetch } from '@/lib/pf-budget';
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 
@@ -6,7 +7,7 @@ export const maxDuration = 60;
 const PF_API = 'https://pressedfloralapi.azurewebsites.net';
 
 async function getJwt() {
-  const res = await fetch(`${PF_API}/Authentication/Login`, {
+  const res = await reportingFetch(`${PF_API}/Authentication/Login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: process.env.PF_API_EMAIL, password: process.env.PF_API_PASSWORD }),
@@ -18,7 +19,7 @@ async function getJwt() {
 
 async function pfFetch<T>(jwt: string, path: string, body?: unknown): Promise<T | null> {
   const isGet = body === undefined;
-  const res = await fetch(`${PF_API}${path}`, {
+  const res = await reportingFetch(`${PF_API}${path}`, {
     method: isGet ? 'GET' : 'POST',
     headers: { Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' },
     body: isGet ? undefined : JSON.stringify(body),
