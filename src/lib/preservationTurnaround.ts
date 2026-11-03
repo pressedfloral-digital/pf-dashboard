@@ -99,30 +99,89 @@ export interface PreservationTurnaround {
   month:        TurnaroundAverage;   // since the 1st
   syncedThrough: string;             // how far the received feed has been read
   catchingUp:    boolean;            // over an hour behind — still backfilling, recent orders may be missing
+  missingPhoto:  MissingPhotoOrder[];  // received over missingPhotoDays ago, no bouquet photo since
+  missingPhotoDays: number;
 }
 
-// First bouquet photo per order product (UTC), from this month's and last
-// month's calendars so a re-upload this month isn't mistaken for the first.
-async function firstBouquetUploads(): Promise<Map<string, string>> {
+// Every bouquet photo upload time per order product (UTC), from this month's
+// and last month's calendars, oldest first.
+async function bouquetUploads(): Promise<Map<string, string[]>> {
   const today = new Date();
   const months = [0, 1].map(m => new Date(today.getFullYear(), today.getMonth() - m, 1));
   const calendars = await Promise.all(months.map(d =>
     // ~2.8MB a month — over Next's 2MB fetch-cache limit, so fetch fresh.
     pfGet<Record<string, CalendarUpload[]> | null>(`/Calendar/OrderProductUploads/${d.getMonth() + 1}/${d.getFullYear()}/0`, { fresh: true })));
-  const first = new Map<string, string>();
+  const all = new Map<string, string[]>();
   calendars.forEach(cal => Object.values(cal ?? {}).forEach(uploads => uploads.forEach(u => {
     if (u.uploadType !== 'bouquet') return;
-    const prev = first.get(u.orderProductUuid);
-    if (!prev || u.dateUploaded < prev) first.set(u.orderProductUuid, u.dateUploaded);
+    const list = all.get(u.orderProductUuid) ?? [];
+    list.push(u.dateUploaded);
+    all.set(u.orderProductUuid, list);
   })));
-  return first;
+  all.forEach(list => list.sort());
+  return all;
+}
+
+// First bouquet photo per order product — both months are read so a
+// re-upload this month isn't mistaken for the first.
+function firstBouquetUploads(uploads: Map<string, string[]>): Map<string, string> {
+  return new Map([...uploads].map(([op, list]) => [op, list[0]]));
+}
+
+// Orders flagged when they've sat in Bouquet Received this many calendar days
+// with no bouquet photo since.
+const MISSING_PHOTO_DAYS = 3;
+
+export interface MissingPhotoOrder {
+  orderProductUuid: string;
+  orderNumber:      string | null;
+  receivedAt:       string;   // latest time it entered Bouquet Received
+  days:             number;   // calendar days since then
+}
+
+// Order products whose latest Bouquet Received entry is over
+// MISSING_PHOTO_DAYS old with no bouquet photo uploaded after it, oldest
+// first. Looks back to the 1st of last month — as far as the upload
+// calendars go — so anything received before that isn't checked.
+async function computeMissingPhotos(location: string, uploads: Map<string, string[]>): Promise<MissingPhotoOrder[]> {
+  const now = new Date();
+  const since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString();
+  const cutoff = now.getTime() - MISSING_PHOTO_DAYS * 86_400_000;
+
+  const latest = new Map<string, { at: string; orderNumber: string | null; location: string | null }>();
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await supabase.from('pf_bouquet_received')
+      .select('order_product_uuid, order_number, location, entered_at')
+      .gte('entered_at', since)
+      .order('entered_at')
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    (data ?? []).forEach(r => {
+      const at = new Date(r.entered_at).toISOString();
+      const prev = latest.get(r.order_product_uuid);
+      if (!prev || at > prev.at) latest.set(r.order_product_uuid, { at, orderNumber: r.order_number, location: r.location });
+    });
+    if (!data || data.length < PAGE_SIZE) break;
+  }
+
+  const missing: MissingPhotoOrder[] = [];
+  latest.forEach((r, op) => {
+    if ((r.location ?? 'Utah') !== location) return;
+    const receivedMs = new Date(r.at).getTime();
+    if (receivedMs > cutoff) return;
+    // Upload times vary in fractional digits, so compare as times, not text.
+    if ((uploads.get(op) ?? []).some(at => new Date(at).getTime() >= receivedMs)) return;
+    missing.push({ orderProductUuid: op, orderNumber: r.orderNumber, receivedAt: r.at, days: Math.floor((now.getTime() - receivedMs) / 86_400_000) });
+  });
+  return missing.sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
 }
 
 // Today / this week / this month averages for one location, by the local day
 // each first bouquet photo was uploaded. Each upload pairs with the latest
 // time its order product entered Bouquet Received before that upload.
 export async function computeTurnaround(location: string, syncedThrough: string): Promise<PreservationTurnaround> {
-  const firstUpload = await firstBouquetUploads();
+  const uploads = await bouquetUploads();
+  const firstUpload = firstBouquetUploads(uploads);
   const todayLocal = localDay(new Date().toISOString(), location);
   const weekStart  = mondayOf(todayLocal);
   const monthStart = todayLocal.slice(0, 8) + '01';
@@ -157,5 +216,6 @@ export async function computeTurnaround(location: string, syncedThrough: string)
   }
   const avg = ([total, count]: number[]): TurnaroundAverage => ({ days: count ? total / count : null, count });
   const catchingUp = Date.now() - new Date(syncedThrough).getTime() > 60 * 60 * 1000;
-  return { today: avg(sums.today), week: avg(sums.week), month: avg(sums.month), syncedThrough, catchingUp };
+  const missingPhoto = await computeMissingPhotos(location, uploads);
+  return { today: avg(sums.today), week: avg(sums.week), month: avg(sums.month), syncedThrough, catchingUp, missingPhoto, missingPhotoDays: MISSING_PHOTO_DAYS };
 }

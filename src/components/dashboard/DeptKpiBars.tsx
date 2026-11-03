@@ -209,10 +209,12 @@ const fmtDays = (a: TurnaroundAverage | undefined) => a?.days == null ? '—' : 
 
 // Preservation's turnaround: how long orders sit in Bouquet Received before
 // their first bouquet photo is uploaded. Month average up top; today, this
-// week and this month underneath, by the day the photo went up.
+// week and this month underneath, by the day the photo went up. Orders past
+// the missing-photo limit with no photo show as a red count that opens the list.
 function TurnaroundKpi({ location }: { location: KpiLocation }) {
   const [data, setData] = useState<PreservationTurnaround | null>(null);
   const [failed, setFailed] = useState(false);
+  const [showMissing, setShowMissing] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -246,6 +248,35 @@ function TurnaroundKpi({ location }: { location: KpiLocation }) {
         {data?.catchingUp && <span className="text-amber-600">Catching up — received times through {new Date(data!.syncedThrough).toLocaleDateString()}</span>}
         {failed && !data && <span className="text-red-500">Couldn&apos;t load</span>}
       </div>
+      {!!data?.missingPhoto?.length && (
+        <div className="mt-1.5">
+          <button type="button" onClick={() => setShowMissing(v => !v)}
+            className="text-[11px] font-medium text-red-600 hover:text-red-700"
+            title={`Marked Bouquet Received over ${data.missingPhotoDays} days ago with no bouquet photo uploaded since.`}>
+            ⚠ {data.missingPhoto.length} order{data.missingPhoto.length === 1 ? '' : 's'} with no photo after {data.missingPhotoDays} days {showMissing ? '▴' : '▾'}
+          </button>
+          {showMissing && (
+            <table className="mt-1 text-[11px] tabular-nums">
+              <thead className="text-slate-400">
+                <tr>
+                  <th className="text-left font-medium pr-4">Order</th>
+                  <th className="text-left font-medium pr-4">Received</th>
+                  <th className="text-right font-medium">Days</th>
+                </tr>
+              </thead>
+              <tbody className="text-slate-700">
+                {data.missingPhoto.map(o => (
+                  <tr key={o.orderProductUuid}>
+                    <td className="pr-4">{o.orderNumber ? `#${o.orderNumber}` : '—'}</td>
+                    <td className="pr-4">{new Date(o.receivedAt).toLocaleDateString()}</td>
+                    <td className="text-right text-red-600">{o.days}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
     </div>
   );
 }
