@@ -654,6 +654,12 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                               </div>
                             )}
                             </div>
+                            {/* Only Checks & Unboxing that week — no bouquets, so no h/ord or CPO by design. */}
+                            {cuHours > 0 && e.hours === 0 && e.orders === 0 && (
+                              <div className="text-[8px] leading-none text-slate-400 text-center pb-0.5" title="Only Checks & Unboxing hours this week — no bouquets pressed, so no h/ord or CPO">
+                                C&amp;U only
+                              </div>
+                            )}
                             {totalHours > 0 && e.orders > 0 && (
                               <div className={`text-[9px] px-1 text-center ${(totalHours / e.orders) <= 1.0 ? 'text-green-700' : (totalHours / e.orders) <= 2.0 ? 'text-amber-700' : 'text-red-700'}`}>
                                 {(totalHours / e.orders).toFixed(2)} h/ord
