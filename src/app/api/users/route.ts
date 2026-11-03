@@ -61,6 +61,7 @@ export async function POST(req: Request) {
       emailAddress: email,
       redirectUrl: "https://ops.pressedfloral.com/sign-up",
       publicMetadata: {
+        full_name,
         role,
         location: location ?? null,
         department: department ?? null,

@@ -35,6 +35,15 @@ const roleLabel = (role: UserRole) => {
   return "User";
 };
 
+// Some profiles were created with the email as full_name (Clerk sign-ups without a name).
+// Prefer a real name: full_name, then schedule name, then a name derived from the email.
+const displayName = (u: { full_name: string; email: string; team_member_name?: string | null }) => {
+  if (u.full_name && !u.full_name.includes("@")) return u.full_name;
+  if (u.team_member_name) return u.team_member_name;
+  const local = (u.full_name || u.email).split("@")[0];
+  return local.split(/[._-]+/).filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(" ");
+};
+
 const roleBadgeColor = (role: UserRole) => {
   if (role === "admin") return "bg-red-100 text-red-700";
   if (role === "general_manager") return "bg-purple-100 text-purple-700";
@@ -247,7 +256,7 @@ export default function UserManagementPage() {
               >
                 <option value="">— None —</option>
                 {users.filter(u => ["admin","general_manager","manager"].includes(u.role)).map(u => (
-                  <option key={u.clerk_user_id} value={u.clerk_user_id}>{u.full_name}</option>
+                  <option key={u.clerk_user_id} value={u.clerk_user_id}>{displayName(u)}</option>
                 ))}
               </select>
             </div>
@@ -274,7 +283,7 @@ export default function UserManagementPage() {
       {editingUser && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
-            <h2 className="text-base font-semibold text-gray-900 mb-4">Edit {editingUser.full_name}</h2>
+            <h2 className="text-base font-semibold text-gray-900 mb-4">Edit {displayName(editingUser)}</h2>
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Role</label>
@@ -325,7 +334,7 @@ export default function UserManagementPage() {
                 >
                   <option value="">— None —</option>
                   {users.filter(u => u.clerk_user_id !== editingUser.clerk_user_id && ["admin","general_manager","manager"].includes(u.role)).map(u => (
-                    <option key={u.clerk_user_id} value={u.clerk_user_id}>{u.full_name}</option>
+                    <option key={u.clerk_user_id} value={u.clerk_user_id}>{displayName(u)}</option>
                   ))}
                 </select>
               </div>
@@ -371,7 +380,7 @@ export default function UserManagementPage() {
               {users.map((u, i) => (
                 <tr key={u.clerk_user_id} className={i % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
                   <td className="px-4 py-3">
-                    <div className="font-medium text-gray-900">{u.full_name}</div>
+                    <div className="font-medium text-gray-900">{displayName(u)}</div>
                     <div className="text-xs text-gray-400">{u.email}</div>
                   </td>
                   <td className="px-4 py-3">
@@ -381,7 +390,7 @@ export default function UserManagementPage() {
                   </td>
                   <td className="px-4 py-3 text-gray-600">{u.location ?? "—"}</td>
                   <td className="px-4 py-3 text-gray-600 capitalize">{u.department ?? "—"}</td>
-                  <td className="px-4 py-3 text-gray-600">{u.manager?.full_name ?? "—"}</td>
+                  <td className="px-4 py-3 text-gray-600">{u.manager ? displayName(u.manager) : "—"}</td>
                   <td className="px-4 py-3 text-gray-600">{u.team_member_name ?? "—"}</td>
                   <td className="px-4 py-3">
                     <div className="flex gap-2 justify-end">
