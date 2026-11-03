@@ -597,6 +597,27 @@ interface PlannedCtx {
   settings:        ScheduleSettingRow[];
   paidHolidays:    string[];
   managerHomeDept: Map<string, Set<string>>;
+  // For Preservation's estimated check time — see checksPerUnitBefore.
+  actualRows:      ActualRow[];
+  managerNames:    Set<string>;
+}
+
+// A location's actual check/unboxing hours per Preservation bouquet over the
+// 4 completed weeks before `periodStart`, managers left out as in the actual
+// ratio. projectDept adds this to planned bouquets that come from a
+// press-only roster ratio, so planned and actual ratios both count checks.
+function checksPerUnitBefore(ctx: PlannedCtx, location: string, periodStart: string, lookbackWeeks = 4): number {
+  const weeks = new Set(getMondaysBefore(periodStart, lookbackWeeks));
+  let checkHours = 0, bouquets = 0;
+  for (const row of ctx.actualRows) {
+    if (row.location !== location || !weeks.has(row.week_of)) continue;
+    if (normDept(row.department) !== 'Preservation') continue;
+    if (ctx.managerNames.has(`${location}|Preservation|${row.member_name.trim().toLowerCase()}`)) continue;
+    const l = row.department.toLowerCase();
+    if (l.includes('checks') || l.includes('unboxing')) checkHours += row.actual_hours;
+    else bouquets += row.actual_orders;
+  }
+  return checkHours > 0 && bouquets > 0 ? checkHours / bouquets : 0;
 }
 
 function buildWindowResult(
@@ -716,9 +737,11 @@ function buildPlannedWindowResult(
   const periodStart          = weekOfs[0];
   const utahRatioOverride    = periodStart ? buildTrailingRatioOverrides(actualRows, 'Utah',    periodStart) : undefined;
   const georgiaRatioOverride = periodStart ? buildTrailingRatioOverrides(actualRows, 'Georgia', periodStart) : undefined;
+  const utahChecks    = periodStart ? checksPerUnitBefore(ctx, 'Utah',    periodStart) : 0;
+  const georgiaChecks = periodStart ? checksPerUnitBefore(ctx, 'Georgia', periodStart) : 0;
   function variant(mode: 'estimate' | 'expected' | 'goal'): RatioVariantResult {
-    const utah    = projectPeriodForLocation(ctx.settings, 'Utah',    weekOfs, utahGaCost,    ctx.paidHolidays, mode, ctx.managerHomeDept, utahRatioOverride);
-    const georgia = projectPeriodForLocation(ctx.settings, 'Georgia', weekOfs, georgiaGaCost, ctx.paidHolidays, mode, ctx.managerHomeDept, georgiaRatioOverride);
+    const utah    = projectPeriodForLocation(ctx.settings, 'Utah',    weekOfs, utahGaCost,    ctx.paidHolidays, mode, ctx.managerHomeDept, utahRatioOverride,    utahChecks);
+    const georgia = projectPeriodForLocation(ctx.settings, 'Georgia', weekOfs, georgiaGaCost, ctx.paidHolidays, mode, ctx.managerHomeDept, georgiaRatioOverride, georgiaChecks);
     return { utah, georgia, combined: poolLocations(utah, georgia) };
   }
   return { estimate: variant('estimate'), expected: variant('expected'), goal: variant('goal') };
@@ -757,10 +780,11 @@ function buildRatioVariant(
   georgiaGaCost: number,
   paidHolidays:  string[],
   mode:          'estimate' | 'expected' | 'goal',
-  managerHomeDept: Map<string, Set<string>>
+  managerHomeDept: Map<string, Set<string>>,
+  checksPerUnit: { utah: number; georgia: number } = { utah: 0, georgia: 0 },
 ): RatioVariantResult {
-  const utah    = projectMonthForLocation(settings, 'Utah',    monthKey, utahGaCost,    paidHolidays, mode, managerHomeDept);
-  const georgia = projectMonthForLocation(settings, 'Georgia', monthKey, georgiaGaCost, paidHolidays, mode, managerHomeDept);
+  const utah    = projectMonthForLocation(settings, 'Utah',    monthKey, utahGaCost,    paidHolidays, mode, managerHomeDept, checksPerUnit.utah);
+  const georgia = projectMonthForLocation(settings, 'Georgia', monthKey, georgiaGaCost, paidHolidays, mode, managerHomeDept, checksPerUnit.georgia);
   return { utah, georgia, combined: poolLocations(utah, georgia) };
 }
 
@@ -773,13 +797,14 @@ function projectMonthForLocation(
   gaCost:     number,
   paidHolidays: string[],
   mode:       'estimate' | 'expected' | 'goal',
-  managerHomeDept: Map<string, Set<string>>
+  managerHomeDept: Map<string, Set<string>>,
+  checksPerUnit = 0,
 ): PeriodKpis {
   const monthEnd = new Date(monthStart + 'T12:00:00');
   monthEnd.setMonth(monthEnd.getMonth() + 1);
   monthEnd.setDate(0);
   const weekOfs = getWeekMondays(monthStart, isoDate(monthEnd));
-  return projectPeriodForLocation(settings, location, weekOfs, gaCost, paidHolidays, mode, managerHomeDept);
+  return projectPeriodForLocation(settings, location, weekOfs, gaCost, paidHolidays, mode, managerHomeDept, undefined, checksPerUnit);
 }
 
 // What a location's saved schedule (schedule_settings) implies for
@@ -797,7 +822,8 @@ function projectPeriodForLocation(
   paidHolidays: string[],
   mode:       'estimate' | 'expected' | 'goal',
   managerHomeDept: Map<string, Set<string>>,
-  ratioOverride?: Map<string, number>  // see projectDept's own param of the same name
+  ratioOverride?: Map<string, number>,  // see projectDept's own param of the same name
+  checksPerUnit = 0,                    // Preservation only — see checksPerUnitBefore
 ): PeriodKpis {
   const holidaySet = new Set(paidHolidays);
 
@@ -836,7 +862,7 @@ function projectPeriodForLocation(
   const designMetrics = projectDept(designRoster, designHours, designDailyHours, weekOfs, location, 'Design',       holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride);
   // Scheduled check/unboxing hours are paid Preservation time (not production).
   const presCheckHours   = get('presCheckHours')   as DailyHoursMap;
-  const presMetrics   = projectDept(presRoster,   presHours,   presDailyHours,   weekOfs, location, 'Preservation', holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride, undefined, presCheckHours);
+  const presMetrics   = projectDept(presRoster,   presHours,   presDailyHours,   weekOfs, location, 'Preservation', holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride, undefined, presCheckHours, checksPerUnit);
   const ffMetrics     = projectDept(ffRoster,     ffHours,     ffDailyHours,     weekOfs, location, 'Fulfillment',  holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride);
   const resinMetrics  = projectDept(resinRoster,  resinHours,  resinDailyHours,  weekOfs, location, 'Resin',        holidaySet, mode, mgrTotalHours, managerHomeDept, ratioOverride);
 
@@ -1143,7 +1169,7 @@ export async function GET(req: NextRequest) {
       // else they're flagged isManager on a roster.
       const managerHomeDept = buildManagerHomeDept(managerEmpRows ?? []);
 
-      plannedCtx = { settings: liveSettings, paidHolidays, managerHomeDept };
+      plannedCtx = { settings: liveSettings, paidHolidays, managerHomeDept, actualRows: confirmedActualRows, managerNames };
     }
 
     // ── Weekly series ─────────────────────────────────────────────────────────
@@ -1216,6 +1242,10 @@ export async function GET(req: NextRequest) {
       const gaSourceMonths = utahGa.monthKeys.map(monthLabel);
 
       estimated = {};
+      // Check time per bouquet as of this week (the last 4 completed weeks),
+      // for Preservation's planned ratio — see checksPerUnitBefore.
+      const estMonday = getMondayOf(today);
+      const estChecks = { utah: checksPerUnitBefore(plannedCtx, 'Utah', estMonday), georgia: checksPerUnitBefore(plannedCtx, 'Georgia', estMonday) };
 
       if (requested.includes('est-current')) {
         const currentMonthKey = `${businessMonthKey}-01`;
@@ -1242,9 +1272,9 @@ export async function GET(req: NextRequest) {
           monthStart: currentMonthKey,
           isSnapshot,
           gaSourceMonths,
-          estimate: buildRatioVariant(useSettings, currentMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'estimate', managerHomeDept),
-          expected: buildRatioVariant(useSettings, currentMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'expected', managerHomeDept),
-          goal:     buildRatioVariant(useSettings, currentMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'goal', managerHomeDept),
+          estimate: buildRatioVariant(useSettings, currentMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'estimate', managerHomeDept, estChecks),
+          expected: buildRatioVariant(useSettings, currentMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'expected', managerHomeDept, estChecks),
+          goal:     buildRatioVariant(useSettings, currentMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'goal', managerHomeDept, estChecks),
         };
       }
 
@@ -1259,9 +1289,9 @@ export async function GET(req: NextRequest) {
           monthStart: nextMonthKey,
           isSnapshot: false,
           gaSourceMonths,
-          estimate: buildRatioVariant(liveSettings, nextMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'estimate', managerHomeDept),
-          expected: buildRatioVariant(liveSettings, nextMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'expected', managerHomeDept),
-          goal:     buildRatioVariant(liveSettings, nextMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'goal', managerHomeDept),
+          estimate: buildRatioVariant(liveSettings, nextMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'estimate', managerHomeDept, estChecks),
+          expected: buildRatioVariant(liveSettings, nextMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'expected', managerHomeDept, estChecks),
+          goal:     buildRatioVariant(liveSettings, nextMonthKey, utahGa.avg, georgiaGa.avg, paidHolidays, 'goal', managerHomeDept, estChecks),
         };
       }
     }

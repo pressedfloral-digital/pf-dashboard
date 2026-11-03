@@ -153,7 +153,14 @@ export function projectDept(
   // check/unboxing time (presCheckHours), which the Scheduling page's This
   // Week cost already includes. Adds to pay, hours and the ratio's hours,
   // never to production.
-  payOnlyDailyHours?: DailyHoursMap
+  payOnlyDailyHours?: DailyHoursMap,
+  // Preservation only: recent actual check/unboxing hours per bouquet. Added
+  // to hours and the ratio's hours for bouquets projected from a press-only
+  // ratio (the roster ratio), so the planned ratio counts check time the way
+  // actual ratios do. Tier targets and trailing-actual ratios already include
+  // it, and a member with saved check hours (payOnlyDailyHours) keeps those
+  // instead, so neither gets it twice.
+  checksPerUnit?: number
 ): { hours: number; production: number; laborCost: number; ratioHours: number; ratioProduction: number } {
   const holidays = Array.from(holidaySet);
   let totalHours = 0, totalProduction = 0, totalCost = 0;
@@ -206,11 +213,20 @@ export function projectDept(
         mode === 'estimate' ? ownRatio :
         mode === 'expected' ? tierRatio :
         /* goal */             Math.min(ownRatio, tierRatio);
+      // The roster ratio is press time only; a trailing-actual ratio and the
+      // tier targets already include check time.
+      const pressOnly = effectiveRatio === member.ratio && effectiveRatio !== tierRatio
+        && !ratioOverride?.has(`${dept}|${member.name.trim().toLowerCase()}`);
 
       if (effectiveRatio > 0) {
         const memberProduction = memberHours / effectiveRatio;
         totalProduction += memberProduction;
         if (!member.isManager) ratioProduction += memberProduction;
+        if (checksPerUnit && checksPerUnit > 0 && pressOnly && payOnlyHours === 0) {
+          const estChecks = memberProduction * checksPerUnit;
+          totalHours += estChecks;
+          if (!member.isManager) ratioHours += estChecks;
+        }
       }
     }
 
