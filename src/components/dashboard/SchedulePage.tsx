@@ -151,7 +151,7 @@ const DEFAULT_GEORGIA_DESIGNERS: Designer[] = [
 function buildDefaultUtahSchedule(): WeekSchedule[] {
   return Array.from({ length: WEEKS }, (_, w) => ({
     'ut-mgr': 15,
-    'ut-1':   w === 5 ? 0 : 28,
+    'ut-1':   28,
     'ut-2':   15,
     'ut-3':   20,
     'ut-4':   16,
