@@ -10,7 +10,7 @@ import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocompl
 import { EmploymentDatesEditor } from './EmploymentDatesEditor';
 import { type TimeOffPatch } from './TimeOffCalendar';
 import { AddTimeOffButton } from './AddTimeOff';
-import { AddUnavailabilityButton, AvailabilityChips, ScheduledTimeBox, entriesOn, withStandardPreferred, withDefaultUnavailable, useShowAvailability, standardHoursOn, availableOn, type UnavailabilityEntry } from './Unavailability';
+import { AddUnavailabilityButton, AvailabilityChips, ScheduledTimeBox, entriesOn, withStandardPreferred, withDefaultUnavailable, useShowAvailability, standardHoursOn, type UnavailabilityEntry } from './Unavailability';
 import { GridViewMenu, useGridView, HIDE_WEEKEND } from './GridView';
 import { MemberTierBadges } from './MemberTierBadge';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
@@ -810,19 +810,18 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
               <tbody>
                 {(() => {
                   const weekIso = isoMonday(thisWeekOffset);
-                  // Rows: scheduled this week, or (Availability on) available some day
+                  // Rows: everyone employed some day this week, scheduled or not
                   const isScheduledThisWeek = (m: ResinMember) =>
                     [0,1,2,3,4,5,6].some(di => getDH(m.id, thisWeekOffset, di) > 0 || (!!m.isManager && getMgrTotalDH(m, thisWeekOffset, di) > 0));
                   // Scheduled people first, then the rest (stable sort keeps drag order within each group)
                   const visibleTeam = productionRoster.filter(m => {
                     if (isScheduledThisWeek(m)) return true;
-                    if (!showAvail) return false;
-                    const employment = { weekIso, startDate: m.startDate, endDate: m.endDate, rules: m.scheduleRules, daysOff: m.daysOff, hoursOff: m.hoursOff };
-                    return thisWeekIsos.some((iso, di) => isWithinEmployment(di, employment) && !m.daysOff?.includes(iso) && availableOn(unavailability, m.id, iso, standardHoursOn(m, weekIso, di)));
+                    const employment = { weekIso, startDate: m.startDate, endDate: m.endDate };
+                    return thisWeekIsos.some((_, di) => isWithinEmployment(di, employment));
                   }).sort((a, b) => Number(isScheduledThisWeek(b)) - Number(isScheduledThisWeek(a)));
                   if (visibleTeam.length === 0) return (
                     <tr><td colSpan={9} className="px-4 py-6 text-center text-xs text-slate-400">
-                      No one is scheduled this week{showAvail ? ' or available' : ' — turn on Availability in View to see who’s available'}.
+                      No one is on the roster this week.
                     </td></tr>
                   );
                   return visibleTeam.map((m) => {

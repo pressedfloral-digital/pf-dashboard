@@ -1996,9 +1996,9 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
     const weekIso = isoMonday(presThisWeekOffset);
     const r = presRoster[m.id];
     const employment = { weekIso, startDate: r?.startDate, endDate: r?.endDate, rules: r?.scheduleRules, daysOff: r?.daysOff, hoursOff: r?.hoursOff };
-    const scheduled = presScheduledThisWeek(m);
-    if (scheduled || !showAvail) return scheduled;
-    return days.some((day, di) => isWithinEmployment(di, employment) && !r?.daysOff?.includes(day.iso) && availableOn(unavailability, m.id, day.iso, standardHoursOn(r, weekIso, di)));
+    // Unscheduled people stay listed (sorted to the bottom) as long as
+    // they're employed some day this week.
+    return presScheduledThisWeek(m) || days.some((_, di) => isWithinEmployment(di, employment));
   }
   const preservationActuals = useProductionAssignmentCounts({
     names: team.map(member => member.name),
@@ -2412,7 +2412,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                   <tbody>
                     {team.filter(presRowVisible).length === 0 && (
                         <tr><td colSpan={days.length + 2} className="px-4 py-6 text-center text-xs text-slate-400">
-                          No one is scheduled this week{showAvail ? ' or available' : ' — tick Show availability to see who’s available'}.
+                          No one is on the roster this week.
                         </td></tr>
                       )}
                     {team.filter(presRowVisible).sort((a, b) => Number(presScheduledThisWeek(b)) - Number(presScheduledThisWeek(a))).map((m) => (
@@ -3436,16 +3436,15 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
         const ffHasRates = canViewCPO && team.some(m => m.rate > 0 || m.annualSalary > 0);
         const todayIso = localTodayIso();
         const plannedToDate = (perDay: (di: number) => number) => plannedThroughToday(days, todayIso, perDay);
-        // Rows: scheduled this week, or (Show availability on) available some day
+        // Rows: everyone employed some day this week, scheduled or not
         const isScheduledThisWeek = (m: { id: string; isManager?: boolean }) =>
           days.some((_, di) => getFFH(m.id, di) > 0 || (!!m.isManager && getMgrTotalFFH(m.id, di) > 0));
         // Scheduled people first, then the rest (stable sort keeps drag order within each group)
         const visibleTeam = team.filter(m => {
           if (isScheduledThisWeek(m)) return true;
-          if (!showAvail) return false;
           const r = ffRoster[m.id];
-          const employment = { weekIso: isoMonday(ffThisWeekOffset), startDate: r?.startDate, endDate: r?.endDate, rules: r?.scheduleRules, daysOff: r?.daysOff, hoursOff: r?.hoursOff };
-          return days.some((day, di) => isWithinEmployment(di, employment) && !r?.daysOff?.includes(day.iso) && availableOn(unavailability, m.id, day.iso, standardHoursOn(r, isoMonday(ffThisWeekOffset), di)));
+          const employment = { weekIso: isoMonday(ffThisWeekOffset), startDate: r?.startDate, endDate: r?.endDate };
+          return days.some((_, di) => isWithinEmployment(di, employment));
         }).sort((a, b) => Number(isScheduledThisWeek(b)) - Number(isScheduledThisWeek(a)));
         return (
           <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
@@ -3488,7 +3487,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                 <tbody>
                   {visibleTeam.length === 0 && (
                         <tr><td colSpan={days.length + 2} className="px-4 py-6 text-center text-xs text-slate-400">
-                          No one is scheduled this week{showAvail ? ' or available' : ' — tick Show availability to see who’s available'}.
+                          No one is on the roster this week.
                         </td></tr>
                       )}
                   {visibleTeam.map((m) => {
@@ -4182,15 +4181,15 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
     };
   }
   const dayTotals = days.map((_, di) => staff.reduce((s, p) => s + getDaySchedule(p, di).total, 0));
-  // Rows: scheduled this week, or (Show availability on) available some day
+  // Rows: everyone employed some day this week, scheduled or not
   function personVisible(person: StaffMember) {
     // Archived on their home department's roster → never shown
     const home = person.homeDept === 'design' ? designRoster : person.homeDept === 'preservation' ? presRoster : person.homeDept === 'fulfillment' ? ffRoster : null;
     if ((home?.[person.id] as { _removed?: boolean } | undefined)?._removed) return false;
     if (days.some((_, di) => getDaySchedule(person, di).total > 0)) return true;
-    if (!showAvail) return false;
     const homeR = (home?.[person.id] as Parameters<typeof standardHoursOn>[0]) ?? resinRoster.find(r => r.id === person.id);
-    return days.some((d, di) => !getDaySchedule(person, di).dayOff && availableOn(unavailability, person.id, d.iso, standardHoursOn(homeR, weekIso, di)));
+    const employment = { weekIso, startDate: homeR?.startDate, endDate: homeR?.endDate };
+    return days.some((_, di) => isWithinEmployment(di, employment));
   }
 
   return (
@@ -5984,8 +5983,7 @@ export function SchedulePage({
             const teamDailyCost = (di: number) => designers.reduce((s, d) => s + dDailyCost(d, di), 0);
             const teamWeekFrames = days.reduce((s, _, di) => s + teamDailyFrames(di), 0);
             const plannedToDate = (perDay: (di: number) => number) => plannedThroughToday(days, todayIso, perDay);
-            // Rows: anyone scheduled this week; with Show availability on, also
-            // anyone available at least one day (employed, not off / unavailable all day).
+            // Rows: everyone employed some day this week, scheduled or not.
             const isScheduledThisWeek = (d: Designer) => {
               const isMgr = !!((settings.designRoster[d.id] as {isManager?:boolean})?.isManager || (d as {isManager?:boolean}).isManager);
               return days.some((_, di) => getDH(d.id, di) > 0 || (isMgr && getMgrTotalDH(d.id, di) > 0));
@@ -5993,10 +5991,9 @@ export function SchedulePage({
             // Scheduled people first, then the rest (sort is stable, so drag order holds within each group)
             const visibleDesigners = designers.filter(d => {
               if (isScheduledThisWeek(d)) return true;
-              if (!showAvail) return false;
               const r = settings.designRoster[d.id];
-              const employment = { weekIso: isoMonday(designThisWeekOffset), startDate: r?.startDate, endDate: r?.endDate, rules: r?.scheduleRules, daysOff: r?.daysOff, hoursOff: r?.hoursOff };
-              return days.some((day, di) => isWithinEmployment(di, employment) && !r?.daysOff?.includes(day.iso) && availableOn(settings.unavailability, d.id, day.iso, standardHoursOn(r, isoMonday(designThisWeekOffset), di)));
+              const employment = { weekIso: isoMonday(designThisWeekOffset), startDate: r?.startDate, endDate: r?.endDate };
+              return days.some((_, di) => isWithinEmployment(di, employment));
             }).sort((a, b) => Number(isScheduledThisWeek(b)) - Number(isScheduledThisWeek(a)));
             return (
               <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
@@ -6031,7 +6028,7 @@ export function SchedulePage({
                     <tbody>
                       {visibleDesigners.length === 0 && (
                         <tr><td colSpan={days.length + 2} className="px-4 py-6 text-center text-xs text-slate-400">
-                          No one is scheduled this week{showAvail ? ' or available' : ' — tick Show availability to see who’s available'}.
+                          No one is on the roster this week.
                         </td></tr>
                       )}
                       {visibleDesigners.map((d) => {
