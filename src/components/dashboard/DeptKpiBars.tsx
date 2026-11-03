@@ -205,7 +205,8 @@ function MonthlyProductionGoalBar({ dept, kpiState, location, plain }: { dept: K
 // Reload every few minutes so turnaround stays live through the day.
 const TURNAROUND_REFRESH_MS = 3 * 60 * 1000;
 
-const fmtDays = (a: TurnaroundAverage | undefined) => a?.days == null ? '—' : `${a.days.toFixed(2)} days`;
+// Averages come back in days; shown in hours.
+const fmtHours = (a: TurnaroundAverage | undefined) => a?.days == null ? '—' : `${(a.days * 24).toFixed(1)} hrs`;
 
 // Preservation's turnaround: how long orders sit in Bouquet Received before
 // their first bouquet photo is uploaded. Month average up top; today, this
@@ -239,11 +240,11 @@ function TurnaroundKpi({ location }: { location: KpiLocation }) {
         </span>
       </div>
       <span className="text-lg font-semibold tabular-nums text-slate-800">
-        {data ? fmtDays(data.month) : failed ? '—' : '…'}
+        {data ? fmtHours(data.month) : failed ? '—' : '…'}
       </span>
       <div className="flex flex-wrap gap-x-3 mt-1 text-[10px] text-slate-400">
         {windows.map(([label, a]) => (
-          <span key={label} title={a ? `${a.count} order${a.count === 1 ? '' : 's'} uploaded` : undefined}>{label} {fmtDays(a)}</span>
+          <span key={label} title={a ? `${a.count} order${a.count === 1 ? '' : 's'} uploaded` : undefined}>{label} {fmtHours(a)}</span>
         ))}
         {data?.catchingUp && <span className="text-amber-600">Catching up — received times through {new Date(data!.syncedThrough).toLocaleDateString()}</span>}
         {failed && !data && <span className="text-red-500">Couldn&apos;t load</span>}
