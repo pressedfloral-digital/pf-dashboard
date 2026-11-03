@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
-import { DEPARTMENT_MANAGERS, GENERAL_MANAGERS, getGmCostForWeeks, getSalaryMgrCostSplitForWeeks, isActiveGm } from '@/lib/managers';
+import { DEPARTMENT_MANAGERS, GENERAL_MANAGERS, getGmCostForWeeks, getSalaryMgrCostSplitForWeeks, isActiveGm, PTO_RATE_TRAILING_WEEKS } from '@/lib/managers';
 import { getWeekMondays, isoMonday } from '@/lib/weekDates';
 import { fetchAllRows } from '@/lib/fetchAllRows';
 import { filterToHistoricalsRows } from '@/lib/historicalsRows';
@@ -311,7 +311,10 @@ export async function GET(req: NextRequest) {
     thisMonday.setDate(now.getDate() + (dow === 0 ? -6 : 1 - dow));
     const businessMonthStart = `${isoDate(thisMonday).slice(0, 7)}-01`;
     const [y, m] = businessMonthStart.split('-').map(Number);
-    const rangeStart = isoDate(new Date(y, m - 1 - back, 1, 12));
+    // Actuals start PTO_RATE_TRAILING_WEEKS before the first month in range so
+    // a manager's PTO week can find their normal cost per order (see
+    // ptoAdjustedHomeCost); they're only used to cost managers.
+    const actualsStart = isoDate(new Date(y, m - 1 - back, 1 - PTO_RATE_TRAILING_WEEKS * 7, 12));
 
     // Furthest week any forecast month reaches, for the distribution estimate.
     const lastForecastDay = isoDate(new Date(y, m - 1 + months, 0, 12));
@@ -331,7 +334,7 @@ export async function GET(req: NextRequest) {
         : Promise.resolve([] as LaborRow[]),
       back > 0
         ? fetchAllRows<ActualRow>((from, to) => supabase.from('team_member_week_actuals')
-            .select('week_of,member_name,department,location,actual_hours,actual_orders').gte('week_of', rangeStart).range(from, to))
+            .select('week_of,member_name,department,location,actual_hours,actual_orders').gte('week_of', actualsStart).range(from, to))
         : Promise.resolve([] as ActualRow[]),
       // Bouquets received history, for Preservation's bouquet-based forecast —
       // the same two sources /api/actuals gives Queue & Turnaround.

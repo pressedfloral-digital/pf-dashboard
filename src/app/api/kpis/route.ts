@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
-import { DEPARTMENT_MANAGERS, isActiveGm, getSalaryMgrCostSplitForWeeks, getGmCostForWeeks } from '@/lib/managers';
+import { DEPARTMENT_MANAGERS, isActiveGm, getSalaryMgrCostSplitForWeeks, getGmCostForWeeks, PTO_RATE_TRAILING_WEEKS, type WeekPtoAdjustment } from '@/lib/managers';
 import { getWeekMondays } from '@/lib/weekDates';
 import { projectDept, buildManagerHomeDept, type DesignRosterEntry, type PresRosterEntry, type HoursMap, type DailyHoursMap } from '@/lib/scheduleProjection';
 import { fetchAllRows } from '@/lib/fetchAllRows';
@@ -119,6 +119,11 @@ export interface KpiMetrics {
   cpoWithBonus:   number | null; // (laborCost + bonusCost) / production
   cpoWithGMBonus: number | null; // (laborCost + bonusCost + GM share) / production — combined only
   hasData:      boolean;
+  // A salaried manager's recorded PTO lowered this dept's laborCost (see
+  // ptoAdjustmentDetail): the adjustments, plus CPO at their full pay. It
+  // reveals manager pay, so GET strips it for anyone but admins and that
+  // location's GM — see stripPtoForViewer.
+  pto?: { adjustments: WeekPtoAdjustment[]; fullCpo: number | null };
 }
 
 export interface PeriodKpis {
@@ -327,10 +332,12 @@ function computePeriodKpis(
   // getSalaryMgrCostSplitForWeeks. Sheet-backfilled weeks are skipped — the
   // sheet's cost already includes salaried managers.
   const sheetWeeks = new Set(sheetRows.map(r => r.week_of));
+  const ptoAdjustments: WeekPtoAdjustment[] = [];
   const mgrCostByDept = getSalaryMgrCostSplitForWeeks(
     SALARY_MANAGERS, location, weekOfs.filter(w => !sheetWeeks.has(w)),
     actualRows.filter(r => r.location === location),
-    normDept
+    normDept,
+    ptoAdjustments
   );
   for (const [dept, mgrCost] of Object.entries(mgrCostByDept)) {
     if (mgrCost > 0) laborByDept[dept] = (laborByDept[dept] ?? 0) + mgrCost;
@@ -378,7 +385,12 @@ function computePeriodKpis(
     const bonusCost       = bonusByDept?.[dept] ?? 0;
     const ratioHours      = ratioHoursByDept[dept] ?? 0;
     const ratioProduction = ratioProdByDept[dept] ?? 0;
+    const deptPto         = ptoAdjustments.filter(a => a.department === dept);
+    const ptoCredit       = deptPto.reduce((s, a) => s + a.fullCost - a.adjustedCost, 0);
     return {
+      ...(deptPto.length > 0 && {
+        pto: { adjustments: deptPto, fullCpo: (laborCost + ptoCredit > 0 && production > 0) ? (laborCost + ptoCredit) / production : null },
+      }),
       hours,
       production,
       laborCost,
@@ -927,11 +939,31 @@ function projectPeriodForLocation(
 //
 // Returns: { windows: WindowResult[], estimated: { current?, next? } }
 
+// Manager PTO details show a manager's pay, so they only go to admins and the
+// GM of that manager's location — never other managers, the other
+// location's GM, or the Scorecards sync caller. Mutates `windows` in place.
+function stripPtoForViewer(windows: WindowResult[], visibleLocations: Set<string>) {
+  for (const w of windows) {
+    for (const [loc, kpis] of [['Utah', w.utah], ['Georgia', w.georgia]] as const) {
+      if (visibleLocations.has(loc)) continue;
+      for (const m of Object.values(kpis)) delete (m as KpiMetrics).pto;
+    }
+  }
+}
+
 export async function GET(req: NextRequest) {
   const isSyncCaller = req.headers.get('authorization') === `Bearer ${process.env.SCORECARDS_SYNC_SECRET}`;
+  const ptoVisibleLocations = new Set<string>();
   if (!isSyncCaller) {
     const { userId } = await auth();
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { data: viewer } = await supabase
+      .from('user_profiles')
+      .select('role, location')
+      .eq('clerk_user_id', userId)
+      .maybeSingle();
+    if (viewer?.role === 'admin') { ptoVisibleLocations.add('Utah'); ptoVisibleLocations.add('Georgia'); }
+    else if (viewer?.role === 'general_manager' && viewer.location) ptoVisibleLocations.add(viewer.location);
   }
 
   const windowsParam = req.nextUrl.searchParams.get('windows')
@@ -962,6 +994,12 @@ export async function GET(req: NextRequest) {
     isoDate(new Date(now.getFullYear(), now.getMonth() - quartersBack * 3, 1)),
     isoDate(new Date(now.getTime() - weeksBack * 7 * 24 * 60 * 60 * 1000)),
   ].sort()[0];
+  // Actuals reach PTO_RATE_TRAILING_WEEKS further back than everything else,
+  // so a manager's PTO week early in range can still find their normal cost
+  // per order (see ptoAdjustedHomeCost). Every other actuals use is bounded
+  // to its own weeks, so the extra rows only feed that — and realWeekKeys
+  // below skips them.
+  const actualsStart = isoDate(new Date(new Date(earliestDate + 'T12:00:00').getTime() - PTO_RATE_TRAILING_WEEKS * 7 * 24 * 60 * 60 * 1000));
 
   try {
     // Single set of queries — all computation happens in memory. Roster is
@@ -987,7 +1025,7 @@ export async function GET(req: NextRequest) {
         supabase
           .from('team_member_week_actuals')
           .select('week_of,member_name,department,location,actual_hours,actual_orders')
-          .gte('week_of', earliestDate)
+          .gte('week_of', actualsStart)
           .range(from, to)
       ),
       supabase
@@ -1043,7 +1081,7 @@ export async function GET(req: NextRequest) {
     // all — even one Historicals filters down — never falls back to the sheet.
     const realWeekKeys = new Set<string>();
     for (const r of laborRows)  realWeekKeys.add(`${r.location}|${r.week_of}`);
-    for (const r of actualRows) realWeekKeys.add(`${r.location}|${r.week_of}`);
+    for (const r of actualRows) if (r.week_of >= earliestDate) realWeekKeys.add(`${r.location}|${r.week_of}`);
     const sheet: SheetBackfill = { rows: sheetRows, ratioRows: ratioSheetRows, realWeekKeys };
     const dashboardStart = [...realWeekKeys].map(k => k.split('|')[1]).sort()[0] ?? null;
 
@@ -1228,6 +1266,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    stripPtoForViewer(results, ptoVisibleLocations);
     return NextResponse.json({
       ok:        true,
       windows:   results,
