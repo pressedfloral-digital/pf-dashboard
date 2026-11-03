@@ -66,6 +66,7 @@ const STAFF_NAME_ALIASES: Record<string, string> = {
   'Lucy': 'Lucy Elcock',
   'Allie': 'Allie Seegrist',
   'Cydnei Gay': 'Cyd Gay',
+  'Cyd G': 'Cyd Gay',
   'Emma Swenson': 'Emma Van Dyke',
 };
 
