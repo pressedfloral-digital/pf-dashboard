@@ -88,12 +88,155 @@ export function deptMatches(mgrDepts: string[], dept: string): boolean {
 // individual's real contracted hours; a flat, documented assumption.
 export const STANDARD_WEEKLY_HOURS = 40;
 
+// Approved PTO taken by salaried department managers, in hours per Monday
+// week_of (from Rippling's Time Off report). Append an entry when a manager's
+// PTO is approved; a request spanning weeks gets one entry per week. Only
+// these weeks are adjusted — see ptoAdjustedHomeCost.
+export interface ManagerPto {
+  name:     string;
+  location: string;
+  weekOf:   string;  // Monday 'YYYY-MM-DD'
+  hours:    number;
+}
+
+export const MANAGER_PTO: ManagerPto[] = [
+  // Bella DePrima — wedding (Sep 30–Oct 9) plus two single days in October.
+  { name: 'Bella DePrima', location: 'Utah', weekOf: '2026-09-28', hours: 24 }, // Sep 30–Oct 2
+  { name: 'Bella DePrima', location: 'Utah', weekOf: '2026-10-05', hours: 40 }, // Oct 5–9
+  { name: 'Bella DePrima', location: 'Utah', weekOf: '2026-10-19', hours: 16 }, // Oct 19 + Oct 23
+];
+
+// How many weeks before a PTO week set the manager's normal cost per order.
+export const PTO_RATE_TRAILING_WEEKS = 12;
+
+function sameName(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+function addWeeks(weekOf: string, n: number): string {
+  const d = new Date(weekOf + 'T12:00:00');
+  d.setDate(d.getDate() + n * 7);
+  return d.toISOString().split('T')[0];
+}
+
+function ptoHours(mgr: SalaryMgr, location: string, weekOf: string): number {
+  return MANAGER_PTO
+    .filter(p => p.location === location && p.weekOf === weekOf && sameName(p.name, mgr.name))
+    .reduce((s, p) => s + p.hours, 0);
+}
+
+// What a manager's home department(s) are charged in a normal week: their
+// weekly salary minus the slice that follows hours they clocked elsewhere.
+function normalHomeCost(
+  mgr: SalaryMgr, location: string, weekOf: string,
+  rows: ManagerActualHoursRow[], normDept: (raw: string) => string
+): number {
+  const weeklySalary        = mgr.annualSalary / 52;
+  const effectiveHourlyRate = weeklySalary / STANDARD_WEEKLY_HOURS;
+  let awayHours = 0;
+  for (const row of rows) {
+    if (row.location !== location || row.week_of !== weekOf) continue;
+    if (!sameName(row.member_name, mgr.name)) continue;
+    if (deptMatches(mgr.departments, normDept(row.department))) continue;
+    awayHours += row.actual_hours;
+  }
+  return Math.max(0, weeklySalary - awayHours * effectiveHourlyRate);
+}
+
+function homeOrders(
+  mgr: SalaryMgr, location: string, weekOf: string,
+  rows: ManagerActualHoursRow[], normDept: (raw: string) => string
+): number {
+  let orders = 0;
+  for (const row of rows) {
+    if (row.location !== location || row.week_of !== weekOf) continue;
+    if (!deptMatches(mgr.departments, normDept(row.department))) continue;
+    orders += row.actual_orders ?? 0;
+  }
+  return orders;
+}
+
+// How a PTO week's manager cost was worked out — everything the Historicals
+// info bubble needs to show the calculation. See ptoAdjustedHomeCost.
+export interface PtoAdjustment {
+  name:          string;
+  ptoHours:      number;  // capped at STANDARD_WEEKLY_HOURS
+  ptoShare:      number;  // ptoHours / STANDARD_WEEKLY_HOURS
+  fullCost:      number;  // what the home dept(s) would be charged without the adjustment
+  normalRate:    number;  // normal cost per home-dept order (trailing non-PTO weeks)
+  rateWeeks:     number;  // how many weeks normalRate averaged over
+  weekOrders:    number;  // home-dept orders this week
+  adjustedCost:  number;  // what's actually charged
+  capped:        boolean; // the per-order charge came out higher, so fullCost was kept
+}
+
+// A manager's home-department cost for one week, adjusted only if MANAGER_PTO
+// has PTO for them that week. Null when there's no PTO, or no history to rate
+// it from — callers then keep `homeCost` as-is.
+//
+// Their PTO hours are charged at what they normally cost per home-dept order
+// — over the PTO_RATE_TRAILING_WEEKS weeks before, skipping other PTO weeks —
+// times that week's orders, in place of a full week of salary. Hours they
+// did work stay at normal salary. So a week off costs the team what the
+// manager usually costs for that much output, instead of a whole salary over
+// a short week's orders. Never raises a week's cost: in a busy week, a day
+// off can't make the manager more expensive than usual.
+//
+// e.g. Bella, Oct 5 (40h PTO, 23 orders, normally ~$7/order):
+//   $800 → 23 × ~$7 ≈ $163.
+export function ptoAdjustmentDetail(
+  mgr: SalaryMgr, location: string, weekOf: string, homeCost: number,
+  rows: ManagerActualHoursRow[], normDept: (raw: string) => string
+): PtoAdjustment | null {
+  const pto = Math.min(ptoHours(mgr, location, weekOf), STANDARD_WEEKLY_HOURS);
+  if (pto <= 0) return null;
+
+  let normalCost = 0, normalOrders = 0, rateWeeks = 0;
+  for (let i = 1; i <= PTO_RATE_TRAILING_WEEKS; i++) {
+    const w = addWeeks(weekOf, -i);
+    if (ptoHours(mgr, location, w) > 0) continue;
+    const orders = homeOrders(mgr, location, w, rows, normDept);
+    if (orders <= 0) continue;
+    normalCost   += normalHomeCost(mgr, location, w, rows, normDept);
+    normalOrders += orders;
+    rateWeeks++;
+  }
+  if (normalOrders <= 0) return null;  // no history to rate from
+
+  const ptoShare   = pto / STANDARD_WEEKLY_HOURS;
+  const normalRate = normalCost / normalOrders;
+  const weekOrders = homeOrders(mgr, location, weekOf, rows, normDept);
+  const perOrder   = (1 - ptoShare) * homeCost + ptoShare * normalRate * weekOrders;
+  return {
+    name: mgr.name, ptoHours: pto, ptoShare, fullCost: homeCost, normalRate, rateWeeks, weekOrders,
+    adjustedCost: Math.min(homeCost, perOrder),
+    capped:       perOrder >= homeCost,
+  };
+}
+
+export interface WeekPtoAdjustment extends PtoAdjustment {
+  department: string;  // Title Case home department
+  weekOf:     string;
+}
+
+export function ptoAdjustedHomeCost(
+  mgr: SalaryMgr, location: string, weekOf: string, homeCost: number,
+  rows: ManagerActualHoursRow[], normDept: (raw: string) => string
+): number {
+  return ptoAdjustmentDetail(mgr, location, weekOf, homeCost, rows, normDept)?.adjustedCost ?? homeCost;
+}
+
 // Department-manager cost for one location+department across a set of weeks.
+// Pass `actualRows` (every team member's, orders included, reaching
+// PTO_RATE_TRAILING_WEEKS before the first week) + `normDept` to apply the
+// PTO-week adjustment — see ptoAdjustedHomeCost; without them it's flat salary.
 export function getSalaryMgrCostForWeeks(
-  managers: SalaryMgr[],
-  location: string,
-  dept:     string,
-  weekOfs:  string[]
+  managers:    SalaryMgr[],
+  location:    string,
+  dept:        string,
+  weekOfs:     string[],
+  actualRows?: ManagerActualHoursRow[],
+  normDept?:   (raw: string) => string
 ): number {
   let total = 0;
   for (const weekOf of weekOfs) {
@@ -103,7 +246,11 @@ export function getSalaryMgrCostForWeeks(
       const after  = !mgr.from || weekOf >= mgr.from;
       const before = !mgr.to   || weekOf <= mgr.to;
       if (after && before) {
-        total += (mgr.annualSalary / 52) / mgr.departments.length;
+        const weeklySalary = mgr.annualSalary / 52;
+        const homeCost = actualRows && normDept
+          ? ptoAdjustedHomeCost(mgr, location, weekOf, weeklySalary, actualRows, normDept)
+          : weeklySalary;
+        total += homeCost / mgr.departments.length;
       }
     }
   }
@@ -116,6 +263,8 @@ export interface ManagerActualHoursRow {
   department:   string;  // raw actuals casing — pass through `normDept` first
   location:     string;
   actual_hours: number;
+  // Only needed for the PTO adjustment (ptoAdjustedHomeCost).
+  actual_orders?: number;
 }
 
 // Same idea as getSalaryMgrCostForWeeks, but hours-aware: instead of always
@@ -127,12 +276,17 @@ export interface ManagerActualHoursRow {
 // matching `departments` entries) summed across all of `weekOfs`.
 // `normDept` should be the caller's own raw-department -> Title Case
 // normalizer, so this lines up with however it already buckets hoursByDept.
+// PTO weeks get ptoAdjustmentDetail, which needs `actualRows` to be every
+// team member's (orders included) reaching PTO_RATE_TRAILING_WEEKS back.
+// Pass `ptoOut` to collect each adjustment made (per home department, with
+// that department's share of the cost) — e.g. for the KPIs info bubble.
 export function getSalaryMgrCostSplitForWeeks(
   managers:   SalaryMgr[],
   location:   string,
   weekOfs:    string[],
   actualRows: ManagerActualHoursRow[],
-  normDept:   (raw: string) => string
+  normDept:   (raw: string) => string,
+  ptoOut?:    WeekPtoAdjustment[]
 ): Record<string, number> {
   const costByDept: Record<string, number> = {};
   for (const weekOf of weekOfs) {
@@ -160,9 +314,13 @@ export function getSalaryMgrCostSplitForWeeks(
         totalAway += cost;
       }
 
-      const homePerDept = Math.max(0, weeklySalary - totalAway) / mgr.departments.length;
+      const fullHomeCost = Math.max(0, weeklySalary - totalAway);
+      const pto          = ptoAdjustmentDetail(mgr, location, weekOf, fullHomeCost, actualRows, normDept);
+      const n            = mgr.departments.length;
+      const homePerDept  = (pto?.adjustedCost ?? fullHomeCost) / n;
       for (const dept of mgr.departments) {
         costByDept[dept] = (costByDept[dept] ?? 0) + homePerDept;
+        if (pto && ptoOut) ptoOut.push({ ...pto, fullCost: pto.fullCost / n, adjustedCost: pto.adjustedCost / n, department: dept, weekOf });
       }
     }
   }

@@ -7,6 +7,7 @@ import { getMondayDate } from '@/lib/weekDates';
 import { isActiveGm, activeGmNames } from '@/lib/managers';
 import { MemberTierBadges } from './MemberTierBadge';
 import { SyncedOrdersPopover } from './SyncedOrdersPopover';
+import { PtoCpoInfo } from './PtoCpoInfo';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { netAdjustment, type OrderAdjustment } from '@/lib/orderAdjustments';
 import { HelpTip } from './HelpTip';
@@ -75,10 +76,14 @@ const RANGE_OPTIONS: { value: number | 'all'; label: string }[] = [
 ];
 
 export function HistoricalsSection({ department, location, members, ordersLabel, onRatioUpdate, presActuals = {}, onReceivedSaved, canSeeManagerCPO = () => false }: HistoricalsSectionProps) {
-  const { enrichedActuals, laborRows, loading, refresh, getWeekCosts, getRateForWeek, getManagerDeptCost } = useActualsWithPayroll(location);
+  const { enrichedActuals, laborRows, loading, refresh, getWeekCosts, getRateForWeek, getManagerDeptCost, getPtoAdjustments } = useActualsWithPayroll(location);
   // Only admins may override an auto-synced order count (enforced again in
   // /api/actuals); everyone else can open the drill-down to see its orders.
   const { user } = useCurrentUser();
+  // Manager PTO details (info bubble + full-pay CPO) show a manager's pay:
+  // admins and this location's GM only — same rule as /api/kpis.
+  const canSeePto = user?.profile.role === 'admin' ||
+    (user?.profile.role === 'general_manager' && user.profile.location === location);
   const isAdmin = user?.profile.role === 'admin';
   // Admins, and managers/GMs of this location, can add or remove order
   // numbers from a synced count (enforced again in /api/order-adjustments).
@@ -727,6 +732,11 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                   const weekRatio = nonMgrOrders > 0 && nonMgrHours > 0 ? nonMgrHours / nonMgrOrders : null;
                   const { cost: totalCost, isActual: allActual } = weekTeamCost(w);
                   const teamCPO = totalOrders > 0 && totalCost > 0 ? totalCost / totalOrders : null;
+                  // A salaried manager's recorded PTO this week — show what
+                  // CPO would be at their full pay, plus how it was adjusted.
+                  const ptoAdjustments = canSeePto ? getPtoAdjustments(department.charAt(0).toUpperCase() + department.slice(1), w) : [];
+                  const ptoCredit = ptoAdjustments.reduce((s, a) => s + a.fullCost - a.adjustedCost, 0);
+                  const fullPayCPO = teamCPO !== null ? (totalCost + ptoCredit) / totalOrders : null;
                   const isFirst = monthStartWeeks.has(w);
                   return (
                     <td key={w} className={`px-2 py-2 text-center ${isFirst ? 'border-l-2 border-l-slate-300' : 'border-l border-l-slate-100'}`}>
@@ -741,6 +751,21 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
                           {hasRates && teamCPO !== null && (
                             <div className={`text-[9px] font-semibold ${allActual ? 'text-green-700' : 'text-amber-600'}`}>
                               {fmt$(teamCPO)}
+                              {ptoAdjustments.length > 0 && fullPayCPO !== null && (
+                                <PtoCpoInfo
+                                  periodLabel={`week of ${new Date(w + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
+                                  department={department.charAt(0).toUpperCase() + department.slice(1)}
+                                  adjustments={ptoAdjustments}
+                                  totalOrders={totalOrders}
+                                  adjustedCpo={teamCPO}
+                                  fullCpo={fullPayCPO}
+                                />
+                              )}
+                            </div>
+                          )}
+                          {hasRates && ptoCredit > 0.005 && fullPayCPO !== null && (
+                            <div className="text-[8px] font-normal text-slate-400" title="CPO with the manager's full pay for the week, before the PTO adjustment">
+                              {fmt$(fullPayCPO)} full pay
                             </div>
                           )}
                         </>

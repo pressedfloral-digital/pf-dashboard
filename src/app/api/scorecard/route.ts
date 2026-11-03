@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
-import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks } from '@/lib/managers';
+import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks, PTO_RATE_TRAILING_WEEKS, type ManagerActualHoursRow } from '@/lib/managers';
 import { fetchAllRows } from '@/lib/fetchAllRows';
 import { filterToHistoricalsRows, HISTORICALS_ROSTER_KEYS } from '@/lib/historicalsRows';
 
@@ -56,9 +56,10 @@ function weeksInMonth(weekOfs: string[], monthKey: string): string[] {
 // truth shared with kpis/route.ts, useActualsWithPayroll.ts, and
 // useHistoricalMetrics.ts). Update that file when a manager changes.
 
-// Returns salary manager weekly cost contribution for a given location+dept+weekOf
-function getSalaryMgrCost(location: string, dept: string, weekOf: string): number {
-  return getSalaryMgrCostForWeeks(DEPARTMENT_MANAGERS, location, dept, [weekOf]);
+// Returns salary manager weekly cost contribution for a given location+dept+weekOf.
+// `actualRows` lets a recorded PTO week be adjusted (see ptoAdjustedHomeCost).
+function getSalaryMgrCost(location: string, dept: string, weekOf: string, actualRows: ManagerActualHoursRow[]): number {
+  return getSalaryMgrCostForWeeks(DEPARTMENT_MANAGERS, location, dept, [weekOf], actualRows, normalizeDeptForScorecard);
 }
 
 // Which team_member_week_actuals rows belong to a manager, so Combined ratio
@@ -150,11 +151,19 @@ export async function GET(req: NextRequest) {
     });
 
     // ── Fetch team actuals (hours + production) ───────────────────────────────
+    // PTO_RATE_TRAILING_WEEKS earlier than fromDate, so a manager's PTO week
+    // in the first months can still find their normal cost per order (see
+    // ptoAdjustedHomeCost). Only that adjustment reads the extra weeks.
+    const actualsFrom = (() => {
+      const d = new Date(fromDate + 'T12:00:00');
+      d.setDate(d.getDate() - PTO_RATE_TRAILING_WEEKS * 7);
+      return d.toISOString().split('T')[0];
+    })();
     const rawActualRows = await fetchAllRows<ActualRow>((from, to) => {
       let q = supabase
         .from('team_member_week_actuals')
         .select('week_of,member_name,department,location,actual_hours,actual_orders')
-        .gte('week_of', fromDate);
+        .gte('week_of', actualsFrom);
       if (locationParam !== 'both') q = q.eq('location', locationParam);
       return q.range(from, to);
     });
@@ -177,7 +186,8 @@ export async function GET(req: NextRequest) {
     // Historicals is the source of truth — count exactly the rows it shows,
     // same as All KPIs (see src/lib/historicalsRows.ts). Every production,
     // hours, ratio, and Individual Ratios figure below reads from this.
-    const actualRows = filterToHistoricalsRows(rawActualRows, rosterData ?? []);
+    const actualRowsWithLookback = filterToHistoricalsRows(rawActualRows, rosterData ?? []);
+    const actualRows = actualRowsWithLookback.filter(r => r.week_of >= fromDate);
 
     // ── Compute monthly actuals per location ──────────────────────────────────
     const allWeekOfs = [...new Set([
@@ -219,7 +229,7 @@ export async function GET(req: NextRequest) {
         const allDepts = ['Design', 'Preservation', 'Fulfillment', 'G&A', 'Resin'];
         for (const dept of allDepts) {
           for (const weekOf of weekOfs) {
-            const mgrCost = getSalaryMgrCost(loc, dept, weekOf);
+            const mgrCost = getSalaryMgrCost(loc, dept, weekOf, actualRowsWithLookback);
             if (mgrCost > 0) laborByDept[dept] = (laborByDept[dept] ?? 0) + mgrCost;
           }
         }

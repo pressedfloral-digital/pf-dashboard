@@ -28,6 +28,7 @@ import {
 } from '@/hooks/useKpiMetrics';
 import { RATIO_TARGETS, type RatioDept } from '@/lib/ratioTargets';
 import { HelpTip } from './HelpTip';
+import { PtoCpoInfo } from './PtoCpoInfo';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -247,6 +248,7 @@ function KpiCell({
   heatShaded = false,
   planned = null,
   plannedVariant = 'estimate',
+  periodLabel,
 }: {
   metrics:  KpiMetrics;
   section:  KpiSection;
@@ -257,6 +259,7 @@ function KpiCell({
   heatShaded?: boolean; // cell sits on a heatmap background — darken the muted/accent text that's tuned for a white cell
   planned?: KpiMetrics | null; // that period's own saved-schedule projection, for the "vs planned" delta line
   plannedVariant?: RatioVariant; // which projection `planned` is — Estimated/Expected/Goal, see PLANNED_VARIANT_LABEL
+  periodLabel?: string; // e.g. "W/C Oct 5" — heads the manager-PTO info bubble
 }) {
   if (!metrics.hasData) {
     return <span className="text-slate-300 text-sm">—</span>;
@@ -308,6 +311,12 @@ function KpiCell({
   // that got bonus $ while below its baseline (Specialist) tier is worth a
   // second look at how the bonus goal was set.
   const tier = showBonus ? classifyTier(dept, metrics.ratio) : null;
+  // Manager PTO lowered this cell's cost (the API only sends it to admins and
+  // that location's GM). Full-pay CPO keeps whatever GM/bonus the shown CPO
+  // has by adding the same per-unit difference the PTO adjustment removed.
+  const ptoFullCpo = cpoVal != null && metrics.pto?.fullCpo != null && metrics.cpo != null
+    ? cpoVal + (metrics.pto.fullCpo - metrics.cpo)
+    : null;
   // On the heat backgrounds, slate-400/amber-600 (tuned for a white cell)
   // fall to ~1-2:1 contrast — nearly invisible. slate-800 stays 5-10:1
   // across green/yellow/red, so secondary lines switch to it too instead of
@@ -319,7 +328,23 @@ function KpiCell({
         cpoVal == null ? 'text-slate-300' : 'text-slate-800'
       }`}>
         {fmtCPO(cpoVal)}
+        {metrics.pto && cpoVal != null && ptoFullCpo != null && (
+          <PtoCpoInfo
+            periodLabel={periodLabel ?? 'this period'}
+            department={dept.charAt(0).toUpperCase() + dept.slice(1)}
+            adjustments={metrics.pto.adjustments}
+            totalOrders={metrics.production}
+            adjustedCpo={cpoVal}
+            fullCpo={ptoFullCpo}
+            size="md"
+          />
+        )}
       </div>
+      {ptoFullCpo != null && ptoFullCpo - (cpoVal ?? 0) > 0.005 && (
+        <div className={`text-[11px] tabular-nums ${heatShaded ? 'text-slate-700' : 'text-slate-400'}`}>
+          {fmtCPO(ptoFullCpo)} with full manager pay
+        </div>
+      )}
       {cpoVal != null && dept !== 'ga' && (
         <div className={`text-xs tabular-nums ${heatShaded ? 'text-slate-800' : 'text-slate-400'}`}>
           {fmtCPO(metrics.laborCost)} / {fmtUnits(metrics.production)} {DEPT_PRODUCTION_UNIT[dept]}
@@ -419,6 +444,7 @@ function HistoricalRow({
               dept={dept}
               planned={plannedPeriod ? selectDept(plannedPeriod, dept) : null}
               plannedVariant={plannedVariant}
+              periodLabel={w.label}
             />
           </td>
         );
