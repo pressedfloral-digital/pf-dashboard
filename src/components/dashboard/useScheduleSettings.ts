@@ -202,6 +202,9 @@ const KEYS: (keyof ScheduleSettings)[] = [
 export function useScheduleSettings(location: 'Utah' | 'Georgia') {
   const [settings,  setSettings]  = useState<ScheduleSettings>(DEFAULTS);
   const [loading,   setLoading]   = useState(true);
+  // Which location `settings` currently holds — `loading` alone still reads
+  // false for the first render after a location switch.
+  const [loadedLocation, setLoadedLocation] = useState<'Utah' | 'Georgia' | null>(null);
   const [saveState, setSaveState] = useState<'idle'|'saving'|'saved'|'error'>('idle');
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
@@ -237,6 +240,7 @@ export function useScheduleSettings(location: 'Utah' | 'Georgia') {
           }
           return next;
         });
+        setLoadedLocation(location);
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -270,7 +274,7 @@ export function useScheduleSettings(location: 'Utah' | 'Georgia') {
 
   useEffect(() => () => { Object.values(timers.current).forEach(clearTimeout); }, []);
 
-  return { settings, loading, saveState, update };
+  return { settings, loading, loadedLocation, saveState, update };
 }
 
 // Paid holidays: one shared calendar for both locations (staff are paid but

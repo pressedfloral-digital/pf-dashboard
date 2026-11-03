@@ -34,6 +34,7 @@ import { useDistributionEstimate } from '@/hooks/useDistributionEstimate';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
 import { ProductionActual, ProductionActualsStatus, actualGoalTone, sumActuals } from './ProductionActual';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
+import { ratioFromActuals, syncRosterRatios, type RatioActualRow } from '@/lib/rosterRatio';
 import { HelpTip } from './HelpTip';
 import { WeekCell, WeekHead } from './WeekCell';
 import { PreservationFlowTab, TurnaroundDots, type PresFlowWeek } from './PreservationFlowTab';
@@ -2405,12 +2406,10 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
               employeeRates={employeeRates}
               onRefreshRatio={async (id, name) => {
                 try {
-                  const res = await fetch(`/api/actuals?location=${location}&type=team&weeks=100`);
-                  const data = await res.json() as { teamActuals?: { department: string; week_of: string; member_name: string; actual_hours: number; actual_orders: number }[] };
-                  const rows = (data.teamActuals ?? []).filter(r => r.department === 'preservation' && r.member_name === name).sort((a, b) => b.week_of.localeCompare(a.week_of)).slice(0, 4);
-                  const h = rows.reduce((s, r) => s + r.actual_hours, 0);
-                  const o = rows.reduce((s, r) => s + r.actual_orders, 0);
-                  if (o > 0 && h > 0) updateRoster(id, 'ratio', Math.round(h / o * 100) / 100);
+                  const res = await fetch(`/api/actuals?location=${location}&type=team&weeks=52`);
+                  const data = await res.json() as { teamActuals?: RatioActualRow[] };
+                  const ratio = ratioFromActuals(data.teamActuals ?? [], 'preservation', name, isoMonday(0));
+                  if (ratio !== null) updateRoster(id, 'ratio', ratio);
                 } catch {}
               }}
               onReorder={reorderPresTeam}
@@ -4533,7 +4532,7 @@ export function SchedulePage({
   };
 
   // ── Supabase-persisted settings ───────────────────────────────────────────────
-  const { settings, loading: settingsLoading, saveState, update } = useScheduleSettings(location);
+  const { settings, loading: settingsLoading, loadedLocation: settingsLocation, saveState, update } = useScheduleSettings(location);
   const { holidays: paidHolidays, addHoliday, removeHoliday } = usePaidHolidays();
   const [pendingHolidayDate, setPendingHolidayDate] = useState('');
   // Employee rates from Rippling — used to fill zero rates for flex members
@@ -4659,6 +4658,27 @@ export function SchedulePage({
       .then((d: { teamActuals?: typeof teamActuals }) => { setTeamActuals(d.teamActuals ?? []); })
       .catch(() => {});
   }, [location]);
+
+  // Keep Preservation roster ratios current: once this location's saved
+  // settings are in, set each member's ratio from their last few complete
+  // weeks of actuals (see ratioFromActuals). Fetched separately from
+  // teamActuals above so a quick location switch can't pair one site's
+  // actuals with the other's roster. Editors only — it saves the roster.
+  const presRosterRef = useRef(settings.presRoster);
+  presRosterRef.current = settings.presRoster;
+  useEffect(() => {
+    if (settingsLoading || settingsLocation !== location || !canEditCurrent) return;
+    let cancelled = false;
+    fetch(`/api/actuals?location=${location}&type=team&weeks=52`)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then((d: { teamActuals?: RatioActualRow[] }) => {
+        if (cancelled) return;
+        const next = syncRosterRatios(presRosterRef.current ?? {}, d.teamActuals ?? [], 'preservation', isoMonday(0));
+        if (next) update('presRoster', next);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [location, settingsLoading, settingsLocation, canEditCurrent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The other location's actuals — needed to derive this location's share of
   // the company-wide "bouquets received" projection (see actualIntakeByWeek/

@@ -8,6 +8,8 @@
 const PAYROLL_NAME_ALIASES: Record<string, string> = {
   'cyd g':       'Cyd Gay',
   'sher taylor': 'Sherilyn Taylor',
+  // Georgia Preservation roster nickname; hours and orders land under the full name.
+  'bex':         'Becca LaFalce',
 };
 
 /** The roster name for a Rippling name; unchanged when there's no alias. */
