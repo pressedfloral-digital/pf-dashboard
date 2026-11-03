@@ -44,7 +44,11 @@ export async function POST(req: Request) {
     const { id, email_addresses, first_name, last_name, public_metadata } = evt.data;
 
     const email = email_addresses?.[0]?.email_address ?? "";
-    const full_name = [first_name, last_name].filter(Boolean).join(" ") || email;
+    const full_name =
+      [first_name, last_name].filter(Boolean).join(" ") ||
+      (public_metadata?.full_name as string) ||
+      (public_metadata?.team_member_name as string) ||
+      email;
 
     // These are set by the admin when sending the invite
     const role = (public_metadata?.role as string) ?? "user";

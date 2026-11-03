@@ -15,6 +15,8 @@ import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { WeekCell, WeekHead } from './WeekCell';
 import { PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock } from './ScheduleBlocks';
 import { HelpTip } from './HelpTip';
+import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
+import { ProductionActual, ProductionActualsStatus, sumActuals } from './ProductionActual';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -71,6 +73,22 @@ interface QueueSummary {
 
 const WEEKS = 52;
 const WINDOW = 8;  // weeks visible in the schedule grid at once
+
+// The production app has no Resin stage — resin pieces are assigned to the
+// resin team member as the designer, so live Resin actuals read the Design
+// assignment count for the resin roster.
+const RESIN_MT_DEPARTMENT = 'design' as const;
+
+// Mon–Sun ISO dates for a "This week" offset, built the same way as
+// SchedulePage's getWeekdays so both pages ask MT for identical days.
+function weekIsoDates(weekOffset: number): string[] {
+  const monday = getMondayDate(weekOffset);
+  return [0, 1, 2, 3, 4, 5, 6].map(di => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + di);
+    return d.toISOString().split('T')[0];
+  });
+}
 
 export const DEFAULT_RESIN_ROSTER: ResinMember[] = [
   { id: 'resin-1', name: 'Preslee Peterson', ratio: 1.5, payType: 'hourly', hourlyRate: 0, annualSalary: 0, isManager: true, role: 'master' },
@@ -159,6 +177,14 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
 
   // App/technology staff are kept off every roster view (see nonProductionStaff.ts).
   const productionRoster = roster.filter(m => !isNonProductionStaff(m.name));
+
+  const thisWeekDates = weekIsoDates(thisWeekOffset);
+  const resinActuals = useProductionAssignmentCounts({
+    names: productionRoster.map(m => m.name),
+    dates: thisWeekDates,
+    enabled: activeTab === 'thisweek',
+  });
+  const actualFor = (name: string, iso: string) => resinActuals.getCount(name, iso, RESIN_MT_DEPARTMENT);
 
   // Fetch queue summary — re-fetches whenever queueFrontWeek changes so the
   // top summary cards (total/Utah/Georgia) stay consistent with the
@@ -309,40 +335,52 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     }
     projectedCohorts.sort((a, b) => a.weekOf.localeCompare(b.weekOf));
 
-    // Cumulative units from the front of the (active) queue through each
-    // cohort, matched against cumulative real capacity going forward — a
-    // cohort's completion week is whenever running capacity first reaches its
-    // running unit total. This is true FIFO: cumulative units only grows as
-    // you move toward newer cohorts, so newer cohorts correctly land later,
-    // not sooner. Horizon extends past the tracked schedule (assuming the
-    // last tracked week's capacity holds) so a large backlog doesn't read as
-    // "never clears" just because the capacity array ran out.
+    // Week-by-week FIFO: each week's scheduled capacity works the oldest
+    // cohorts that have actually arrived by then, and whatever capacity is
+    // left over once the arrived queue is empty is lost (idle hours can't be
+    // spent on flowers that haven't shown up yet). A cumulative-capacity vs
+    // cumulative-units match would instead bank those idle hours against
+    // future cohorts, so extra staff early on (or a light week before a
+    // busy season) would make every later cohort read weeks too fast.
+    // Horizon extends past the tracked schedule (assuming the last tracked
+    // week's capacity holds) so a large backlog doesn't read as "never
+    // clears" just because the capacity array ran out.
     const horizon = capacityByWeek.length * 2;
     const capAt = (w: number) => w < capacityByWeek.length ? capacityByWeek[w] : (capacityByWeek[capacityByWeek.length - 1] ?? 0);
-    const cumCapByWeek: number[] = [];
-    let runningCap = 0;
-    for (let w = 0; w < horizon; w++) { runningCap += capAt(w); cumCapByWeek.push(runningCap); }
 
     const today = getMondayDate(0);
-    let cumulativeUnits = 0;
-    return projectedCohorts.map(({ weekOf, units, estimated }) => {
-      cumulativeUnits += units;
-      const rawWeeksFromNow = cumCapByWeek.findIndex(cc => cc >= cumulativeUnits);
-      const weeksElapsed = Math.round((today.getTime() - mondayOf(weekOf).getTime()) / (7 * 24 * 60 * 60 * 1000));
-      // A cohort can't finish before its own intake week arrives — matters
-      // once projected weeks push cohorts far enough out that capacity
-      // "catches up" to cumulative demand before the cohort itself is even
-      // received, which would otherwise read as a negative total turnaround.
-      const weeksFromNow = rawWeeksFromNow === -1 ? -1 : Math.max(rawWeeksFromNow, -weeksElapsed);
-      return {
-        weekOf,
-        weekLabel: mondayOf(weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        units,
-        weeksElapsed,
-        weeksToComplete: weeksFromNow === -1 ? null : weeksFromNow,
-        estimated,
-      };
-    });
+    const weeksElapsedOf = (weekOf: string) =>
+      Math.round((today.getTime() - mondayOf(weekOf).getTime()) / (7 * 24 * 60 * 60 * 1000));
+    // Past/current cohorts are already in hand at week 0; future ones arrive
+    // in their own intake week.
+    const arrivalWeek = projectedCohorts.map(c => Math.max(0, -weeksElapsedOf(c.weekOf)));
+    const remaining = projectedCohorts.map(c => c.units);
+    const doneWeek: (number | null)[] = projectedCohorts.map(() => null);
+    let front = 0;  // first cohort with work left — FIFO, so everything before it is done
+    for (let w = 0; w < horizon && front < projectedCohorts.length; w++) {
+      let cap = capAt(w);
+      for (let i = front; i < projectedCohorts.length && cap > 0; i++) {
+        if (arrivalWeek[i] > w) break;  // sorted by week, so nothing later has arrived either
+        if (remaining[i] <= 0) continue;
+        const take = Math.min(cap, remaining[i]);
+        remaining[i] -= take;
+        cap -= take;
+        if (remaining[i] <= 1e-9) doneWeek[i] = w;
+      }
+      while (front < projectedCohorts.length && remaining[front] <= 1e-9) {
+        if (doneWeek[front] === null) doneWeek[front] = Math.max(w, arrivalWeek[front]);
+        front++;
+      }
+    }
+
+    return projectedCohorts.map(({ weekOf, units, estimated }, i) => ({
+      weekOf,
+      weekLabel: mondayOf(weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      units,
+      weeksElapsed: weeksElapsedOf(weekOf),
+      weeksToComplete: doneWeek[i],
+      estimated,
+    }));
   })();
 
   // ── Handlers ──────────────────────────────────────────────────────────────
@@ -785,9 +823,12 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
       {activeTab === 'thisweek' && (
         <div className="bg-white border border-slate-100 rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
-            <h3 className="text-sm font-semibold text-slate-700">
-              Hours — {thisWeekOffset === 0 ? 'this week' : thisWeekOffset === 1 ? 'next week' : `week +${thisWeekOffset}`}
-            </h3>
+            <div>
+              <h3 className="text-sm font-semibold text-slate-700">
+                Hours — {thisWeekOffset === 0 ? 'this week' : thisWeekOffset === 1 ? 'next week' : `week +${thisWeekOffset}`}
+              </h3>
+              <ProductionActualsStatus loading={resinActuals.loading} error={resinActuals.error} refreshedAt={resinActuals.refreshedAt} />
+            </div>
             <div className="flex items-center gap-2">
               {hasRates && <span className="text-xs text-slate-400 mr-2">CPO shown when rate is set</span>}
               <InputModeToggle mode={resinInputMode} onChange={setResinInputMode} unitLabel="Orders" />
@@ -820,6 +861,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                         <PersonCell name={m.name}>
                           <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
                         </PersonCell>
+                        {resinActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
                       </td>
                       {[0,1,2,3,4,5,6].map(di => {
                         const dayVal = getDH(m.id, thisWeekOffset, di);
@@ -869,12 +911,20 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                               {isHoliday && <div className="text-[10px] text-amber-700">holiday pay</div>}
                               {hoursOff > 0 && <div className="text-[10px] font-semibold text-red-500" title="Hours off on the Days off calendar">{hoursOff}h off</div>}
                             </ShiftBlock>
+                            <ProductionActual value={actualFor(m.name, thisWeekDates[di])} loading={resinActuals.loading} unit="u"
+                              drill={{ name: m.name, start: thisWeekDates[di], end: thisWeekDates[di], department: RESIN_MT_DEPARTMENT }} />
                           </td>
                         );
                       })}
                       <td className="px-3 py-2 text-center">
                         <div className="font-medium text-violet-700">{Math.round(units * 100) / 100} units</div>
                         <div className="text-slate-400 text-[10px]">{round2(weekTotal)}h</div>
+                        <ProductionActual
+                          value={sumActuals(thisWeekDates.map(iso => actualFor(m.name, iso)))}
+                          loading={resinActuals.loading}
+                          unit="u"
+                          drill={{ name: m.name, start: thisWeekDates[0], end: thisWeekDates[6], department: RESIN_MT_DEPARTMENT }}
+                        />
                       </td>
                     </tr>
                   );
@@ -897,9 +947,30 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                     {weeklyCapacity(thisWeekOffset) > 0 ? `${weeklyCapacity(thisWeekOffset).toFixed(0)}u` : <span className="text-slate-300">—</span>}
                   </td>
                 </tr>
+                <tr className="border-t-2 border-sky-200 bg-sky-50/60 font-semibold">
+                  <td className="sticky left-0 bg-sky-50 px-4 py-2 text-xs text-sky-800">
+                    <div>Actual total</div>
+                    <div className="text-[9px] font-normal text-sky-600">MT production</div>
+                  </td>
+                  {thisWeekDates.map(iso => (
+                    <td key={iso} className="px-2 py-2 text-center">
+                      <ProductionActual
+                        value={sumActuals(productionRoster.map(m => actualFor(m.name, iso)))}
+                        loading={resinActuals.loading}
+                        unit="u"
+                      />
+                    </td>
+                  ))}
+                  <td className="px-2 py-2 text-center">
+                    <ProductionActual
+                      value={sumActuals(productionRoster.flatMap(m => thisWeekDates.map(iso => actualFor(m.name, iso))))}
+                      loading={resinActuals.loading}
+                      unit="u"
+                    />
+                  </td>
+                </tr>
                 {/* CPO — team labor cost ÷ planned units per day, moved out of Day
-                    total; the week cell averages the days that have one. Resin has
-                    no live production counts, so there's no actual CPO. */}
+                    total; the week cell averages the days that have one. */}
                 {hasRates && (() => {
                   const dayCPOs = [0,1,2,3,4,5,6].map(di => {
                     const dayUnits = roster.reduce((s, m) => s + (m.ratio > 0 ? getDH(m.id, thisWeekOffset, di) / m.ratio : 0), 0);
