@@ -324,7 +324,20 @@ export async function fetchAssignedOrderProducts(
   const accounts = targets[0]?.accounts ?? [];
   if (accounts.length === 0) return { matched: false, items: [] };
 
-  const rows = deptOrderProducts(await listTargetOrderProducts(accounts, start, end), department);
+  // One request per day, then drop repeats. Over a whole week the list's
+  // pages can overlap once someone has more than a page of products, so the
+  // same product came back twice while others were skipped — the drill-down
+  // disagreed with the count. A product can also match on two days (when it
+  // holds more than one stage), so the first day it appears wins.
+  const seen = new Set<string>();
+  const rows: DeptOrderProduct[] = [];
+  for (const day of assignmentDates(start, end)) {
+    for (const r of deptOrderProducts(await listTargetOrderProducts(accounts, day, day), department)) {
+      if (seen.has(r.row.uuid)) continue;
+      seen.add(r.row.uuid);
+      rows.push(r);
+    }
+  }
   const items = rows
     .map(({ row, otherStages }) => ({
       uuid: row.uuid,
