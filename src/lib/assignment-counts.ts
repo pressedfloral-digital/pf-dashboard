@@ -263,26 +263,46 @@ interface DeptOrderProduct {
   otherStages: AssignmentDepartment[];
 }
 
+// The /ForUser list has no ORDER BY, so its pages aren't stable: a week with
+// more than one page (50 rows) comes back with some products repeated on
+// page 2 and others never returned at all (one Oct 26 2026 Preservation week:
+// five repeats, five missing, #57736 among them). Asking one day at a time
+// keeps almost every request to a single page, and de-duplicating by uuid
+// stops a repeat from showing twice when a day still runs past one page.
+async function listOrderProductsForAccountDay(account: AssignableStaff, day: string): Promise<OrderProductSummaryDTO[]> {
+  const rows: OrderProductSummaryDTO[] = [];
+  const pageSize = 50;
+  for (let pageNumber = 1; pageNumber <= 40; pageNumber++) {
+    const page = await pfPost<OrderProductSummaryPage>('/OrderProducts/ForUser', {
+      userUuid: account.uuid,
+      activeStatusesOnly: false,
+      assignedThisWeek: false,
+      ...rangeBounds(day, day),
+      pageNumber,
+      pageSize,
+    });
+    const items = page.items ?? [];
+    rows.push(...items);
+    if (items.length < pageSize || (page.totalPages != null && pageNumber >= page.totalPages)) break;
+  }
+  return rows;
+}
+
 async function listTargetOrderProducts(
   accounts: AssignableStaff[],
   start: string,
   end: string,
 ): Promise<ListedOrderProduct[]> {
+  const days = assignmentDates(start, end);
   const listed: ListedOrderProduct[] = [];
   for (const account of accounts) {
-    const pageSize = 50;
-    for (let pageNumber = 1; pageNumber <= 40; pageNumber++) {
-      const page = await pfPost<OrderProductSummaryPage>('/OrderProducts/ForUser', {
-        userUuid: account.uuid,
-        activeStatusesOnly: false,
-        assignedThisWeek: false,
-        ...rangeBounds(start, end),
-        pageNumber,
-        pageSize,
-      });
-      const items = page.items ?? [];
-      items.forEach(row => listed.push({ account, row }));
-      if (items.length < pageSize || (page.totalPages != null && pageNumber >= page.totalPages)) break;
+    const perDay = await Promise.all(days.map(day => listOrderProductsForAccountDay(account, day)));
+    const seen = new Set<string>();
+    for (const row of perDay.flat()) {
+      const key = row.uuid?.toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      listed.push({ account, row });
     }
   }
   return listed;
