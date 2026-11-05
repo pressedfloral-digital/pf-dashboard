@@ -1,5 +1,6 @@
 import { pfGet } from '@/lib/pf-api';
 import { supabase } from '@/lib/supabase';
+import { BLOOM_STOCK_PRODUCTS } from '@/lib/bloomStock';
 
 // Preservation turnaround: how long an order product sits in Bouquet Received
 // before its first bouquet photo is uploaded. Received times come from the
@@ -173,7 +174,41 @@ async function computeMissingPhotos(location: string, uploads: Map<string, strin
     if ((uploads.get(op) ?? []).some(at => new Date(at).getTime() >= receivedMs)) return;
     missing.push({ orderProductUuid: op, orderNumber: r.orderNumber, receivedAt: r.at, days: Math.floor((now.getTime() - receivedMs) / 86_400_000) });
   });
-  return missing.sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
+
+  // Bloom stock products (Handprint / Paw Print / Footprint frames, Bloom
+  // Arrangement Recreation) are made from Pressed Floral's own pressed stock,
+  // so no bouquet photo is ever uploaded for them — never flag them.
+  const titles = await productTitles(missing.map(m => m.orderProductUuid));
+  return missing
+    .filter(m => !isBloomStockTitle(titles.get(m.orderProductUuid)))
+    .sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
+}
+
+const BLOOM_STOCK_TITLES = BLOOM_STOCK_PRODUCTS.map(p => p.label.toLowerCase());
+
+// Matched on the PF product title (the API doesn't return the Shopify
+// product id). Regular orders switched to a recreation on the Bloom Stock
+// board keep their frame title and stay flagged: their order can also hold
+// sent-in bouquets that do need photos.
+function isBloomStockTitle(title: string | null | undefined): boolean {
+  const t = title?.trim().toLowerCase() ?? '';
+  return BLOOM_STOCK_TITLES.some(b => t.includes(b));
+}
+
+// An order product's title never changes, so it's looked up once per server
+// instance. A failed lookup isn't cached and leaves the flag showing.
+const titleCache = new Map<string, string | null>();
+async function productTitles(uuids: string[]): Promise<Map<string, string | null | undefined>> {
+  const todo = [...new Set(uuids)].filter(u => !titleCache.has(u));
+  for (let i = 0; i < todo.length; i += 6) {
+    await Promise.all(todo.slice(i, i + 6).map(async uuid => {
+      try {
+        const d = await pfGet<{ productTitle?: string | null }>(`/OrderProducts/Details/${uuid}`);
+        titleCache.set(uuid, d?.productTitle ?? null);
+      } catch { /* keep flagged */ }
+    }));
+  }
+  return new Map(uuids.map(u => [u, titleCache.get(u)]));
 }
 
 // Today / this week / this month averages for one location, by the local day
