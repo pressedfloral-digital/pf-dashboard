@@ -3,7 +3,7 @@
  * WeeklyReport. Shared by /api/design-inventory (one location's schedule) and
  * the order add-on refresh cron (every location's orders).
  */
-import { pfGetAll, fmtDate } from '@/lib/pf-api';
+import { pfGet, fmtDate } from '@/lib/pf-api';
 import { DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, isNonDesignProduct } from '@/lib/designInventory';
 
 // Orders are placed around the event date, so anything still in
@@ -28,6 +28,23 @@ export interface PipelineLine {
   item: WeeklyReportItem;
 }
 
+// If another request (another viewer, or the add-on cron) holds the API's one
+// WeeklyReport slot, wait out its Retry-After before trying the month again.
+const BUSY_WAIT_MS = 10_000;
+const MONTH_ATTEMPTS = 3;
+
+/** One month's report, or null if it still fails after MONTH_ATTEMPTS. */
+async function fetchMonth(path: string): Promise<WeeklyReportItem[] | null> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await pfGet<WeeklyReportItem[]>(path);
+    } catch {
+      if (attempt >= MONTH_ATTEMPTS) return null;
+      await new Promise(r => setTimeout(r, BUSY_WAIT_MS));
+    }
+  }
+}
+
 /** Design/Preservation lines across all locations, deduped by key.
  *  `failedMonths` > 0 means some months' orders are missing from `lines`. */
 export async function loadPipelineLines(): Promise<{ lines: PipelineLine[]; failedMonths: number; totalMonths: number }> {
@@ -37,7 +54,11 @@ export async function loadPipelineLines(): Promise<{ lines: PipelineLine[]; fail
     const last  = m === 0 ? today : new Date(today.getFullYear(), today.getMonth() - m + 1, 0);
     return `/OrderProducts/WeeklyReport?startDate=${fmtDate(first)}&endDate=${fmtDate(last)}`;
   });
-  const reports = await pfGetAll<WeeklyReportItem[]>(paths);
+  // One month at a time: the PF API serves only one WeeklyReport at once and
+  // turns the rest away with 503 (Retry-After 10s), so a parallel burst of 15
+  // always lost a month or two.
+  const reports: (WeeklyReportItem[] | null)[] = [];
+  for (const path of paths) reports.push(await fetchMonth(path));
 
   const seen = new Set<string>();
   const lines: PipelineLine[] = [];
