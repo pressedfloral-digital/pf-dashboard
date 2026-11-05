@@ -4591,6 +4591,46 @@ export function SchedulePage({
       .catch(() => {});
   }, [location]);
 
+  // Bloom-stock frames (Handprint / Paw Print / Footprint) are worked by Utah
+  // designers and land in Design's synced order counts, but they never came
+  // through Preservation — they're made from our own pressed stock. Left in,
+  // they'd count as clearing bouquet cohorts from the design queue and as
+  // design capacity, making Queue & Turnaround look faster than it is. Take
+  // the units logged on Bloom Stock's Historicals back out, per week.
+  // Recreation is skipped: the PF API already excludes it from the counts.
+  const [bloomStockFramesByWeek, setBloomStockFramesByWeek] = useState<Record<string, number>>({});
+  useEffect(() => {
+    if (location !== 'Utah') { setBloomStockFramesByWeek({}); return; }
+    let cancelled = false;
+    fetch('/api/bloom-stock/actuals?weeks=52')
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then((d: { completions?: { week_of: string; product_key: string; units: number }[] }) => {
+        if (cancelled) return;
+        const byWeek: Record<string, number> = {};
+        (d.completions ?? []).forEach(c => {
+          if (c.product_key === 'recreation') return;
+          byWeek[c.week_of] = (byWeek[c.week_of] ?? 0) + (Number(c.units) || 0);
+        });
+        setBloomStockFramesByWeek(byWeek);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [location]);
+
+  // Design orders per week for queue/turnaround math — synced Design counts
+  // minus bloom-stock frames (see above). Historicals and ratios still show
+  // the raw synced counts; only the bouquet-queue model uses this.
+  const designQueueOrdersByWeek = useMemo(() => {
+    const byWeek: Record<string, number> = {};
+    teamActuals.filter(r => r.department === 'design').forEach(r => {
+      byWeek[r.week_of] = (byWeek[r.week_of] ?? 0) + (r.actual_orders ?? 0);
+    });
+    Object.keys(byWeek).forEach(w => {
+      byWeek[w] = Math.max(0, byWeek[w] - (bloomStockFramesByWeek[w] ?? 0));
+    });
+    return byWeek;
+  }, [teamActuals, bloomStockFramesByWeek]);
+
   // Keep Preservation roster ratios current: once this location's saved
   // settings are in, set each member's ratio from their last few complete
   // weeks of actuals (see ratioFromActuals). Fetched separately from
@@ -5123,10 +5163,7 @@ export function SchedulePage({
     });
     const totalFromHistory = designableCohorts.reduce((s, c) => s + c.count, 0);
     // Designed-to-date = baseline + sum of actual frames from design historicals
-    const designedByWeek: Record<string, number> = {};
-    teamActuals.filter(r => r.department === 'design').forEach(r => {
-      designedByWeek[r.week_of] = (designedByWeek[r.week_of] ?? 0) + (r.actual_orders ?? 0);
-    });
+    const designedByWeek: Record<string, number> = { ...designQueueOrdersByWeek };
     const designedActualsTotal = Object.values(designedByWeek).reduce((s, n) => s + n, 0);
     // A manager-confirmed queue front (set below the Queue & turnaround table)
     // replaces the hardcoded baseline: solve for the baseline that leaves
@@ -5150,7 +5187,7 @@ export function SchedulePage({
     const alreadyDesigned = Math.max(0, Math.min(totalFromHistory, designedBaseline + designedActualsTotal));
     const remainingQueue = Math.max(0, totalFromHistory - alreadyDesigned);
     return { designableCohorts, inPreservationCohorts, totalFromHistory, alreadyDesigned, remainingQueue, designedBaseline, designedByWeek };
-  }, [location, presActuals, teamActuals, settings.designQueueFront]);
+  }, [location, presActuals, teamActuals, designQueueOrdersByWeek, settings.designQueueFront]);
 
   // ── Designed cohorts (orders that have left Design, waiting on Fulfillment) ──
   // Complement of cohortIntake's own trim: whichever cohorts (or partial
@@ -5199,12 +5236,9 @@ export function SchedulePage({
   // once someone edits the schedule to match. A week with no actuals yet
   // hasn't happened — fall back to the scheduled estimate.
   const designCapacityByWeek = useMemo(() => {
-    const actualByWeek: Record<string, number> = {};
-    teamActuals.filter(r => r.department === 'design').forEach(r => {
-      actualByWeek[r.week_of] = (actualByWeek[r.week_of] ?? 0) + (r.actual_orders ?? 0);
-    });
+    const actualByWeek = designQueueOrdersByWeek;
     return Array.from({ length: WEEKS }, (_, w) => actualByWeek[isoMonday(w)] ?? weeklyTotals[w]?.totalFrames ?? 0);
-  }, [teamActuals, weeklyTotals]);
+  }, [designQueueOrdersByWeek, weeklyTotals]);
 
   // ── Hiring / what-if plan ────────────────────────────────────────────────────
   // Powers the Design hours columns on the Queue & Turnaround tab. The only
@@ -5487,10 +5521,7 @@ export function SchedulePage({
   // ffEntryWeekByCohort's original comment in FulfillmentSection for the
   // full reasoning (only meaningful within the actuals-tracked period).
   const ffEntryWeekByCohortForPipeline = useMemo(() => {
-    const byWeek: Record<string, number> = {};
-    teamActuals.filter(r => r.department === 'design').forEach(r => {
-      byWeek[r.week_of] = (byWeek[r.week_of] ?? 0) + (r.actual_orders ?? 0);
-    });
+    const byWeek = designQueueOrdersByWeek;
     const weeksSorted = Object.keys(byWeek).sort();
     let cumulative = cohortIntake.designedBaseline;
     const cumulativeAtWeek: { weekOf: string; cumulative: number }[] = [];
@@ -5507,7 +5538,7 @@ export function SchedulePage({
       cumBefore += c.count;
     }
     return result;
-  }, [teamActuals, ffCohortIntake, cohortIntake.designedBaseline]);
+  }, [designQueueOrdersByWeek, ffCohortIntake, cohortIntake.designedBaseline]);
 
   // Single shared source for "how long, start to finish, will/did this
   // cohort spend in Fulfillment" — used by both Design's "Total w/
