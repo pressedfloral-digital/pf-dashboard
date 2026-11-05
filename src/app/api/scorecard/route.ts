@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
-import { DEPARTMENT_MANAGERS, getSalaryMgrCostForWeeks, PTO_RATE_TRAILING_WEEKS, type ManagerActualHoursRow } from '@/lib/managers';
+import { DEPARTMENT_MANAGERS, getSalaryMgrCostSplitForWeeks, isActiveGm, PTO_RATE_TRAILING_WEEKS } from '@/lib/managers';
 import { fetchAllRows } from '@/lib/fetchAllRows';
 import { filterToHistoricalsRows, HISTORICALS_ROSTER_KEYS } from '@/lib/historicalsRows';
 import { hasBearerSecret } from '@/lib/bearerSecret';
@@ -31,6 +31,26 @@ interface RosterSettingRow {
   value:    unknown;
 }
 
+// Pre-dashboard history from the Ops Google Sheet — same tables and rule as
+// kpis/route.ts (SheetBackfillRow / RatioSheetBackfillRow there): a sheet row
+// only counts for a location+week the dashboard has no labor or actuals rows of
+// its own for. The cost sheet's cost already includes salaried managers.
+interface SheetBackfillRow {
+  week_of:    string;
+  location:   string;
+  department: string;
+  labor_cost: number;
+  production: number | null;
+}
+
+interface RatioSheetBackfillRow {
+  week_of:          string;
+  location:         string;
+  department:       string;
+  ratio_hours:      number;
+  ratio_production: number;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // Months that belong to a given week_of (Monday attribution — matches dashboard)
@@ -56,12 +76,6 @@ function weeksInMonth(weekOfs: string[], monthKey: string): string[] {
 // Manager pay/role definitions live in src/lib/managers.ts (single source of
 // truth shared with kpis/route.ts, useActualsWithPayroll.ts, and
 // useHistoricalMetrics.ts). Update that file when a manager changes.
-
-// Returns salary manager weekly cost contribution for a given location+dept+weekOf.
-// `actualRows` lets a recorded PTO week be adjusted (see ptoAdjustedHomeCost).
-function getSalaryMgrCost(location: string, dept: string, weekOf: string, actualRows: ManagerActualHoursRow[]): number {
-  return getSalaryMgrCostForWeeks(DEPARTMENT_MANAGERS, location, dept, [weekOf], actualRows, normalizeDeptForScorecard);
-}
 
 // Which team_member_week_actuals rows belong to a manager, so Combined ratio
 // can exclude their hours AND their production — mirrors buildManagerNameSet
@@ -184,6 +198,43 @@ export async function GET(req: NextRequest) {
     if (rosterError) throw rosterError;
     const managerNames = buildManagerNameSet(rosterData ?? []);
 
+    // ── Fetch Ops-sheet backfill (pre-dashboard weeks) ───────────────────────
+    // Optional history, same as /api/kpis: if a table isn't there the
+    // scorecard still loads, just without the backfill.
+    const [sheetRows, ratioSheetRows] = await Promise.all([
+      fetchAllRows<SheetBackfillRow>((from, to) => {
+        let q = supabase
+          .from('cpo_sheet_backfill')
+          .select('week_of,location,department,labor_cost,production')
+          .gte('week_of', fromDate);
+        if (locationParam !== 'both') q = q.eq('location', locationParam);
+        return q.range(from, to);
+      }).catch(e => {
+        console.warn('cpo_sheet_backfill unavailable, skipping sheet backfill:', e);
+        return [] as SheetBackfillRow[];
+      }),
+      fetchAllRows<RatioSheetBackfillRow>((from, to) => {
+        let q = supabase
+          .from('ratio_sheet_backfill')
+          .select('week_of,location,department,ratio_hours,ratio_production')
+          .gte('week_of', fromDate);
+        if (locationParam !== 'both') q = q.eq('location', locationParam);
+        return q.range(from, to);
+      }).catch(e => {
+        console.warn('ratio_sheet_backfill unavailable, skipping ratio sheet backfill:', e);
+        return [] as RatioSheetBackfillRow[];
+      }),
+    ]);
+
+    // Raw (unfiltered) labor + actuals, so a week the dashboard tracked at
+    // all — even one Historicals filters down — never falls back to the sheet.
+    const realWeekKeys = new Set<string>();
+    for (const r of laborRows)     realWeekKeys.add(`${r.location}|${r.week_of}`);
+    for (const r of rawActualRows) if (r.week_of >= fromDate) realWeekKeys.add(`${r.location}|${r.week_of}`);
+    const isSheetWeek = (r: { location: string; week_of: string }) => !realWeekKeys.has(`${r.location}|${r.week_of}`);
+    const usableSheetRows      = sheetRows.filter(isSheetWeek);
+    const usableRatioSheetRows = ratioSheetRows.filter(isSheetWeek);
+
     // Historicals is the source of truth — count exactly the rows it shows,
     // same as All KPIs (see src/lib/historicalsRows.ts). Every production,
     // hours, ratio, and Individual Ratios figure below reads from this.
@@ -194,6 +245,8 @@ export async function GET(req: NextRequest) {
     const allWeekOfs = [...new Set([
       ...laborRows.map(r => r.week_of),
       ...actualRows.map(r => r.week_of),
+      ...usableSheetRows.map(r => r.week_of),
+      ...usableRatioSheetRows.map(r => r.week_of),
     ])].sort();
 
     // Build month list
@@ -220,19 +273,30 @@ export async function GET(req: NextRequest) {
 
         // ── Labor cost by dept this month ─────────────────────────────────────
         const laborByDept: Record<string, number> = {};
-        // Hourly staff from weekly_labor_cost upload
-        for (const row of laborRows.filter(r => r.location === loc && weekOfs.includes(r.week_of))) {
+        // Hourly staff from weekly_labor_cost upload. A GM's own row for a week
+        // they held the role is left out — GM cost never counts toward a
+        // department's CPO (same as /api/kpis, see isActiveGm).
+        for (const row of laborRows.filter(r =>
+          r.location === loc && weekOfs.includes(r.week_of) &&
+          !isActiveGm(loc, r.employee, r.week_of)
+        )) {
           const dept = normalizeDeptForScorecard(row.department);
           laborByDept[dept] = (laborByDept[dept] ?? 0) + row.gross_pay;
         }
-        // Salary managers — computed from annual salary, never in weekly_labor_cost
-        // Mirrors useActualsWithPayroll.ts getSalaryMgrCost logic exactly
-        const allDepts = ['Design', 'Preservation', 'Fulfillment', 'G&A', 'Resin'];
-        for (const dept of allDepts) {
-          for (const weekOf of weekOfs) {
-            const mgrCost = getSalaryMgrCost(loc, dept, weekOf, actualRowsWithLookback);
-            if (mgrCost > 0) laborByDept[dept] = (laborByDept[dept] ?? 0) + mgrCost;
-          }
+        // Salary managers — computed from annual salary, never in weekly_labor_cost.
+        // Hours-aware like /api/kpis: pay for hours a manager clocked outside
+        // their home department follows them there. Sheet weeks are skipped —
+        // the sheet's cost already includes salaried managers.
+        const locSheetRows      = usableSheetRows.filter(r => r.location === loc && weekOfs.includes(r.week_of));
+        const locRatioSheetRows = usableRatioSheetRows.filter(r => r.location === loc && weekOfs.includes(r.week_of));
+        const sheetWeeks = new Set(locSheetRows.map(r => r.week_of));
+        const mgrCostByDept = getSalaryMgrCostSplitForWeeks(
+          DEPARTMENT_MANAGERS, loc, weekOfs.filter(w => !sheetWeeks.has(w)),
+          actualRowsWithLookback.filter(r => r.location === loc),
+          normalizeDeptForScorecard
+        );
+        for (const [dept, mgrCost] of Object.entries(mgrCostByDept)) {
+          if (mgrCost > 0) laborByDept[dept] = (laborByDept[dept] ?? 0) + mgrCost;
         }
 
         // ── Production by dept this month (from team_member_week_actuals) ──────
@@ -255,11 +319,30 @@ export async function GET(req: NextRequest) {
           }
         }
 
+        // Sheet backfill: the cost sheet has cost + production but no hours, so
+        // it stays out of hours and the ratio. The ratio sheet's hours/
+        // production are already manager-free, so they feed only the ratio
+        // sums — not production, which would double-count the cost sheet's.
+        for (const row of locSheetRows) {
+          const dept = normalizeDeptForScorecard(row.department);
+          laborByDept[dept] = (laborByDept[dept] ?? 0) + row.labor_cost;
+          if (row.production != null) productionByDept[dept] = (productionByDept[dept] ?? 0) + row.production;
+        }
+        for (const row of locRatioSheetRows) {
+          const dept = normalizeDeptForScorecard(row.department);
+          ratioHoursByDept[dept]      = (ratioHoursByDept[dept]      ?? 0) + row.ratio_hours;
+          ratioProductionByDept[dept] = (ratioProductionByDept[dept] ?? 0) + row.ratio_production;
+        }
+
         // ── Per-dept CPO ──────────────────────────────────────────────────────
+        // G&A has no production of its own — its CPO is its cost spread over
+        // the three production depts' orders, same as /api/kpis.
+        const gaOrders = (['Design', 'Preservation', 'Fulfillment'] as const)
+          .reduce((s, d) => s + (productionByDept[d] ?? 0), 0);
         const deptCPO: Record<string, number | null> = {};
         for (const dept of ALL_CPO_DEPTS) {
           const cost   = laborByDept[dept]      ?? 0;
-          const orders = productionByDept[dept] ?? 0;
+          const orders = dept === 'G&A' ? gaOrders : (productionByDept[dept] ?? 0);
           deptCPO[dept] = (cost > 0 && orders > 0) ? cost / orders : null;
         }
 
