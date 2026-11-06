@@ -4,10 +4,12 @@ import { supabase } from '@/lib/supabase';
 import { shopifyGraphql, utahDate } from '@/lib/shopifyGraphql';
 import { isoMondayFromDate } from '@/lib/weekDates';
 import {
-  BLOOM_STOCK_PRODUCTS, productByShopifyId, emptyByProduct, SEND_OWN_VARIANT_IDS, RECREATE_VARIANT_IDS,
+  BLOOM_STOCK_PRODUCTS, productByShopifyId, emptyByProduct, SEND_OWN_VARIANT_IDS,
   type BloomStockProductKey, type BloomStockQueueItem, type BloomStockQueueResponse,
-  type BloomStockStatus, type BloomStockType,
+  type BloomStockStatus,
+  TYPE_BY_PRODUCT, asBloomStockType,
 } from '@/lib/bloomStock';
+import { bloomStockAutoAssignee } from '@/lib/bloomStockAssignees';
 
 // Live read of the bloom-stock queue from Shopify. Shopify's order search can
 // filter by product_id, so the whole open set is only a few hundred line
@@ -21,7 +23,7 @@ const CACHE_MS = 10 * 60 * 1000;
 // (same week last year needs ~64 weeks; the rest smooths the growth rate).
 const INTAKE_LOOKBACK_WEEKS = 110;
 
-type RawItem = Omit<BloomStockQueueItem, 'status' | 'assignee' | 'notes' | 'assumedDone' | 'sorted'> & { beforeCutoff: boolean; influencer: boolean };
+type RawItem = Omit<BloomStockQueueItem, 'status' | 'assignee' | 'notes' | 'assumedDone' | 'sorted'> & { beforeCutoff: boolean; influencer: boolean; sendOwn: boolean };
 interface RawLine { item: RawItem; unfulfilled: number }
 interface RawData {
   lines:       RawLine[];
@@ -131,11 +133,9 @@ async function loadRaw(): Promise<RawData> {
     const location = order.tags.includes('Utah') ? 'Utah' : order.tags.includes('Georgia') ? 'Georgia' : null;
     const eventDate = findEventDate(order);
     const orderDate = utahDate(order.createdAt);
-    // Order-level Blooms Process choice: send own → standard, customize /
-    // recreate from photo → recreation.
-    const variantIds = order.lineItems.nodes.map(li => li.variant?.legacyResourceId ?? '');
-    const type: BloomStockType | null = variantIds.some(v => SEND_OWN_VARIANT_IDS.has(v)) ? 'standard'
-      : variantIds.some(v => RECREATE_VARIANT_IDS.has(v)) ? 'recreation' : null;
+    // Order-level Blooms Process choice: customer sends their own blooms →
+    // starts in Waiting.
+    const sendOwn = order.lineItems.nodes.some(li => SEND_OWN_VARIANT_IDS.has(li.variant?.legacyResourceId ?? ''));
     for (const li of order.lineItems.nodes) {
       const product = productFor(li);
       if (!product || li.unfulfilledQuantity <= 0) continue;
@@ -152,7 +152,8 @@ async function loadRaw(): Promise<RawData> {
           location,
           eventDate,
           customer: order.customer?.displayName?.trim() || null,
-          type,
+          type: TYPE_BY_PRODUCT[product.key],
+          sendOwn,
           beforeCutoff: !!product.assumeFulfilledBefore && orderDate < product.assumeFulfilledBefore,
           influencer: /influencer/i.test(`${order.customer?.displayName ?? ''} ${order.tags.join(' ')}`),
         },
@@ -255,7 +256,7 @@ export async function GET(req: NextRequest) {
     // fulfillment ships them.
     const ids = raw.lines.map(l => l.item.lineItemId);
     const done = new Map<string, number>();
-    const tracking = new Map<string, { status: BloomStockStatus; type: BloomStockType | null; assignee: string | null; notes: string | null }>();
+    const tracking = new Map<string, { status: BloomStockStatus; type: string | null; assignee: string | null; notes: string | null }>();
     for (let i = 0; i < ids.length; i += 200) {
       const batch = ids.slice(i, i + 200);
       const [comp, track] = await Promise.all([
@@ -268,25 +269,49 @@ export async function GET(req: NextRequest) {
       for (const r of track.data ?? []) tracking.set(r.line_item_id, r);
     }
 
+    // New Shopify orders are sorted automatically: recreations go to Mia,
+    // everything else to Jen, and the row is saved so it reads as sorted.
+    const assigneeFor = await bloomStockAutoAssignee();
+    const autoSorted: Record<string, unknown>[] = [];
+
     const items: BloomStockQueueItem[] = raw.lines
-      .map(({ item: { beforeCutoff, influencer, ...item }, unfulfilled }) => {
+      .map(({ item: { beforeCutoff, influencer, sendOwn, ...item }, unfulfilled }) => {
         const t = tracking.get(item.lineItemId);
-        const type = t?.type ?? item.type;
+        const type = asBloomStockType(t?.type) ?? item.type;
+        const quantity = Math.max(0, unfulfilled - (done.get(item.lineItemId) ?? 0));
+        // Until the team sets one: influencer orders (by name/tag) start in
+        // Influencer, customer-supplied blooms in Waiting, the rest in New.
+        const status: BloomStockStatus = t?.status ?? (influencer ? 'influencer' : sendOwn ? 'waiting' : 'new');
+        // Orders from before the cutoff stay assumed finished, not auto-sorted.
+        const auto = !t && !beforeCutoff && quantity > 0;
+        const assignee = t?.assignee ?? (auto ? assigneeFor(type) : null);
+        if (auto) {
+          autoSorted.push({
+            line_item_id: item.lineItemId, order_id: item.orderId, order_name: item.orderNumber,
+            product_key: item.productKey, status, type: null, assignee, notes: null,
+            updated_by: 'auto-sort', updated_at: new Date().toISOString(),
+          });
+        }
         return {
           ...item,
           type,
-          quantity: Math.max(0, unfulfilled - (done.get(item.lineItemId) ?? 0)),
-          // Until the team sets one: influencer orders (by name/tag) start in
-          // Influencer, customer-supplied blooms in Waiting, the rest in New.
-          status:   t?.status ?? (influencer ? 'influencer' : type === 'standard' ? 'waiting' : 'new'),
-          assignee: t?.assignee ?? null,
+          quantity,
+          status,
+          assignee,
           notes:    t?.notes ?? null,
           assumedDone: beforeCutoff && !t,
-          sorted:      !!t,
+          sorted:      !!t || auto,
         };
       })
       .filter(i => i.quantity > 0 && i.status !== 'finished')
       .sort((a, b) => a.orderDate.localeCompare(b.orderDate) || a.orderNumber.localeCompare(b.orderNumber));
+
+    // ignoreDuplicates: never overwrite an edit the team made in the meantime.
+    for (let i = 0; i < autoSorted.length; i += 200) {
+      const { error } = await supabase.from('bloom_stock_order_tracking')
+        .upsert(autoSorted.slice(i, i + 200), { onConflict: 'line_item_id', ignoreDuplicates: true });
+      if (error) throw error;
+    }
 
     const body: BloomStockQueueResponse = {
       items,

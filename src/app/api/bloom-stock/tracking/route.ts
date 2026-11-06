@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
 import { isoMondayFromDate } from '@/lib/weekDates';
-import { BLOOM_STOCK_STATUSES, productByShopifyId, SWITCHABLE_PRODUCT_IDS } from '@/lib/bloomStock';
+import { bloomStockAutoAssignee } from '@/lib/bloomStockAssignees';
+import { BLOOM_STOCK_STATUSES, BLOOM_STOCK_TYPE_LABEL, TYPE_BY_PRODUCT, productByShopifyId, SWITCHABLE_PRODUCT_IDS } from '@/lib/bloomStock';
 import { shopifyGraphql } from '@/lib/shopifyGraphql';
 
 // Orders board edits for Bloom Stock Products (replaces the team's tracking
@@ -18,7 +19,7 @@ import { shopifyGraphql } from '@/lib/shopifyGraphql';
 // Historicals / CPO the same as an order number typed there.
 
 const STATUSES = new Set(BLOOM_STOCK_STATUSES.map(s => s.key));
-const TYPES = new Set(['recreation', 'standard', 'rainbow']);
+const TYPES = new Set(Object.keys(BLOOM_STOCK_TYPE_LABEL));
 
 export async function POST(req: NextRequest) {
   const { userId } = await auth();
@@ -99,13 +100,16 @@ async function addOrder(input: string, userId: string) {
     const bloom = open.filter(li => productByShopifyId.has(li.product!.legacyResourceId));
     const picked = bloom.length > 0
       ? bloom.map(li => ({ li, key: productByShopifyId.get(li.product!.legacyResourceId)!.key, switched: false }))
-      : open.filter(li => SWITCHABLE_PRODUCT_IDS.has(li.product!.legacyResourceId)).map(li => ({ li, key: 'recreation', switched: true }));
+      : open.filter(li => SWITCHABLE_PRODUCT_IDS.has(li.product!.legacyResourceId)).map(li => ({ li, key: 'recreation' as const, switched: true }));
     if (picked.length === 0) {
       return NextResponse.json({ error: `${orderName} has no open frame, ornament or bloom-stock item to track` }, { status: 400 });
     }
+    // Assigned like new Shopify orders: recreations to Mia, the rest to Jen.
+    const assigneeFor = await bloomStockAutoAssignee();
     const { error } = await supabase.from('bloom_stock_order_tracking').upsert(picked.map(({ li, key, switched }) => ({
       line_item_id: li.id.split('/').pop()!, order_id: order.legacyResourceId, order_name: order.name,
       product_key: key, status: 'new', type: switched ? 'recreation' : null,
+      assignee: assigneeFor(switched ? 'recreation' : TYPE_BY_PRODUCT[key]),
       notes: switched ? 'Switched to recreation' : null,
       updated_by: userId, updated_at: new Date().toISOString(),
     })), { onConflict: 'line_item_id', ignoreDuplicates: true });

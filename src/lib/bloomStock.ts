@@ -59,10 +59,19 @@ export const BLOOM_STOCK_STATUSES: { key: BloomStockStatus; label: string }[] = 
 ];
 export const QUEUE_STATUSES = new Set<BloomStockStatus>(['new', 'ready', 'influencer']);
 
-// recreation = made from bloom stock ("Help me customize" / "Recreate from a
-// photo"); standard = customer sends their own blooms ("I'll send in my own").
-export type BloomStockType = 'recreation' | 'standard' | 'rainbow';
-export const BLOOM_STOCK_TYPE_LABEL: Record<BloomStockType, string> = { recreation: 'Recreation', standard: 'Standard', rainbow: 'Rainbow' };
+// What the order is, for sorting the board: handprints & footprints are
+// Baby Prints, paw prints Paw Prints, Bloom Arrangement Recreations (and
+// frames switched to one) Recreation. Set automatically from the product;
+// the team can override it per order.
+export type BloomStockType = 'baby' | 'paw' | 'recreation';
+export const BLOOM_STOCK_TYPE_LABEL: Record<BloomStockType, string> = { baby: 'Baby Prints', paw: 'Paw Prints', recreation: 'Recreation' };
+export const TYPE_BY_PRODUCT: Record<BloomStockProductKey, BloomStockType> =
+  { handprint: 'baby', footprint: 'baby', pawprint: 'paw', recreation: 'recreation' };
+// Older rows may hold the retired Blooms Process types (standard/rainbow) —
+// those read as "no override".
+export function asBloomStockType(v: unknown): BloomStockType | null {
+  return typeof v === 'string' && v in BLOOM_STOCK_TYPE_LABEL ? v as BloomStockType : null;
+}
 
 // "Blooms Process" add-on variants (Shopify title search, 2026-10-18).
 export const SEND_OWN_VARIANT_IDS = new Set([
@@ -89,8 +98,8 @@ export interface BloomStockQueueItem {
   location:     'Utah' | 'Georgia' | null;  // order's location tag, if any
   eventDate:    string | null;
   customer:     string | null;
-  // From Shopify's Blooms Process add-on, unless the team overrode it.
-  type:         BloomStockType | null;
+  // From the product (TYPE_BY_PRODUCT), unless the team overrode it.
+  type:         BloomStockType;
   status:       BloomStockStatus;
   assignee:     string | null;
   notes:        string | null;
