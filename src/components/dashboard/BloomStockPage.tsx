@@ -1004,8 +1004,8 @@ function OrdersTab({ bs, canEdit, queue }: { bs: BS; canEdit: boolean; queue: Qu
         </div>
       </div>
       <p className="text-xs text-slate-400">
-        Every open Shopify order with a Handprint, Paw Print, Footprint or Bloom Arrangement Recreation. Type is set from the product (Baby Prints, Paw Prints or Recreation); send-your-own orders start in Waiting.
-        New orders are assigned automatically — recreations to Mia, everything else to Jen.
+        Every open Shopify order with a Handprint, Paw Print, Footprint or Bloom Arrangement Recreation. Type is set from the product (Baby Prints, Paw Prints or Recreation — or Recreation / Baby Prints and Recreation / Paw Prints when the Blooms Process is a recreation); send-your-own orders start in Waiting.
+        New orders are assigned automatically — any recreation to Mia, everything else to Jen.
         Set an order to Finished (with who did it) and it moves to Historicals for this week.
       </p>
       {data && needsSorting.length > 0 && (

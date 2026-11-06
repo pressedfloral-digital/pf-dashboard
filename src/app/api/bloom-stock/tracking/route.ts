@@ -3,7 +3,7 @@ import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
 import { isoMondayFromDate } from '@/lib/weekDates';
 import { bloomStockAutoAssignee } from '@/lib/bloomStockAssignees';
-import { BLOOM_STOCK_STATUSES, BLOOM_STOCK_TYPE_LABEL, TYPE_BY_PRODUCT, productByShopifyId, SWITCHABLE_PRODUCT_IDS } from '@/lib/bloomStock';
+import { BLOOM_STOCK_STATUSES, BLOOM_STOCK_TYPE_LABEL, RECREATE_VARIANT_IDS, bloomStockTypeFor, productByShopifyId, SWITCHABLE_PRODUCT_IDS } from '@/lib/bloomStock';
 import { shopifyGraphql } from '@/lib/shopifyGraphql';
 
 // Orders board edits for Bloom Stock Products (replaces the team's tracking
@@ -79,7 +79,7 @@ query BloomStockAddOrder($q: String!) {
   orders(first: 1, query: $q) {
     nodes {
       legacyResourceId name
-      lineItems(first: 100) { nodes { id unfulfilledQuantity product { legacyResourceId } } }
+      lineItems(first: 100) { nodes { id unfulfilledQuantity product { legacyResourceId } variant { legacyResourceId } } }
     }
   }
 }`;
@@ -91,7 +91,7 @@ async function addOrder(input: string, userId: string) {
   try {
     const data = await shopifyGraphql<{ orders: { nodes: {
       legacyResourceId: string; name: string;
-      lineItems: { nodes: { id: string; unfulfilledQuantity: number; product: { legacyResourceId: string } | null }[] };
+      lineItems: { nodes: { id: string; unfulfilledQuantity: number; product: { legacyResourceId: string } | null; variant: { legacyResourceId: string } | null }[] };
     }[] } }>(ORDER_BY_NAME, { q: `name:${orderName}` });
     const order = data.orders.nodes.find(o => o.name === orderName);
     if (!order) return NextResponse.json({ error: `Order ${orderName} not found in Shopify` }, { status: 404 });
@@ -104,12 +104,13 @@ async function addOrder(input: string, userId: string) {
     if (picked.length === 0) {
       return NextResponse.json({ error: `${orderName} has no open frame, ornament or bloom-stock item to track` }, { status: 400 });
     }
+    const recreate = order.lineItems.nodes.some(li => RECREATE_VARIANT_IDS.has(li.variant?.legacyResourceId ?? ''));
     // Assigned like new Shopify orders: recreations to Mia, the rest to Jen.
     const assigneeFor = await bloomStockAutoAssignee();
     const { error } = await supabase.from('bloom_stock_order_tracking').upsert(picked.map(({ li, key, switched }) => ({
       line_item_id: li.id.split('/').pop()!, order_id: order.legacyResourceId, order_name: order.name,
       product_key: key, status: 'new', type: switched ? 'recreation' : null,
-      assignee: assigneeFor(switched ? 'recreation' : TYPE_BY_PRODUCT[key]),
+      assignee: assigneeFor(switched ? 'recreation' : bloomStockTypeFor(key, recreate)),
       notes: switched ? 'Switched to recreation' : null,
       updated_by: userId, updated_at: new Date().toISOString(),
     })), { onConflict: 'line_item_id', ignoreDuplicates: true });

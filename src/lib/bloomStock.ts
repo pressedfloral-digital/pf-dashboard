@@ -61,12 +61,26 @@ export const QUEUE_STATUSES = new Set<BloomStockStatus>(['new', 'ready', 'influe
 
 // What the order is, for sorting the board: handprints & footprints are
 // Baby Prints, paw prints Paw Prints, Bloom Arrangement Recreations (and
-// frames switched to one) Recreation. Set automatically from the product;
+// frames switched to one) Recreation. A baby/paw print whose Blooms Process
+// is a recreation ("Help me customize" / "Recreate from a photo") is
+// Recreation / Baby Prints or Recreation / Paw Prints. Set automatically;
 // the team can override it per order.
-export type BloomStockType = 'baby' | 'paw' | 'recreation';
-export const BLOOM_STOCK_TYPE_LABEL: Record<BloomStockType, string> = { baby: 'Baby Prints', paw: 'Paw Prints', recreation: 'Recreation' };
+export type BloomStockType = 'baby' | 'paw' | 'recreation' | 'recreation_baby' | 'recreation_paw';
+export const BLOOM_STOCK_TYPE_LABEL: Record<BloomStockType, string> = {
+  baby: 'Baby Prints', paw: 'Paw Prints', recreation: 'Recreation',
+  recreation_baby: 'Recreation / Baby Prints', recreation_paw: 'Recreation / Paw Prints',
+};
 export const TYPE_BY_PRODUCT: Record<BloomStockProductKey, BloomStockType> =
   { handprint: 'baby', footprint: 'baby', pawprint: 'paw', recreation: 'recreation' };
+// recreate = the order's Blooms Process add-on is a recreation (RECREATE_VARIANT_IDS).
+export function bloomStockTypeFor(product: BloomStockProductKey, recreate: boolean): BloomStockType {
+  const base = TYPE_BY_PRODUCT[product];
+  return recreate && (base === 'baby' || base === 'paw') ? `recreation_${base}` : base;
+}
+// Any recreation type — these are assigned to Mia.
+export function isRecreationType(t: BloomStockType): boolean {
+  return t === 'recreation' || t.startsWith('recreation_');
+}
 // Older rows may hold the retired Blooms Process types (standard/rainbow) —
 // those read as "no override".
 export function asBloomStockType(v: unknown): BloomStockType | null {

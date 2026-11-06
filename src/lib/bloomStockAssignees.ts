@@ -1,8 +1,8 @@
 import { supabase } from '@/lib/supabase';
-import { DEFAULT_BLOOM_STOCK_ROSTER, type BloomStockMember, type BloomStockType } from '@/lib/bloomStock';
+import { DEFAULT_BLOOM_STOCK_ROSTER, isRecreationType, type BloomStockMember, type BloomStockType } from '@/lib/bloomStock';
 
 // Server-only. Who Bloom Stock orders are auto-assigned to — Mia for
-// recreations, Jen for everything else. Matched by first name against the
+// recreations (incl. Recreation / Baby or Paw Prints), Jen for everything else. Matched by first name against the
 // Utah Bloom Stock roster so the assignee is the exact roster name the
 // Orders board dropdown uses.
 export async function bloomStockAutoAssignee(): Promise<(type: BloomStockType) => string> {
@@ -13,5 +13,5 @@ export async function bloomStockAutoAssignee(): Promise<(type: BloomStockType) =
     roster.map(m => m.name?.trim()).find(n => n && first.test(n)) ?? fallback;
   const mia = find(/^mia\b/i, 'Mia Legas Boots');
   const jen = find(/^jen/i, 'Jennika Merrill');
-  return type => (type === 'recreation' ? mia : jen);
+  return type => (isRecreationType(type) ? mia : jen);
 }
