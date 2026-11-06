@@ -957,7 +957,7 @@ function OrdersTab({ bs, canEdit, queue }: { bs: BS; canEdit: boolean; queue: Qu
   const active = visible.filter(i => !i.assumedDone);
   const rosterNames = bs.roster.map(m => m.name).filter(Boolean);
 
-  async function save(i: BloomStockQueueItem, patch: { status?: BloomStockStatus; type?: BloomStockType | null; assignee?: string | null; notes?: string | null }) {
+  async function save(i: BloomStockQueueItem, patch: { status?: BloomStockStatus; type?: BloomStockType; assignee?: string | null; notes?: string | null }) {
     setSaveErr(null);
     // Any edit to an assumed-finished order brings it back as tracked.
     setLocal(l => ({ ...l, [i.lineItemId]: { ...l[i.lineItemId], ...patch, assumedDone: false, sorted: true } }));
@@ -1004,7 +1004,8 @@ function OrdersTab({ bs, canEdit, queue }: { bs: BS; canEdit: boolean; queue: Qu
         </div>
       </div>
       <p className="text-xs text-slate-400">
-        Every open Shopify order with a Handprint, Paw Print, Footprint or Bloom Arrangement Recreation. Type comes from the order&apos;s Blooms Process choice; send-your-own orders start in Waiting.
+        Every open Shopify order with a Handprint, Paw Print, Footprint or Bloom Arrangement Recreation. Type is set from the product (Baby Prints, Paw Prints or Recreation); send-your-own orders start in Waiting.
+        New orders are assigned automatically — recreations to Mia, everything else to Jen.
         Set an order to Finished (with who did it) and it moves to Historicals for this week.
       </p>
       {data && needsSorting.length > 0 && (
@@ -1044,7 +1045,7 @@ function OrdersTab({ bs, canEdit, queue }: { bs: BS; canEdit: boolean; queue: Qu
 
 function OrdersTable({ rows, finish, storeDomain, rosterNames, canEdit, onSave }: {
   rows: BloomStockQueueItem[]; finish: Map<string, string | null>; storeDomain: string; rosterNames: string[]; canEdit: boolean;
-  onSave: (i: BloomStockQueueItem, patch: { status?: BloomStockStatus; type?: BloomStockType | null; assignee?: string | null; notes?: string | null }) => void;
+  onSave: (i: BloomStockQueueItem, patch: { status?: BloomStockStatus; type?: BloomStockType; assignee?: string | null; notes?: string | null }) => void;
 }) {
   const today = new Date().toISOString().split('T')[0];
   const sel = 'px-1.5 py-1 border border-slate-200 rounded text-xs bg-white';
@@ -1090,11 +1091,10 @@ function OrdersTable({ rows, finish, storeDomain, rosterNames, canEdit, onSave }
               </td>
               <td className="px-3 py-2">
                 {canEdit ? (
-                  <select value={i.type ?? ''} onChange={e => onSave(i, { type: (e.target.value || null) as BloomStockType | null })} className={sel}>
-                    <option value="">?</option>
+                  <select value={i.type} onChange={e => onSave(i, { type: e.target.value as BloomStockType })} className={sel}>
                     {(Object.keys(BLOOM_STOCK_TYPE_LABEL) as BloomStockType[]).map(t => <option key={t} value={t}>{BLOOM_STOCK_TYPE_LABEL[t]}</option>)}
                   </select>
-                ) : (i.type ? BLOOM_STOCK_TYPE_LABEL[i.type] : '—')}
+                ) : BLOOM_STOCK_TYPE_LABEL[i.type]}
               </td>
               <td className="px-3 py-2">
                 {canEdit ? (
