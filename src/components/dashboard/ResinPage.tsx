@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
 import { getMondayDate, isoMonday, getWeekLabel } from '@/lib/weekDates';
+import { projectResinCohorts } from '@/lib/resinCohortProjection';
 import { InputModeToggle, round2, type InputMode } from './InputModeToggle';
 import { resolveDayHours, resolveWeekHours, isDayOff, applyTimeOff, hoursOffOn, resolveWeekPayHours, baseDailyArray, isWithinEmployment, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
 import { HistoricalsSection } from './HistoricalsSection';
@@ -58,7 +59,7 @@ interface CohortRow {
   weeksToComplete: number | null;
   // Same walk, with the hypothetical hires from the hiring plan strip added.
   weeksToCompletePlanned: number | null;
-  estimated:    boolean;  // no real order yet — projected at the recent average intake pace
+  estimated:    boolean;  // future week with few or no real orders yet — projected at the recent average intake pace
 }
 
 interface QueueSummary {
@@ -361,30 +362,17 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
   const cohortRows: CohortRow[] = (() => {
     if (activeCohorts.length === 0) return [];
 
-    // Real, already-booked cohorts only run as far out as customers have
-    // actually placed orders with event dates, which tends to trail off a
-    // few months ahead. Past that point, project the remaining weeks up to
-    // the full 52-week horizon at the recent average intake pace — same
-    // idea as avgWeeklyCapacity's trailing average — so this table reads
-    // out as far as the other departments' Queue & Turnaround tabs instead
-    // of just stopping once real bookings run out. These projected weeks
-    // are flagged `estimated` and don't count toward the "active units in
-    // queue" total shown above, since they aren't real orders yet.
-    const todayIso = isoMonday(0);
-    const lastRealWeek = activeCohorts.reduce((max, c) => (c.weekOf > max ? c.weekOf : max), todayIso);
-    const recentReal = activeCohorts.filter(c => c.weekOf >= isoMonday(-8)).map(c => c.units);
-    const avgRecentIntake = recentReal.length > 0 ? recentReal.reduce((s, u) => s + u, 0) / recentReal.length : 0;
-
-    const projectedCohorts: { weekOf: string; units: number; estimated: boolean }[] =
-      activeCohorts.map(c => ({ ...c, estimated: false }));
-    if (avgRecentIntake > 0) {
-      for (let w = 0; w < WEEKS; w++) {
-        const weekIso = isoMonday(w);
-        if (weekIso <= lastRealWeek) continue;
-        projectedCohorts.push({ weekOf: weekIso, units: Math.round(avgRecentIntake), estimated: true });
-      }
-    }
-    projectedCohorts.sort((a, b) => a.weekOf.localeCompare(b.weekOf));
+    // Real cohorts only cover orders already placed, so future weeks are
+    // sparse. Project them out to the full 52-week horizon at the recent
+    // average intake pace so this table reads as far as the other departments'
+    // Queue & Turnaround tabs. Projected weeks are flagged `estimated` and
+    // don't count toward the "active units in queue" total shown above, since
+    // they aren't real orders yet.
+    const projectedCohorts = projectResinCohorts(
+      activeCohorts,
+      Array.from({ length: WEEKS }, (_, w) => isoMonday(w)),
+      isoMonday(-8),
+    );
 
     // Week-by-week FIFO: each week's scheduled capacity works the oldest
     // cohorts that have actually arrived by then, and whatever capacity is
@@ -432,7 +420,11 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
 
     return projectedCohorts.map(({ weekOf, units, estimated }, i) => ({
       weekOf,
-      weekLabel: mondayOf(weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      // Rows can span into another year, where "Oct 4" alone reads as a past week.
+      weekLabel: mondayOf(weekOf).toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric',
+        ...(mondayOf(weekOf).getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}),
+      }),
       units,
       weeksElapsed: weeksElapsedOf(weekOf),
       weeksToComplete: doneWeek[i],
@@ -1166,7 +1158,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
               Based on {activeCohorts.reduce((s, c) => s + c.units, 0).toLocaleString()} active units in queue
               · per-week scheduled capacity from the 52-week planner · FIFO sort.
               Intake week = event date + {queueSummary?.offsetDays ?? 4} days (falls back to order date when an order has no event-date tag).
-              Weeks marked <span className="bg-slate-100 text-slate-500 rounded px-1 py-px">est.</span> have no real order yet — projected at the recent average intake pace out to a 52-week horizon.
+              Weeks marked <span className="bg-slate-100 text-slate-500 rounded px-1 py-px">est.</span> are future weeks with few or no real orders yet — projected at the recent average intake pace out to a 52-week horizon.
               {!queueFrontWeek && queueSummary?.oldestEventDate && (
                 <> Oldest still-open order has an event date of <strong>{new Date(queueSummary.oldestEventDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</strong> — set &quot;Currently designing as of&quot; above once you know the real front, so stuck stragglers like that one stop anchoring the math.</>
               )}
@@ -1221,7 +1213,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                         <tr key={row.weekOf} className={`border-b border-slate-50 ${wks === 0 ? 'bg-indigo-50/40' : row.estimated ? 'bg-slate-50/40' : 'hover:bg-slate-50'}`}>
                           <td className="px-4 py-2 font-medium text-slate-700 whitespace-nowrap">
                             {row.weekLabel}
-                            {row.estimated && <span className="ml-2 text-[10px] bg-slate-100 text-slate-400 rounded px-1 py-px" title="No real order yet for this week — projected at the recent average intake pace">est.</span>}
+                            {row.estimated && <span className="ml-2 text-[10px] bg-slate-100 text-slate-400 rounded px-1 py-px" title="Few or no real orders yet for this week — projected at the recent average intake pace">est.</span>}
                           </td>
                           <td className="px-3 py-2 text-right text-slate-600">{row.units}</td>
                           <td className="px-3 py-2 text-right">
