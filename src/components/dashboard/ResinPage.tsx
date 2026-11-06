@@ -59,7 +59,14 @@ interface CohortRow {
   weeksToComplete: number | null;
   // Same walk, with the hypothetical hires from the hiring plan strip added.
   weeksToCompletePlanned: number | null;
-  estimated:    boolean;  // future week with few or no real orders yet — projected at the recent average intake pace
+  estimated:    boolean;  // future week with few or no real orders yet — projected from the bouquet forecast
+}
+
+// From /api/resin/intake-forecast.
+interface IntakeForecast {
+  share:          number | null;  // resin units ÷ bouquets received
+  shareWeeks:     number;
+  estimateByWeek: Record<string, number>;
 }
 
 interface QueueSummary {
@@ -191,6 +198,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
   const [showCPO, setShowCPO] = useState(false);
   const [resinInputMode, setResinInputMode] = useState<InputMode>('hours');
   const [queueSummary, setQueueSummary] = useState<QueueSummary | null>(null);
+  const [intakeForecast, setIntakeForecast] = useState<IntakeForecast | null>(null);
   const [queueLoading, setQueueLoading] = useState(true);
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
@@ -237,6 +245,13 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
       .catch(() => {})
       .finally(() => setQueueLoading(false));
   }, [queueFrontWeek]);
+
+  useEffect(() => {
+    fetch('/api/resin/intake-forecast')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => setIntakeForecast(d))
+      .catch(() => {});
+  }, []);
 
   // ── Derived: weekly capacity ───────────────────────────────────────────────
   const windowWeeks = Array.from({ length: WINDOW }, (_, i) => weekOffset + i);
@@ -363,15 +378,15 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     if (activeCohorts.length === 0) return [];
 
     // Real cohorts only cover orders already placed, so future weeks are
-    // sparse. Project them out to the full 52-week horizon at the recent
-    // average intake pace so this table reads as far as the other departments'
-    // Queue & Turnaround tabs. Projected weeks are flagged `estimated` and
-    // don't count toward the "active units in queue" total shown above, since
-    // they aren't real orders yet.
+    // sparse. Project them out to the full 52-week horizon from the bouquet
+    // forecast so this table reads as far as the other departments' Queue &
+    // Turnaround tabs and follows the same seasonality. Projected weeks are
+    // flagged `estimated` and don't count toward the "active units in queue"
+    // total shown above, since they aren't real orders yet.
     const projectedCohorts = projectResinCohorts(
       activeCohorts,
       Array.from({ length: WEEKS }, (_, w) => isoMonday(w)),
-      isoMonday(-8),
+      intakeForecast?.estimateByWeek ?? {},
     );
 
     // Week-by-week FIFO: each week's scheduled capacity works the oldest
@@ -1158,7 +1173,9 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
               Based on {activeCohorts.reduce((s, c) => s + c.units, 0).toLocaleString()} active units in queue
               · per-week scheduled capacity from the 52-week planner · FIFO sort.
               Intake week = event date + {queueSummary?.offsetDays ?? 4} days (falls back to order date when an order has no event-date tag).
-              Weeks marked <span className="bg-slate-100 text-slate-500 rounded px-1 py-px">est.</span> are future weeks with few or no real orders yet — projected at the recent average intake pace out to a 52-week horizon.
+              {intakeForecast?.share != null && (
+                <> Weeks marked <span className="bg-slate-100 text-slate-500 rounded px-1 py-px">est.</span> are future weeks with few or no real orders yet — projected out to a 52-week horizon as {(intakeForecast.share * 100).toFixed(1)}% of the company bouquet forecast, resin&apos;s share of bouquets received over the last {intakeForecast.shareWeeks} completed weeks.</>
+              )}
               {!queueFrontWeek && queueSummary?.oldestEventDate && (
                 <> Oldest still-open order has an event date of <strong>{new Date(queueSummary.oldestEventDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</strong> — set &quot;Currently designing as of&quot; above once you know the real front, so stuck stragglers like that one stop anchoring the math.</>
               )}
@@ -1213,7 +1230,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                         <tr key={row.weekOf} className={`border-b border-slate-50 ${wks === 0 ? 'bg-indigo-50/40' : row.estimated ? 'bg-slate-50/40' : 'hover:bg-slate-50'}`}>
                           <td className="px-4 py-2 font-medium text-slate-700 whitespace-nowrap">
                             {row.weekLabel}
-                            {row.estimated && <span className="ml-2 text-[10px] bg-slate-100 text-slate-400 rounded px-1 py-px" title="Few or no real orders yet for this week — projected at the recent average intake pace">est.</span>}
+                            {row.estimated && <span className="ml-2 text-[10px] bg-slate-100 text-slate-400 rounded px-1 py-px" title="Few or no real orders yet for this week — projected from the company bouquet forecast">est.</span>}
                           </td>
                           <td className="px-3 py-2 text-right text-slate-600">{row.units}</td>
                           <td className="px-3 py-2 text-right">
