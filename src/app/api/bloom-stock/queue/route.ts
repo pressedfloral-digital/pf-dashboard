@@ -7,7 +7,7 @@ import {
   BLOOM_STOCK_PRODUCTS, productByShopifyId, emptyByProduct, SEND_OWN_VARIANT_IDS,
   type BloomStockProductKey, type BloomStockQueueItem, type BloomStockQueueResponse,
   type BloomStockStatus,
-  TYPE_BY_PRODUCT, asBloomStockType,
+  RECREATE_VARIANT_IDS, bloomStockTypeFor, asBloomStockType,
 } from '@/lib/bloomStock';
 import { bloomStockAutoAssignee } from '@/lib/bloomStockAssignees';
 
@@ -136,6 +136,8 @@ async function loadRaw(): Promise<RawData> {
     // Order-level Blooms Process choice: customer sends their own blooms →
     // starts in Waiting.
     const sendOwn = order.lineItems.nodes.some(li => SEND_OWN_VARIANT_IDS.has(li.variant?.legacyResourceId ?? ''));
+    // A recreation Blooms Process makes a baby/paw print Recreation / … Prints.
+    const recreate = order.lineItems.nodes.some(li => RECREATE_VARIANT_IDS.has(li.variant?.legacyResourceId ?? ''));
     for (const li of order.lineItems.nodes) {
       const product = productFor(li);
       if (!product || li.unfulfilledQuantity <= 0) continue;
@@ -152,7 +154,7 @@ async function loadRaw(): Promise<RawData> {
           location,
           eventDate,
           customer: order.customer?.displayName?.trim() || null,
-          type: TYPE_BY_PRODUCT[product.key],
+          type: bloomStockTypeFor(product.key, recreate),
           sendOwn,
           beforeCutoff: !!product.assumeFulfilledBefore && orderDate < product.assumeFulfilledBefore,
           influencer: /influencer/i.test(`${order.customer?.displayName ?? ''} ${order.tags.join(' ')}`),
