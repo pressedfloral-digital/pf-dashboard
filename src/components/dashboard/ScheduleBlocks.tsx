@@ -218,3 +218,147 @@ export function useRowDrag<T extends { id: string }>(items: T[], onReorder: (new
     }),
   };
 }
+
+// ─── Hours + goal in a day cell ──────────────────────────────────────────────
+// Hours and the output goal (frames/orders/units) each open their own input.
+// Editing the goal back-calculates hours through the person's ratio (hours per
+// unit), so hours stay the stored value and cost/capacity math is unchanged.
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+export function HoursGoalLines({ hours, ratio, unit, showHours, showOutput, hoursText, onHours, hoursTitle }: {
+  hours:      number;
+  ratio:      number;
+  unit:       string;        // "frames", "ord", "units"
+  showHours:  boolean;
+  showOutput: boolean;
+  hoursText:  string;        // e.g. "7.5h" or "7.5h press"
+  onHours:    (h: number) => void;
+  hoursTitle?: string;
+}) {
+  const goal = ratio > 0 && hours > 0 ? r2(hours / ratio) : 0;
+  return (
+    <>
+      {showHours && (
+        <InlineNumber value={hours || ''} step="0.5" title={hoursTitle} onChange={onHours} className="block w-full">
+          <span className="block text-xs font-semibold">{hoursText}</span>
+        </InlineNumber>
+      )}
+      {showOutput && (ratio > 0 ? (
+        <InlineNumber value={goal || ''} step="0.5"
+          title={`Goal — click to set ${unit} for this day (hours = ${unit} × ${ratio} h ratio)`}
+          onChange={g => onHours(g > 0 ? r2(g * ratio) : 0)}
+          className="block w-full">
+          <span className={`block ${showHours ? 'opacity-70' : 'text-xs font-semibold'}`}>{goal} {unit}</span>
+        </InlineNumber>
+      ) : (
+        <span className={`block ${showHours ? 'opacity-70' : 'text-xs font-semibold'}`} title="No ratio set on the roster — goal can't be calculated">— {unit}</span>
+      ))}
+    </>
+  );
+}
+
+// ─── Batch goals ─────────────────────────────────────────────────────────────
+// Select a set of person-days on a This Week grid and set one goal (or hours)
+// on all of them at once.
+export interface SelectedCell { id: string; di: number }
+
+export function useCellSelection(resetKey: unknown) {
+  const [active, setActive] = useState(false);
+  const [sel, setSel] = useState<Set<string>>(() => new Set());
+  const [lastKey, setLastKey] = useState(resetKey);
+  if (lastKey !== resetKey) { setLastKey(resetKey); setSel(new Set()); }
+  const k = (id: string, di: number) => `${id}|${di}`;
+  return {
+    active,
+    count: sel.size,
+    start: () => setActive(true),
+    stop:  () => { setActive(false); setSel(new Set()); },
+    clear: () => setSel(new Set()),
+    has:   (id: string, di: number) => sel.has(k(id, di)),
+    // Toggle one cell, or a group (row / column): if every cell in the group
+    // is already selected the group is deselected, otherwise all are added.
+    toggle: (cells: SelectedCell[]) => setSel(prev => {
+      const next = new Set(prev);
+      const keys = cells.map(c => k(c.id, c.di));
+      const allOn = keys.length > 0 && keys.every(x => next.has(x));
+      keys.forEach(x => allOn ? next.delete(x) : next.add(x));
+      return next;
+    }),
+    cells: (): SelectedCell[] => [...sel].map(x => { const [id, di] = x.split('|'); return { id, di: Number(di) }; }),
+  };
+}
+export type CellSelection = ReturnType<typeof useCellSelection>;
+
+// Click target laid over a cell / name / day header while selecting.
+export function SelectOverlay({ selected, onClick, title }: { selected: boolean; onClick: () => void; title: string }) {
+  return (
+    <button type="button" onClick={onClick} title={title} aria-pressed={selected}
+      className={`absolute inset-0.5 z-20 rounded-lg border-2 transition-colors ${selected
+        ? 'border-indigo-500 bg-indigo-500/15'
+        : 'border-dashed border-indigo-200 bg-white/0 hover:border-indigo-400 hover:bg-indigo-500/5'}`}>
+      {selected && <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-indigo-600 text-[10px] font-bold text-white">✓</span>}
+    </button>
+  );
+}
+
+export function BatchGoalButton({ selection, disabled }: { selection: CellSelection; disabled?: boolean }) {
+  return (
+    <button type="button" disabled={disabled}
+      onClick={() => selection.active ? selection.stop() : selection.start()}
+      title="Select days, people or whole days and set one goal on all of them"
+      className={`px-2 py-1 text-xs border rounded disabled:opacity-30 ${selection.active
+        ? 'border-indigo-500 bg-indigo-600 text-white'
+        : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+      {selection.active ? 'Done batching' : 'Batch goals'}
+    </button>
+  );
+}
+
+// Bar shown under the grid header while selecting. `onApply` gets the
+// selected cells and either a goal (output units) or hours; it returns how
+// many cells were skipped (e.g. no ratio) so the bar can say so.
+export function BatchGoalBar({ selection, unit, onApply }: {
+  selection: CellSelection;
+  unit:      string;
+  onApply:   (cells: SelectedCell[], value: { goal: number } | { hours: number }) => number;
+}) {
+  const [mode, setMode] = useState<'goal' | 'hours'>('goal');
+  const [val, setVal] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  if (!selection.active) return null;
+  const n = selection.count;
+  const apply = () => {
+    const v = parseFloat(val);
+    if (!(v >= 0) || n === 0) return;
+    const skipped = onApply(selection.cells(), mode === 'goal' ? { goal: v } : { hours: v });
+    setMsg(`Set ${n - skipped} day${n - skipped === 1 ? '' : 's'} to ${v} ${mode === 'goal' ? unit : 'h'}${skipped ? ` · skipped ${skipped} with no ratio` : ''}`);
+    selection.clear();
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-b border-indigo-100 bg-indigo-50/60 px-5 py-2 text-xs text-indigo-900">
+      <span className="font-medium">{n} selected</span>
+      <span className="text-indigo-700/70">Click days to select · click a name for their whole week · click a day header for everyone that day</span>
+      <div className="ml-auto flex items-center gap-1.5">
+        <div className="flex overflow-hidden rounded-md border border-indigo-200 text-[11px]">
+          {(['goal', 'hours'] as const).map(m => (
+            <button key={m} type="button" onClick={() => setMode(m)}
+              className={`px-2 py-1 font-medium ${mode === m ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-700 hover:bg-indigo-50'}`}>
+              {m === 'goal' ? `Goal (${unit})` : 'Hours'}
+            </button>
+          ))}
+        </div>
+        <input type="number" min="0" step="0.5" value={val} placeholder={mode === 'goal' ? unit : 'h'}
+          onChange={e => { setVal(e.target.value); setMsg(null); }}
+          onKeyDown={e => { if (e.key === 'Enter') apply(); }}
+          className="w-20 rounded border border-indigo-200 bg-white px-1.5 py-1 text-center text-xs focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+        <button type="button" onClick={apply} disabled={n === 0 || val === ''}
+          className="rounded bg-indigo-600 px-2.5 py-1 font-medium text-white hover:bg-indigo-700 disabled:opacity-40">
+          Apply to {n}
+        </button>
+        <button type="button" onClick={selection.clear} disabled={n === 0}
+          className="rounded border border-indigo-200 bg-white px-2 py-1 text-indigo-700 hover:bg-indigo-50 disabled:opacity-40">Clear</button>
+      </div>
+      {msg && <div className="w-full text-[11px] font-medium text-emerald-700">{msg}</div>}
+    </div>
+  );
+}

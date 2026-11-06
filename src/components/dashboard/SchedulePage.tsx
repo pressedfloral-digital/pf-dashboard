@@ -21,7 +21,7 @@ import { AddTimeOffButton } from './AddTimeOff';
 import { MemberTierBadges, useIsFlexing } from './MemberTierBadge';
 import { AddUnavailabilityButton, AvailabilityChips, ScheduledTimeBox, entriesOn, isUnavailableAllDay, withStandardPreferred, withDefaultUnavailable, useShowAvailability, standardHoursOn, availableOn, type UnavailabilityEntry } from './Unavailability';
 import { GridViewMenu, useGridView, HIDE_WEEKEND } from './GridView';
-import { ArchiveButton, ArchivedMembers, PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock, SHIFT_TONE, SHIFT_LABEL, useDraggableOrder, useRowDrag, type ShiftTone } from './ScheduleBlocks';
+import { ArchiveButton, ArchivedMembers, PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock, SHIFT_TONE, SHIFT_LABEL, useDraggableOrder, useRowDrag, type ShiftTone, HoursGoalLines, useCellSelection, SelectOverlay, BatchGoalButton, BatchGoalBar, type SelectedCell } from './ScheduleBlocks';
 import { useVisibleManagerCPO } from '@/hooks/useVisibleManagerCPO';
 import {
   addDays, UTAH_HISTORICAL_INTAKE, GEORGIA_HISTORICAL_INTAKE,
@@ -1654,6 +1654,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
   // Hides every team member's clickable "Actual … bouq" line on This Week;
   // the team's Actual total row stays.
   const [presThisWeekOffset, setPresThisWeekOffset] = useState(0);
+  const presSel = useCellSelection(`${location}-${presThisWeekOffset}`);
   const maxPresThisWeekOffset = WEEKS - 1;
 
   const weekOverrides = presSettings.weekOverrides ?? {};
@@ -2126,12 +2127,38 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
     onPresNewHireHoursChange(next);
   }
 
-  function updateDailyHours(memberId: string, dayIdx: number, val: number) {
+  function updateDailyHoursMany(vals: (SelectedCell & { val: number })[]) {
     const weekIso = isoMonday(presThisWeekOffset);
-    const key = `${weekIso}-${memberId}`;
-    const padded = [...baseDailyArray(presDailyHours, key, presHours[memberId]?.[weekIso], isoMonday(0))];
-    padded[dayIdx] = val;
-    onPresDailyHoursChange({ ...presDailyHours, [key]: padded });
+    const next = { ...presDailyHours };
+    for (const { id, di, val } of vals) {
+      const key = `${weekIso}-${id}`;
+      const padded = [...baseDailyArray(next, key, presHours[id]?.[weekIso], isoMonday(0))];
+      padded[di] = val;
+      next[key] = padded;
+    }
+    onPresDailyHoursChange(next);
+  }
+  function updateDailyHours(memberId: string, dayIdx: number, val: number) { updateDailyHoursMany([{ id: memberId, di: dayIdx, val }]); }
+  function presIsOff(id: string, di: number) {
+    const weekIso = isoMonday(presThisWeekOffset);
+    return resolveDayHours(presDailyHours, `${weekIso}-${id}`, di, presRoster[id]?.standardWeeklyHours,
+      { weekIso, startDate: presRoster[id]?.startDate, endDate: presRoster[id]?.endDate, rules: presRoster[id]?.scheduleRules, daysOff: presRoster[id]?.daysOff, hoursOff: presRoster[id]?.hoursOff }, paidHolidays).isDayOff;
+  }
+  // Row/column selection only picks days you can see (weekend may be hidden) that aren't days off.
+  const presPickable = (id: string, di: number) => (view.weekend || di < 5) && !presIsOff(id, di);
+  function applyPresBatch(cells: SelectedCell[], v: { goal: number } | { hours: number }) {
+    let skipped = 0;
+    const vals: (SelectedCell & { val: number })[] = [];
+    for (const c of cells) {
+      const m = team.find(x => x.id === c.id);
+      if (!m || presIsOff(c.id, c.di)) { skipped++; continue; }
+      if ('goal' in v) {
+        if (!(m.ratio > 0)) { skipped++; continue; }
+        vals.push({ ...c, val: hoursFromOutput(v.goal, m.ratio) });
+      } else vals.push({ ...c, val: v.hours });
+    }
+    if (vals.length) updateDailyHoursMany(vals);
+    return skipped;
   }
 
   function updateCheckHours(memberId: string, dayIdx: number, val: number) {
@@ -2378,6 +2405,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                   <ProductionActualsStatus loading={preservationActuals.loading} error={preservationActuals.error} refreshedAt={preservationActuals.refreshedAt} />
                 </div>
                 <div className="flex items-center gap-2 flex-wrap justify-end">
+                  <BatchGoalButton selection={presSel} disabled={userRole === 'viewer'} />
                   <GridViewMenu options={['times', 'hours', 'output', 'checks', 'mgrTotal', 'actuals', 'weekend']} />
                   <AddUnavailabilityButton people={team.map(m => ({ id: m.id, name: m.name }))} list={unavailability}
                     onChange={onUnavailabilityChange} defaultDate={days.find(day => day.iso >= localTodayIso())?.iso ?? days[0]?.iso} />
@@ -2396,13 +2424,17 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                   <button onClick={() => setPresThisWeekOffset(Math.min(maxPresThisWeekOffset, presThisWeekOffset + 1))} disabled={presThisWeekOffset >= maxPresThisWeekOffset} className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">Next →</button>
                 </div>
               </div>
+              <BatchGoalBar selection={presSel} unit="ord" onApply={applyPresBatch} />
               <div className="overflow-x-auto">
                 <table className={`min-w-full text-xs ${view.weekend ? '' : HIDE_WEEKEND}`}>
                   <thead>
                     <tr className="border-b border-slate-100">
                       <th className="sticky left-0 z-10 bg-white px-4 py-3 text-left text-[13px] font-medium text-slate-500 min-w-[190px]">Team member</th>
                       {days.map((d, i) => (
-                        <th key={i} className="px-1.5 py-3 min-w-[104px]">
+                        <th key={i} className="relative px-1.5 py-3 min-w-[104px]">
+                          {presSel.active && (() => { const rows = team.filter(presRowVisible).filter(mm => presPickable(mm.id, i)); return (
+                            <SelectOverlay selected={rows.length > 0 && rows.every(mm => presSel.has(mm.id, i))}
+                              onClick={() => presSel.toggle(rows.map(mm => ({ id: mm.id, di: i })))} title="Select everyone on this day" />); })()}
                           <DayHead label={d.label} iso={d.iso} today={d.iso === localTodayIso()} holiday={paidHolidays.includes(d.iso)} />
                         </th>
                       ))}
@@ -2418,6 +2450,9 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                     {team.filter(presRowVisible).sort((a, b) => Number(presScheduledThisWeek(b)) - Number(presScheduledThisWeek(a))).map((m) => (
                       <tr key={m.id} {...presRowDrag.rowProps(m.id)} className={`border-b border-slate-100 ${presRowDrag.isOver(m.id) ? 'bg-sky-50' : ''}`}>
                         <td {...presRowDrag.handleProps(m.id)} className={`sticky left-0 z-10 cursor-grab ${presRowDrag.isOver(m.id) ? 'bg-sky-50' : 'bg-white'} px-4 py-2 whitespace-nowrap`}>
+                          {presSel.active && (() => { const cells = days.map((_, di) => ({ id: m.id, di })).filter(c => presPickable(c.id, c.di)); return (
+                            <SelectOverlay selected={cells.length > 0 && cells.every(c => presSel.has(c.id, c.di))}
+                              onClick={() => presSel.toggle(cells)} title={`Select ${m.name}'s whole week`} />); })()}
                           <PersonCell name={m.name} grip>
                             <MemberTierBadges name={m.name} location={location} dept="Preservation" fallbackRole={m.role} fallbackIsManager={m.isManager} />
                             <div>
@@ -2457,24 +2492,24 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
                           }
                           return (
                             <td key={di} className="group relative p-1 align-top">
+                              {presSel.active && <SelectOverlay selected={presSel.has(m.id, di)} onClick={() => presSel.toggle([{ id: m.id, di }])} title="Select this day" />}
                               {view.times && <ScheduledTimeBox entries={dayEntries} hours={(hasMgrTotal(m) ? totalH : prodH + checkH) + autoCheckH} tone="preservation" />}
                               {!hideBlock && (
                               <ShiftBlock tone={working ? 'preservation' : isHoliday ? 'holiday' : unav ? 'unavailable' : avail.length ? 'preferred' : null} edited={isOverride && prodH > 0}>
+                                {prodH > 0 ? (
+                                  <HoursGoalLines hours={prodH} ratio={m.ratio} unit="ord" showHours={view.hours} showOutput={view.output}
+                                    hoursText={`${halfHour(prodH)}h press`} onHours={raw => updateDailyHours(m.id, di, raw)}
+                                    hoursTitle={isOverride ? 'Changed for this day only — click to edit' : 'Following the standard weekly schedule — click to override just this day'} />
+                                ) : (
                                 <InlineNumber
-                                  value={prodH || ''}
+                                  value=""
                                   step="0.5"
                                   title={isOverride ? 'Changed for this day only — click to edit' : 'Following the standard weekly schedule — click to override just this day'}
                                   onChange={raw => updateDailyHours(m.id, di, raw)}
                                   className="block w-full">
-                                  {prodH > 0 ? (
-                                    <>
-                                      {view.hours && <span className="block text-xs font-semibold">{halfHour(prodH)}h press</span>}
-                                      {view.output && <span className={`block ${view.hours ? 'opacity-70' : 'text-xs font-semibold'}`}>{round2(orders)} ord</span>}
-                                    </>
-                                  ) : (
                                     <span className="block py-0.5">{isHoliday ? 'Holiday' : working ? (view.hours ? 'No press' : '') : unav ? 'Unavailable' : 'Available'}</span>
-                                  )}
                                 </InlineNumber>
+                                )}
                                 {view.checks && myChecks != null && (myChecks > 0 || share.isEdited(m.id)) && (
                                   myChecks === 0 ? (
                                     <button type="button" onClick={() => setCheckCount(m.id, di, null)}
@@ -3125,6 +3160,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   const [ffTab,      setFfTab]      = useState<'thisweek' | 'schedule' | 'queue' | 'historicals'>('thisweek');
   const [ffInputMode, setFfInputMode] = useState<InputMode>('hours');
   const [ffThisWeekOffset, setFfThisWeekOffset] = useState(0);
+  const ffSel = useCellSelection(`${location}-${ffThisWeekOffset}`);
   const maxFfThisWeekOffset = WEEKS - 1;
   const [ffDailyHours, setFfDailyHours] = useState<DailyHoursMap>(ffDailyHoursProp ?? {});
   useEffect(() => { if (ffDailyHoursProp && Object.keys(ffDailyHoursProp).length > 0) setFfDailyHours(ffDailyHoursProp); }, [JSON.stringify(ffDailyHoursProp)]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -3397,14 +3433,35 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
           return resolveDayHours(ffDailyHours, `${weekIso}-${id}`, di, ffRoster[id]?.standardWeeklyHours,
             { weekIso, startDate: ffRoster[id]?.startDate, endDate: ffRoster[id]?.endDate, rules: ffRoster[id]?.scheduleRules, daysOff: ffRoster[id]?.daysOff, hoursOff: ffRoster[id]?.hoursOff }, paidHolidays).isOverride;
         }
-        function setFFH(id: string, di: number, val: number) {
+        function setFFHMany(vals: (SelectedCell & { val: number })[]) {
           const weekIso = isoMonday(ffThisWeekOffset);
-          const key = `${weekIso}-${id}`;
-          const padded = [...baseDailyArray(ffDailyHours, key, ffHours[id]?.[weekIso], isoMonday(0))];
-          padded[di] = val;
-          const next = { ...ffDailyHours, [key]: padded };
+          const next = { ...ffDailyHours };
+          for (const { id, di, val } of vals) {
+            const key = `${weekIso}-${id}`;
+            const padded = [...baseDailyArray(next, key, ffHours[id]?.[weekIso], isoMonday(0))];
+            padded[di] = val;
+            next[key] = padded;
+          }
           setFfDailyHours(next);
           onFfDailyHoursChange?.(next);
+        }
+        function setFFH(id: string, di: number, val: number) { setFFHMany([{ id, di, val }]); }
+        const isFFOff = (id: string, di: number) => !!ffRoster[id]?.daysOff?.includes(days[di]?.iso ?? '');
+        // Row/column selection only picks days you can see (weekend may be hidden) that aren't days off.
+        const ffPickable = (id: string, di: number) => (view.weekend || di < 5) && !isFFOff(id, di);
+        function applyFFBatch(cells: SelectedCell[], v: { goal: number } | { hours: number }) {
+          let skipped = 0;
+          const vals: (SelectedCell & { val: number })[] = [];
+          for (const c of cells) {
+            const m = team.find(x => x.id === c.id);
+            if (!m || isFFOff(c.id, c.di)) { skipped++; continue; }
+            if ('goal' in v) {
+              if (!(m.ratio > 0)) { skipped++; continue; }
+              vals.push({ ...c, val: hoursFromOutput(v.goal, m.ratio) });
+            } else vals.push({ ...c, val: v.hours });
+          }
+          if (vals.length) setFFHMany(vals);
+          return skipped;
         }
         function getMgrTotalFFH(id: string, di: number) {
           const weekIso = isoMonday(ffThisWeekOffset);
@@ -3453,6 +3510,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                 <ProductionActualsStatus loading={fulfillmentActuals.loading} error={fulfillmentActuals.error} refreshedAt={fulfillmentActuals.refreshedAt} />
               </div>
               <div className="flex items-center gap-2 flex-wrap justify-end">
+                <BatchGoalButton selection={ffSel} disabled={userRole === 'viewer'} />
                 <GridViewMenu options={['times', 'hours', 'output', 'mgrTotal', 'actuals', 'weekend']} />
                 <AddUnavailabilityButton people={team.map(m => ({ id: m.id, name: m.name }))} list={unavailability}
                   onChange={onUnavailabilityChange} defaultDate={days.find(day => day.iso >= todayIso)?.iso ?? days[0]?.iso} />
@@ -3471,13 +3529,16 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                 <button onClick={() => setFfThisWeekOffset(Math.min(maxFfThisWeekOffset, ffThisWeekOffset + 1))} disabled={ffThisWeekOffset >= maxFfThisWeekOffset} className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">Next →</button>
               </div>
             </div>
+            <BatchGoalBar selection={ffSel} unit="ord" onApply={applyFFBatch} />
             <div className="overflow-x-auto">
               <table className={`min-w-full text-xs ${view.weekend ? '' : HIDE_WEEKEND}`}>
                 <thead>
                   <tr className="border-b border-slate-100">
                     <th className="sticky left-0 z-10 bg-white px-4 py-3 text-left text-[13px] font-medium text-slate-500 min-w-[190px]">Team member</th>
                     {days.map((d, i) => (
-                      <th key={i} className="px-1.5 py-3 min-w-[104px]">
+                      <th key={i} className="relative px-1.5 py-3 min-w-[104px]">
+                        {ffSel.active && <SelectOverlay selected={visibleTeam.some(mm => ffPickable(mm.id, i)) && visibleTeam.every(mm => !ffPickable(mm.id, i) || ffSel.has(mm.id, i))}
+                          onClick={() => ffSel.toggle(visibleTeam.filter(mm => ffPickable(mm.id, i)).map(mm => ({ id: mm.id, di: i })))} title="Select everyone on this day" />}
                         <DayHead label={d.label} iso={d.iso} today={d.iso === todayIso} holiday={isHolidayDay(i)} />
                       </th>
                     ))}
@@ -3496,6 +3557,8 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                     return (
                       <tr key={m.id} {...ffRowDrag.rowProps(m.id)} className={`border-b border-slate-100 ${ffRowDrag.isOver(m.id) ? 'bg-sky-50' : ''}`}>
                         <td {...ffRowDrag.handleProps(m.id)} className={`sticky left-0 z-10 cursor-grab ${ffRowDrag.isOver(m.id) ? 'bg-sky-50' : 'bg-white'} px-4 py-2 whitespace-nowrap`}>
+                          {ffSel.active && <SelectOverlay selected={days.some((_, di) => ffPickable(m.id, di)) && days.every((_, di) => !ffPickable(m.id, di) || ffSel.has(m.id, di))}
+                            onClick={() => ffSel.toggle(days.map((_, di) => ({ id: m.id, di })).filter(c => ffPickable(c.id, c.di)))} title={`Select ${m.name}'s whole week`} />}
                           <PersonCell name={m.name} grip>
                             <MemberTierBadges name={m.name} location={location} dept="Fulfillment" fallbackRole={m.role} fallbackIsManager={m.isManager} />
                             {fulfillmentActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
@@ -3521,26 +3584,28 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
                           }
                           return (
                             <td key={dayIdx} className="group relative p-1 align-top">
+                              {ffSel.active && <SelectOverlay selected={ffSel.has(m.id, dayIdx)} onClick={() => ffSel.toggle([{ id: m.id, di: dayIdx }])} title="Select this day" />}
                               {view.times && <ScheduledTimeBox entries={dayEntries} hours={m.isManager ? totalH : h} tone="fulfillment" />}
                               {!hideBlock && (
                               <ShiftBlock tone={working ? 'fulfillment' : holiday ? 'holiday' : unav ? 'unavailable' : avail.length ? 'preferred' : null} edited={isOverride && h > 0}>
+                                {h > 0 ? (
+                                  <HoursGoalLines hours={h} ratio={m.ratio} unit="ord" showHours={view.hours} showOutput={view.output}
+                                    hoursText={`${round2(h)}h`} onHours={raw => setFFH(m.id, dayIdx, raw)}
+                                    hoursTitle={holiday
+                                      ? (isOverride ? 'Paid holiday — worked hours, paid on top of guaranteed holiday pay' : 'Paid holiday — no production expected, staff still paid. Click to enter hours if someone worked.')
+                                      : isOverride ? 'Changed for this day only — click to edit' : 'Following the standard weekly schedule — click to override just this day'} />
+                                ) : (
                                 <InlineNumber
-                                  value={h || ''}
+                                  value=""
                                   step="0.5"
                                   title={holiday
-                                    ? (isOverride ? 'Paid holiday — worked hours, paid on top of guaranteed holiday pay' : 'Paid holiday — no production expected, staff still paid. Click to enter hours if someone worked.')
-                                    : isOverride ? 'Changed for this day only — click to edit' : 'Following the standard weekly schedule — click to override just this day'}
+                                    ? 'Paid holiday — no production expected, staff still paid. Click to enter hours if someone worked.'
+                                    : 'Click to enter hours for this day'}
                                   onChange={raw => setFFH(m.id, dayIdx, raw)}
                                   className="block w-full">
-                                  {h > 0 ? (
-                                    <>
-                                      {view.hours && <span className="block text-xs font-semibold">{round2(h)}h</span>}
-                                      {view.output && <span className={`block ${view.hours ? 'opacity-70' : 'text-xs font-semibold'}`}>{round2(orders)} ord</span>}
-                                    </>
-                                  ) : (
                                     <span className="block py-1">{holiday ? 'Holiday' : m.isManager && totalH > 0 ? (view.hours ? 'No production' : '') : unav ? 'Unavailable' : 'Available'}</span>
-                                  )}
                                 </InlineNumber>
+                                )}
                                 {m.isManager && view.mgrTotal && (
                                   <InlineNumber value={totalH || ''} onChange={v => setMgrTotalFFH(m.id, dayIdx, v)} placeholder="total h"
                                     title="Total hours (production + managerial) — click to edit"
@@ -4727,6 +4792,7 @@ export function SchedulePage({
   const [activeTab,    setActiveTab]   = useState<'thisweek' | 'schedule' | 'monthly' | 'queue' | 'historicals'>('thisweek');
   const [showDoneCohorts, setShowDoneCohorts] = useState(false);
   const [designThisWeekOffset, setDesignThisWeekOffset] = useState(0);
+  const designSel = useCellSelection(`${location}-${designThisWeekOffset}`);
   const designActualDays = getWeekdays(designThisWeekOffset);
   const designActuals = useProductionAssignmentCounts({
     names: designers.map(designer => designer.name),
@@ -5945,14 +6011,35 @@ export function SchedulePage({
               return resolveDayHours(designDailyHours, `${weekIso}-${id}`, di, settings.designRoster[id]?.standardWeeklyHours,
                 { weekIso, startDate: settings.designRoster[id]?.startDate, endDate: settings.designRoster[id]?.endDate, rules: settings.designRoster[id]?.scheduleRules, daysOff: settings.designRoster[id]?.daysOff, hoursOff: settings.designRoster[id]?.hoursOff }, paidHolidays).isOverride;
             }
-            function setDH(id: string, di: number, val: number) {
+            function setDHMany(vals: (SelectedCell & { val: number })[]) {
               const weekIso = isoMonday(designThisWeekOffset);
-              const key = `${weekIso}-${id}`;
-              const padded = [...baseDailyArray(designDailyHours, key, settings.designHours[id]?.[weekIso], isoMonday(0))];
-              padded[di] = val;
-              const next = { ...designDailyHours, [key]: padded };
+              const next = { ...designDailyHours };
+              for (const { id, di, val } of vals) {
+                const key = `${weekIso}-${id}`;
+                const padded = [...baseDailyArray(next, key, settings.designHours[id]?.[weekIso], isoMonday(0))];
+                padded[di] = val;
+                next[key] = padded;
+              }
               setDesignDailyHours(next);
               update('designDailyHours', next);
+            }
+            function setDH(id: string, di: number, val: number) { setDHMany([{ id, di, val }]); }
+            const isDesignOff = (id: string, di: number) => !!settings.designRoster[id]?.daysOff?.includes(days[di]?.iso ?? '');
+            // Row/column selection only picks days you can see (weekend may be hidden) that aren't days off.
+            const designPickable = (id: string, di: number) => (view.weekend || di < 5) && !isDesignOff(id, di);
+            function applyDesignBatch(cells: SelectedCell[], v: { goal: number } | { hours: number }) {
+              let skipped = 0;
+              const vals: (SelectedCell & { val: number })[] = [];
+              for (const c of cells) {
+                const d = designers.find(x => x.id === c.id);
+                if (!d || isDesignOff(c.id, c.di)) { skipped++; continue; }
+                if ('goal' in v) {
+                  if (!(d.ratio > 0)) { skipped++; continue; }
+                  vals.push({ ...c, val: hoursFromOutput(v.goal, d.ratio) });
+                } else vals.push({ ...c, val: v.hours });
+              }
+              if (vals.length) setDHMany(vals);
+              return skipped;
             }
             function getMgrTotalDH(id: string, di: number) {
               const weekIso = isoMonday(designThisWeekOffset);
@@ -6002,6 +6089,7 @@ export function SchedulePage({
                     <ProductionActualsStatus loading={designActuals.loading} error={designActuals.error} refreshedAt={designActuals.refreshedAt} />
                   </div>
                   <div className="flex items-center gap-2 flex-wrap justify-end">
+                    <BatchGoalButton selection={designSel} disabled={!canEditCurrent} />
                     <GridViewMenu options={['times', 'hours', 'output', 'mgrTotal', 'actuals', 'weekend']} />
                     <AddUnavailabilityButton people={designers.map(d => ({ id: d.id, name: d.name }))} list={settings.unavailability ?? []}
                       onChange={n => update('unavailability', n)} defaultDate={days.find(day => day.iso >= todayIso)?.iso ?? days[0]?.iso} />
@@ -6012,13 +6100,16 @@ export function SchedulePage({
                     <button onClick={() => setDesignThisWeekOffset(Math.min(maxDesignThisWeekOffset, designThisWeekOffset + 1))} disabled={designThisWeekOffset >= maxDesignThisWeekOffset} className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">Next →</button>
                   </div>
                 </div>
+                <BatchGoalBar selection={designSel} unit="frames" onApply={applyDesignBatch} />
                 <div className="overflow-x-auto">
                   <table className={`min-w-full text-xs ${view.weekend ? '' : HIDE_WEEKEND}`}>
                     <thead>
                       <tr className="border-b border-slate-100">
                         <th className="sticky left-0 z-10 bg-white px-4 py-3 text-left text-[13px] font-medium text-slate-500 min-w-[190px]">Designer</th>
                         {days.map((d, i) => (
-                          <th key={i} className="px-1.5 py-3 min-w-[104px]">
+                          <th key={i} className="relative px-1.5 py-3 min-w-[104px]">
+                            {designSel.active && <SelectOverlay selected={visibleDesigners.some(dd => designPickable(dd.id, i)) && visibleDesigners.every(dd => !designPickable(dd.id, i) || designSel.has(dd.id, i))}
+                              onClick={() => designSel.toggle(visibleDesigners.filter(dd => designPickable(dd.id, i)).map(dd => ({ id: dd.id, di: i })))} title="Select everyone on this day" />}
                             <DayHead label={d.label} iso={d.iso} today={d.iso === todayIso} holiday={isHolidayDay(i)} />
                           </th>
                         ))}
@@ -6038,6 +6129,8 @@ export function SchedulePage({
                         return (
                           <tr key={d.id} {...designRowDrag.rowProps(d.id)} className={`border-b border-slate-100 ${designRowDrag.isOver(d.id) ? 'bg-sky-50' : ''}`}>
                             <td {...designRowDrag.handleProps(d.id)} className={`sticky left-0 z-10 cursor-grab ${designRowDrag.isOver(d.id) ? 'bg-sky-50' : 'bg-white'} px-4 py-2 whitespace-nowrap`}>
+                              {designSel.active && <SelectOverlay selected={days.some((_, di) => designPickable(d.id, di)) && days.every((_, di) => !designPickable(d.id, di) || designSel.has(d.id, di))}
+                                onClick={() => designSel.toggle(days.map((_, di) => ({ id: d.id, di })).filter(c => designPickable(c.id, c.di)))} title={`Select ${d.name}'s whole week`} />}
                               <PersonCell name={d.name} grip>
                                 <MemberTierBadges name={d.name} location={location} dept="Design" fallbackRole={(d as {role?:string}).role} fallbackIsManager={isMgr} />
                                 {d.payType === 'salary' && <div className="text-[10px] text-amber-600">salary</div>}
@@ -6065,26 +6158,28 @@ export function SchedulePage({
                               }
                               return (
                                 <td key={dayIdx} className="group relative p-1 align-top">
+                                  {designSel.active && <SelectOverlay selected={designSel.has(d.id, dayIdx)} onClick={() => designSel.toggle([{ id: d.id, di: dayIdx }])} title="Select this day" />}
                                   {view.times && <ScheduledTimeBox entries={dayEntries} hours={isMgr ? totalH : h} tone="design" />}
                                   {!hideBlock && (
                                   <ShiftBlock tone={working ? 'design' : holiday ? 'holiday' : unav ? 'unavailable' : avail.length ? 'preferred' : null} edited={isOverride && h > 0}>
+                                    {h > 0 ? (
+                                      <HoursGoalLines hours={h} ratio={d.ratio} unit="frames" showHours={view.hours} showOutput={view.output}
+                                        hoursText={`${round2(h)}h`} onHours={raw => setDH(d.id, dayIdx, raw)}
+                                        hoursTitle={holiday
+                                          ? (isOverride ? 'Paid holiday — worked hours, paid on top of guaranteed holiday pay' : 'Paid holiday — no production expected, staff still paid. Click to enter hours if someone worked.')
+                                          : isOverride ? 'Changed for this day only — click to edit' : 'Following the standard weekly schedule — click to override just this day'} />
+                                    ) : (
                                     <InlineNumber
-                                      value={h || ''}
+                                      value=""
                                       step="0.5"
                                       title={holiday
-                                        ? (isOverride ? 'Paid holiday — worked hours, paid on top of guaranteed holiday pay' : 'Paid holiday — no production expected, staff still paid. Click to enter hours if someone worked.')
-                                        : isOverride ? 'Changed for this day only — click to edit' : 'Following the standard weekly schedule — click to override just this day'}
+                                        ? 'Paid holiday — no production expected, staff still paid. Click to enter hours if someone worked.'
+                                        : 'Click to enter hours for this day'}
                                       onChange={raw => setDH(d.id, dayIdx, raw)}
                                       className="block w-full">
-                                      {h > 0 ? (
-                                        <>
-                                          {view.hours && <span className="block text-xs font-semibold">{round2(h)}h</span>}
-                                          {view.output && <span className={`block ${view.hours ? 'opacity-70' : 'text-xs font-semibold'}`}>{round2(frames)} frames</span>}
-                                        </>
-                                      ) : (
                                         <span className="block py-1">{holiday ? 'Holiday' : isMgr && totalH > 0 ? (view.hours ? 'No production' : '') : unav ? 'Unavailable' : 'Available'}</span>
-                                      )}
                                     </InlineNumber>
+                                    )}
                                     {isMgr && view.mgrTotal && (
                                       <InlineNumber value={totalH || ''} onChange={v => setMgrTotalDH(d.id, dayIdx, v)} placeholder="total h"
                                         title="Total hours (production + managerial) — click to edit"
