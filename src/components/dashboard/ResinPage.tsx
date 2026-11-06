@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useScheduleSettings, usePaidHolidays } from './useScheduleSettings';
 import { getMondayDate, isoMonday, getWeekLabel } from '@/lib/weekDates';
 import { projectResinCohorts } from '@/lib/resinCohortProjection';
-import { InputModeToggle, round2, type InputMode } from './InputModeToggle';
+import { InputModeToggle, round2, hoursFromOutput, type InputMode } from './InputModeToggle';
 import { resolveDayHours, resolveWeekHours, isDayOff, applyTimeOff, hoursOffOn, resolveWeekPayHours, baseDailyArray, isWithinEmployment, WEEKDAY_LABELS, type DailyHoursMap, type ScheduleRule } from '@/lib/scheduleResolution';
 import { HistoricalsSection } from './HistoricalsSection';
 import { EmployeeAutocomplete, type RipplingEmployee } from './EmployeeAutocomplete';
@@ -16,7 +16,7 @@ import { GridViewMenu, useGridView, HIDE_WEEKEND } from './GridView';
 import { MemberTierBadges } from './MemberTierBadge';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { WeekCell, WeekHead } from './WeekCell';
-import { PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock, ArchiveButton, ArchivedMembers, useDraggableOrder, useRowDrag } from './ScheduleBlocks';
+import { PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock, ArchiveButton, ArchivedMembers, useDraggableOrder, useRowDrag, HoursGoalLines, useCellSelection, SelectOverlay, BatchGoalButton, BatchGoalBar, type SelectedCell } from './ScheduleBlocks';
 import { HelpTip } from './HelpTip';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
 import { ProductionActual, ProductionActualsStatus, sumActuals } from './ProductionActual';
@@ -194,6 +194,7 @@ interface ResinPageProps {
 export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManagerCPO = () => false, userRole = 'admin', unavailability: unavailabilityProp, onUnavailabilityChange }: ResinPageProps) {
   const [activeTab, setActiveTab] = useState<'thisweek' | 'schedule' | 'queue' | 'historicals'>('thisweek');
   const [thisWeekOffset, setThisWeekOffset] = useState(0);
+  const resinSel = useCellSelection(thisWeekOffset);
   const [weekOffset, setWeekOffset] = useState(0);
   const [showCPO, setShowCPO] = useState(false);
   const [resinInputMode, setResinInputMode] = useState<InputMode>('hours');
@@ -491,12 +492,31 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     return paidHolidays.includes(date.toISOString().split('T')[0]);
   }
 
-  function setDH(memberId: string, weekIdx: number, di: number, val: number) {
+  function setDHMany(weekIdx: number, vals: (SelectedCell & { val: number })[]) {
     const weekIso = isoMonday(weekIdx);
-    const key = `${weekIso}-${memberId}`;
-    const padded = [...baseDailyArray(resinDailyHours, key, hours[weekIso]?.[memberId], isoMonday(0))];
-    padded[di] = val;
-    setResinDailyHours({ ...resinDailyHours, [key]: padded });
+    const next = { ...resinDailyHours };
+    for (const { id, di, val } of vals) {
+      const key = `${weekIso}-${id}`;
+      const padded = [...baseDailyArray(next, key, hours[weekIso]?.[id], isoMonday(0))];
+      padded[di] = val;
+      next[key] = padded;
+    }
+    setResinDailyHours(next);
+  }
+  function setDH(memberId: string, weekIdx: number, di: number, val: number) { setDHMany(weekIdx, [{ id: memberId, di, val }]); }
+  function applyResinBatch(cells: SelectedCell[], v: { goal: number } | { hours: number }) {
+    let skipped = 0;
+    const vals: (SelectedCell & { val: number })[] = [];
+    for (const c of cells) {
+      const m = roster.find(x => x.id === c.id);
+      if (!m || isDHDayOff(c.id, thisWeekOffset, c.di)) { skipped++; continue; }
+      if ('goal' in v) {
+        if (!(m.ratio > 0)) { skipped++; continue; }
+        vals.push({ ...c, val: hoursFromOutput(v.goal, m.ratio) });
+      } else vals.push({ ...c, val: v.hours });
+    }
+    if (vals.length) setDHMany(thisWeekOffset, vals);
+    return skipped;
   }
 
   // Priority: an explicit override for this exact day, then this day's slot
@@ -598,6 +618,19 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     return d.toISOString().split('T')[0];
   });
   const todayIso = (() => { const t = new Date(); t.setHours(0, 0, 0, 0); return t.toISOString().split('T')[0]; })();
+
+  // This Week rows: everyone employed some day this week, scheduled or not —
+  // scheduled people first (stable sort keeps drag order within each group).
+  const isScheduledThisWeek = (m: ResinMember) =>
+    [0,1,2,3,4,5,6].some(di => getDH(m.id, thisWeekOffset, di) > 0 || (!!m.isManager && getMgrTotalDH(m, thisWeekOffset, di) > 0));
+  const visibleTeam = productionRoster.filter(m => {
+    if (isScheduledThisWeek(m)) return true;
+    const employment = { weekIso: isoMonday(thisWeekOffset), startDate: m.startDate, endDate: m.endDate };
+    return thisWeekIsos.some((_, di) => isWithinEmployment(di, employment));
+  }).sort((a, b) => Number(isScheduledThisWeek(b)) - Number(isScheduledThisWeek(a)));
+  const resinIsOff = (id: string, di: number) => isDHDayOff(id, thisWeekOffset, di);
+  // Row/column selection only picks days you can see (weekend may be hidden) that aren't days off.
+  const resinPickable = (id: string, di: number) => (view.weekend || di < 5) && !resinIsOff(id, di);
 
   const TABS = [
     { id: 'thisweek'    as const, label: 'This Week' },
@@ -789,6 +822,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
               <ProductionActualsStatus loading={resinActuals.loading} error={resinActuals.error} refreshedAt={resinActuals.refreshedAt} />
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
+              <BatchGoalButton selection={resinSel} disabled={userRole === 'viewer'} />
               <GridViewMenu options={['times', 'hours', 'output', 'mgrTotal', 'actuals', 'weekend']} />
               <AddUnavailabilityButton people={productionRoster.map(m => ({ id: m.id, name: m.name }))} list={unavailability}
                 onChange={setUnavailability} defaultDate={thisWeekIsos.find(iso => iso >= todayIso) ?? thisWeekIsos[0]} />
@@ -801,13 +835,17 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                 className="px-2 py-1 text-xs border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-30">Next →</button>
             </div>
           </div>
+          <BatchGoalBar selection={resinSel} unit="units" onApply={applyResinBatch} />
           <div className="overflow-x-auto">
             <table className={`min-w-full text-xs ${view.weekend ? '' : HIDE_WEEKEND}`}>
               <thead>
                 <tr className="border-b border-slate-100">
                   <th className="sticky left-0 z-10 bg-white px-4 py-3 text-left text-[13px] font-medium text-slate-500 min-w-[190px]">Team member</th>
                   {WEEKDAY_LABELS.map((d, di) => (
-                    <th key={d} className="px-1.5 py-3 min-w-[104px]">
+                    <th key={d} className="relative px-1.5 py-3 min-w-[104px]">
+                      {resinSel.active && (() => { const rows = visibleTeam.filter(mm => resinPickable(mm.id, di)); return (
+                        <SelectOverlay selected={rows.length > 0 && rows.every(mm => resinSel.has(mm.id, di))}
+                          onClick={() => resinSel.toggle(rows.map(mm => ({ id: mm.id, di })))} title="Select everyone on this day" />); })()}
                       <DayHead label={d} iso={thisWeekIsos[di]} today={thisWeekIsos[di] === todayIso} holiday={isHolidayColumn(thisWeekOffset, di)} />
                     </th>
                   ))}
@@ -817,15 +855,6 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
               <tbody>
                 {(() => {
                   const weekIso = isoMonday(thisWeekOffset);
-                  // Rows: everyone employed some day this week, scheduled or not
-                  const isScheduledThisWeek = (m: ResinMember) =>
-                    [0,1,2,3,4,5,6].some(di => getDH(m.id, thisWeekOffset, di) > 0 || (!!m.isManager && getMgrTotalDH(m, thisWeekOffset, di) > 0));
-                  // Scheduled people first, then the rest (stable sort keeps drag order within each group)
-                  const visibleTeam = productionRoster.filter(m => {
-                    if (isScheduledThisWeek(m)) return true;
-                    const employment = { weekIso, startDate: m.startDate, endDate: m.endDate };
-                    return thisWeekIsos.some((_, di) => isWithinEmployment(di, employment));
-                  }).sort((a, b) => Number(isScheduledThisWeek(b)) - Number(isScheduledThisWeek(a)));
                   if (visibleTeam.length === 0) return (
                     <tr><td colSpan={9} className="px-4 py-6 text-center text-xs text-slate-400">
                       No one is on the roster this week.
@@ -838,6 +867,9 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                   return (
                     <tr key={m.id} {...rowDrag.rowProps(m.id)} className={`border-b border-slate-100 ${rowDrag.isOver(m.id) ? 'bg-sky-50' : ''}`}>
                       <td {...rowDrag.handleProps(m.id)} className={`sticky left-0 z-10 cursor-grab ${rowDrag.isOver(m.id) ? 'bg-sky-50' : 'bg-white'} px-4 py-2 whitespace-nowrap`}>
+                        {resinSel.active && (() => { const cells = [0,1,2,3,4,5,6].map(di => ({ id: m.id, di })).filter(c => resinPickable(c.id, c.di)); return (
+                          <SelectOverlay selected={cells.length > 0 && cells.every(c => resinSel.has(c.id, c.di))}
+                            onClick={() => resinSel.toggle(cells)} title={`Select ${m.name}'s whole week`} />); })()}
                         <PersonCell name={m.name} grip>
                           <MemberTierBadges name={m.name} location="Utah" dept="Resin" fallbackRole={m.role} fallbackIsManager={m.isManager} />
                           {resinActuals.unmatched.has(m.name.trim()) && <div className="text-[9px] font-medium text-red-500">MT staff not linked</div>}
@@ -862,26 +894,28 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                         const hideBlock = working && !view.hours && !view.output && !((!!m.isManager && view.mgrTotal) || view.actuals || avail.length > 0 || isHoliday || hoursOff > 0);
                         return (
                           <td key={di} className="group relative p-1 align-top">
+                            {resinSel.active && <SelectOverlay selected={resinSel.has(m.id, di)} onClick={() => resinSel.toggle([{ id: m.id, di }])} title="Select this day" />}
                             {view.times && <ScheduledTimeBox entries={dayEntries} hours={m.isManager ? totalDayVal : dayVal} tone="resin" />}
                             {!hideBlock && (
                             <ShiftBlock tone={working ? 'resin' : isHoliday ? 'holiday' : unav ? 'unavailable' : avail.length ? 'preferred' : null} edited={isOverride && dayVal > 0}>
+                              {dayVal > 0 ? (
+                                <HoursGoalLines hours={dayVal} ratio={m.ratio} unit="units" showHours={view.hours} showOutput={view.output}
+                                  hoursText={`${round2(dayVal)}h`} onHours={raw => setDH(m.id, thisWeekOffset, di, raw)}
+                                  hoursTitle={isHoliday
+                                    ? (isOverride ? 'Paid holiday — worked hours, paid on top of guaranteed holiday pay' : 'Paid holiday — no production expected, staff still paid. Click to enter hours if someone worked.')
+                                    : isOverride ? 'Changed for this day only — click to edit' : 'Following the standard weekly schedule — click to override just this day'} />
+                              ) : (
                               <InlineNumber
-                                value={dayVal || ''}
+                                value=""
                                 step="0.5"
                                 title={isHoliday
-                                  ? (isOverride ? 'Paid holiday — worked hours, paid on top of guaranteed holiday pay' : 'Paid holiday — no production expected, staff still paid. Click to enter hours if someone worked.')
-                                  : isOverride ? 'Changed for this day only — click to edit' : 'Following the standard weekly schedule — click to override just this day'}
+                                  ? 'Paid holiday — no production expected, staff still paid. Click to enter hours if someone worked.'
+                                  : 'Click to enter hours for this day'}
                                 onChange={raw => setDH(m.id, thisWeekOffset, di, raw)}
                                 className="block w-full">
-                                {dayVal > 0 ? (
-                                  <>
-                                    {view.hours && <span className="block text-xs font-semibold">{round2(dayVal)}h</span>}
-                                    {view.output && <span className={`block ${view.hours ? 'opacity-70' : 'text-xs font-semibold'}`}>{round2(dayUnits)} units</span>}
-                                  </>
-                                ) : (
                                   <span className="block py-1">{isHoliday ? 'Holiday' : m.isManager && totalDayVal > 0 ? (view.hours ? 'No production' : '') : unav ? 'Unavailable' : 'Available'}</span>
-                                )}
                               </InlineNumber>
+                              )}
                               {m.isManager && view.mgrTotal && (
                                 <InlineNumber value={totalDayVal || ''} onChange={v => setMgrTotalDH(m.id, thisWeekOffset, di, v)} placeholder="total h"
                                   title="Total hours (production + managerial) — click to edit"
