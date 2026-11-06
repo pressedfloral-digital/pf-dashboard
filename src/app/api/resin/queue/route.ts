@@ -1,44 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { createClient } from '@supabase/supabase-js';
+import { EVENT_TO_INTAKE_OFFSET_DAYS, resinIntakeWeek } from '@/lib/resinCohortProjection';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
-
-// Orders physically arrive for resin work a few days after the customer's
-// event (wedding), not at Shopify checkout time — checkout can happen weeks
-// before or after the event. Midpoint of the 3–6 day range the resin team
-// gave us.
-const EVENT_TO_INTAKE_OFFSET_DAYS = 4;
-
-function addDays(iso: string, days: number): string {
-  const d = new Date(iso + 'T12:00:00');
-  d.setDate(d.getDate() + days);
-  return d.toISOString().split('T')[0];
-}
-
-// Intake week — the week the flowers actually arrived for resin work, not
-// the week the order was placed on Shopify. When the order carries an
-// event-date tag, intake = event date + offset (flowers show up a few days
-// after the wedding); otherwise fall back to order_date (photo-inspiration
-// orders and anything synced before this field existed have no event-date
-// tag). Shared by summary and list modes so "active" means the same thing
-// in both.
-function intakeDate(r: { event_date: string | null; order_date: string | null }): string | null {
-  return r.event_date ? addDays(r.event_date, EVENT_TO_INTAKE_OFFSET_DAYS) : r.order_date;
-}
-
-function intakeWeekMonday(r: { event_date: string | null; order_date: string | null }): string | null {
-  const iDate = intakeDate(r);
-  if (!iDate) return null;
-  const d = new Date(iDate + 'T12:00:00');
-  const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  return d.toISOString().split('T')[0];
-}
 
 export async function GET(req: NextRequest) {
   const { userId } = await auth();
@@ -91,7 +59,7 @@ export async function GET(req: NextRequest) {
     let excludedUnits = 0;
     for (const r of rows) {
       if (r.event_date && (!oldestEventDate || r.event_date < oldestEventDate)) oldestEventDate = r.event_date;
-      const weekKey = intakeWeekMonday(r);
+      const weekKey = resinIntakeWeek(r);
       if (weekKey) cohortMap.set(weekKey, (cohortMap.get(weekKey) ?? 0) + (r.quantity ?? 1));
       if (frontWeek && weekKey && weekKey < frontWeek) {
         excludedUnits += r.quantity ?? 1;
@@ -150,7 +118,7 @@ export async function GET(req: NextRequest) {
 
   const rows = frontWeek
     ? allRows.filter(r => {
-        const wk = intakeWeekMonday(r);
+        const wk = resinIntakeWeek(r);
         return !wk || wk >= frontWeek; // no determinable week = keep, same as summary mode
       })
     : allRows;
