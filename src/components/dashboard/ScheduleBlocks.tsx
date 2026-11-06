@@ -6,17 +6,18 @@
 
 import { useRef, useState, type ReactNode } from 'react';
 
-export type ShiftTone = 'design' | 'preservation' | 'fulfillment' | 'resin';
+export type ShiftTone = 'design' | 'preservation' | 'fulfillment' | 'resin' | 'bloomstock';
 
 export const SHIFT_TONE: Record<ShiftTone, string> = {
   design:       'bg-sky-100 border-sky-200 text-sky-900',
   preservation: 'bg-emerald-100 border-emerald-200 text-emerald-900',
   fulfillment:  'bg-amber-100 border-amber-200 text-amber-900',
   resin:        'bg-violet-100 border-violet-200 text-violet-900',
+  bloomstock:   'bg-rose-100 border-rose-200 text-rose-900',
 };
 
 export const SHIFT_LABEL: Record<ShiftTone, string> = {
-  design: 'Design', preservation: 'Preservation', fulfillment: 'Fulfillment', resin: 'Resin',
+  design: 'Design', preservation: 'Preservation', fulfillment: 'Fulfillment', resin: 'Resin', bloomstock: 'Bloom Stock',
 };
 
 const AVATAR_TONES = [

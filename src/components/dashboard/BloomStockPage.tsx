@@ -22,6 +22,9 @@ import { MemberTierBadges } from './MemberTierBadge';
 import { buildActiveMemberIds, InactiveToggle } from './memberActivity';
 import { DEPARTMENT_MANAGERS, STANDARD_WEEKLY_HOURS } from '@/lib/managers';
 import { HelpTip } from './HelpTip';
+import { PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock, useRowDrag } from './ScheduleBlocks';
+import { WeekHead, WeekCell } from './WeekCell';
+import { InputModeToggle, round2, type InputMode } from './InputModeToggle';
 import {
   BLOOM_STOCK_PRODUCTS, BLOOM_STOCK_LABEL, DEFAULT_BLOOM_STOCK_ROSTER, emptyByProduct, bloomStockDoneWeeks,
   BLOOM_STOCK_STATUSES, BLOOM_STOCK_TYPE_LABEL, QUEUE_STATUSES, forecastBloomStockWeek, type BloomStockWeekForecast,
@@ -313,9 +316,14 @@ function Stat({ label, value, sub, highlight }: { label: string; value: string; 
 
 // ─── This Week ─────────────────────────────────────────────────────────────────
 
+// Same shift-block grid as the other departments' This Week tabs: avatar +
+// name column, day pills, a coloured block per person-day that turns into
+// an input on click (blank = the Roster's standard week).
 function ThisWeekTab({ bs, roster, canEdit, holidays }: { bs: BS; roster: BloomStockMember[]; canEdit: boolean; holidays: string[] }) {
   const [offset, setOffset] = useState(0);
   const weekIso = isoMonday(offset);
+  const todayIso = addDaysIso(isoMonday(0), todayIdx());
+  const rowDrag = useBloomRowDrag(bs, roster);
   const teamDayItems = (di: number) => bs.roster.reduce((t, m) => t + bs.itemsOf(m, bs.dayHours(m, weekIso, di).hours), 0);
 
   function setDay(m: BloomStockMember, di: number, val: number | null) {
@@ -326,13 +334,14 @@ function ThisWeekTab({ bs, roster, canEdit, holidays }: { bs: BS; roster: BloomS
   }
   const teamDay = (di: number) => bs.roster.reduce((t, m) => t + bs.dayHours(m, weekIso, di).hours, 0);
   const teamWeek = WEEKDAY_LABELS.reduce((t, _, di) => t + teamDay(di), 0);
+  const teamWeekItems = WEEKDAY_LABELS.reduce((t, _, di) => t + teamDayItems(di), 0);
 
   return (
     <div className={card}>
       <div className={cardHead}>
         <div>
           <h3 className="text-sm font-semibold text-slate-700">Hours per person per day — {offset === 0 ? 'this week' : offset === 1 ? 'next week' : `week of ${fmtShort(weekIso)}`}</h3>
-          <p className="text-xs text-slate-400 mt-0.5">Blank days use the standard week from Roster. Items calculated from each person&apos;s ratio.</p>
+          <p className="text-xs text-slate-400 mt-0.5">Blank days use the standard week from Roster — click a day to change just that day. Items calculated from each person&apos;s ratio.</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => setOffset(Math.max(0, offset - 1))} disabled={offset === 0} className={navBtn}>← Prev</button>
@@ -342,62 +351,87 @@ function ThisWeekTab({ bs, roster, canEdit, holidays }: { bs: BS; roster: BloomS
       <div className="overflow-x-auto">
         <table className="min-w-full text-xs">
           <thead>
-            <tr className="bg-slate-50 border-b border-slate-100">
-              <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 min-w-[150px]">Team member</th>
+            <tr className="border-b border-slate-100">
+              <th className="sticky left-0 z-10 bg-white px-4 py-3 text-left text-[13px] font-medium text-slate-500 min-w-[190px]">Team member</th>
               {WEEKDAY_LABELS.map((l, di) => {
                 const date = addDaysIso(weekIso, di);
-                const hol = holidays.includes(date);
                 return (
-                  <th key={l} className={`px-2 py-2 text-center font-medium whitespace-nowrap ${hol ? 'bg-amber-50 text-amber-700' : 'text-slate-500'}`}>
-                    {l}<br /><span className="font-normal text-[10px]">{fmtShort(date)}</span>
-                    {hol && <div className="text-[9px] font-semibold text-amber-600">Holiday</div>}
+                  <th key={l} className="px-1.5 py-3 min-w-[104px]">
+                    <DayHead label={l} iso={date} today={date === todayIso} holiday={holidays.includes(date)} />
                   </th>
                 );
               })}
-              <th className="px-3 py-2 text-center font-medium text-slate-500">Week total</th>
+              <th className="px-3 py-3 text-center text-[13px] font-medium text-slate-500 whitespace-nowrap">Week total</th>
             </tr>
           </thead>
           <tbody>
             {roster.length === 0 && <tr><td colSpan={9} className="px-4 py-6 text-center text-slate-400">No one on the roster — add people with “Edit bloom stock roster” above.</td></tr>}
-            {roster.map((m, i) => {
+            {roster.map(m => {
               const wk = bs.weekHours(m, weekIso);
+              const over = rowDrag.isOver(m.id);
               return (
-                <tr key={m.id} className={`border-b border-slate-50 ${i % 2 ? 'bg-slate-50/40' : ''}`}>
-                  <td className={`sticky left-0 z-10 ${i % 2 ? 'bg-slate-50' : 'bg-white'} px-4 py-2 font-medium text-slate-700 whitespace-nowrap`}>{m.name || '—'}</td>
+                <tr key={m.id} {...rowDrag.rowProps(m.id)} className={`border-b border-slate-100 ${over ? 'bg-sky-50' : ''}`}>
+                  <td {...rowDrag.handleProps(m.id)} className={`sticky left-0 z-10 cursor-grab ${over ? 'bg-sky-50' : 'bg-white'} px-4 py-2 whitespace-nowrap`}>
+                    <PersonCell name={m.name || '—'} grip>
+                      <MemberTierBadges name={m.name} location="Utah" dept="Bloom Stock" fallbackRole={m.role} />
+                    </PersonCell>
+                  </td>
                   {WEEKDAY_LABELS.map((_, di) => {
                     const r = bs.dayHours(m, weekIso, di);
+                    const items = bs.itemsOf(m, r.hours);
+                    const hoursOff = hoursOffOn(di, { weekIso, hoursOff: m.hoursOff });
+                    if (r.isDayOff) {
+                      return <td key={di} className="p-1 align-top"><OffBlock sub={r.isHoliday ? 'Holiday' : 'Time off'} /></td>;
+                    }
+                    const working = r.hours > 0;
+                    const body = working ? (
+                      <>
+                        <span className="block text-xs font-semibold">{round2(r.hours)}h</span>
+                        {m.ratio ? <span className="block opacity-70">{round2(items)} items</span> : null}
+                      </>
+                    ) : (
+                      <span className="block py-1">{r.isHoliday ? 'Holiday' : 'Available'}</span>
+                    );
                     return (
-                      <td key={di} className="px-2 py-1.5 text-center">
-                        {canEdit ? (
-                          <input type="number" min="0" step="0.5" placeholder="0" value={r.hours || ''}
-                            onChange={e => setDay(m, di, e.target.value === '' ? null : Math.max(0, parseFloat(e.target.value) || 0))}
-                            className={`${numInput} ${r.isOverride ? 'border-indigo-300 bg-indigo-50/50' : ''}`} />
-                        ) : <span className="text-slate-700">{r.hours || '—'}</span>}
-                        {r.hours > 0 && m.ratio ? <div className="text-[10px] text-slate-400 mt-0.5">{r1(bs.itemsOf(m, r.hours))} items</div> : null}
-                        {r.isDayOff && <div className="text-[9px] font-semibold text-red-500 mt-0.5" title="Marked off on the Time Off calendar — scheduled hours are 0">day off</div>}
-                        {(hoursOffOn(di, { weekIso, hoursOff: m.hoursOff })) > 0 && <div className="text-[9px] font-semibold text-red-400 mt-0.5" title="Hours off on the Days off calendar">{hoursOffOn(di, { weekIso, hoursOff: m.hoursOff })}h off</div>}
+                      <td key={di} className="p-1 align-top">
+                        <ShiftBlock tone={working ? 'bloomstock' : r.isHoliday ? 'holiday' : null} edited={r.isOverride && working}>
+                          {canEdit ? (
+                            <InlineNumber value={r.hours || ''} step="0.5"
+                              title={r.isHoliday
+                                ? 'Paid holiday — no production expected. Click to enter hours if someone worked.'
+                                : r.isOverride ? 'Changed for this day only — click to edit' : 'Following the standard weekly schedule — click to override just this day'}
+                              onChange={v => setDay(m, di, Math.max(0, v))}
+                              className="block w-full">
+                              {body}
+                            </InlineNumber>
+                          ) : body}
+                          {hoursOff > 0 && <div className="text-[10px] font-semibold text-red-500" title="Hours off on the Days off calendar">{hoursOff}h off</div>}
+                        </ShiftBlock>
                       </td>
                     );
                   })}
                   <td className="px-3 py-2 text-center">
-                    <div className="font-semibold text-slate-700">{r1(wk)}h</div>
-                    {m.ratio && wk > 0 ? <div className="text-[10px] text-slate-400">{Math.round(bs.itemsOf(m, wk))} items</div> : null}
+                    <div className="font-medium text-indigo-700">{m.ratio && wk > 0 ? `${round2(bs.itemsOf(m, wk))} items` : '—'}</div>
+                    <div className="text-slate-400 text-[10px]">{round2(wk)}h</div>
                   </td>
                 </tr>
               );
             })}
             {roster.length > 0 && (
               <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
-                <td className="sticky left-0 bg-slate-50 px-4 py-2 text-slate-600">Planned total</td>
-                {WEEKDAY_LABELS.map((_, di) => (
-                  <td key={di} className="px-2 py-2 text-center text-indigo-700">
-                    {r1(teamDay(di)) || '—'}
-                    {teamDayItems(di) > 0 && <div className="text-[10px] font-normal text-slate-400">{r1(teamDayItems(di))} items</div>}
-                  </td>
-                ))}
+                <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Planned total</td>
+                {WEEKDAY_LABELS.map((_, di) => {
+                  const hol = holidays.includes(addDaysIso(weekIso, di));
+                  return (
+                    <td key={di} className={`px-2 py-2 text-center ${hol ? 'bg-amber-50/50' : ''}`}>
+                      <div className="text-indigo-700">{round2(teamDayItems(di))} items</div>
+                      <div className="text-[10px] font-normal text-slate-500">{round2(teamDay(di))}h</div>
+                    </td>
+                  );
+                })}
                 <td className="px-3 py-2 text-center text-indigo-700">
-                  {r1(teamWeek)}h
-                  {teamWeek > 0 && <div className="text-[10px] font-normal text-slate-400">{Math.round(WEEKDAY_LABELS.reduce((t, _, di) => t + teamDayItems(di), 0))} items</div>}
+                  {round2(teamWeekItems)} items
+                  <div className="text-[10px] font-normal text-slate-500">{round2(teamWeek)}h</div>
                 </td>
               </tr>
             )}
@@ -408,16 +442,30 @@ function ThisWeekTab({ bs, roster, canEdit, holidays }: { bs: BS; roster: BloomS
   );
 }
 
+// Drag a name to reorder the roster (both grids share the order). Hidden
+// (inactive) people keep their place after the visible ones.
+function useBloomRowDrag(bs: BS, roster: BloomStockMember[]) {
+  return useRowDrag(roster, ids => {
+    const byId = new Map(bs.roster.map(m => [m.id, m]));
+    const moved = ids.map(id => byId.get(id)).filter((m): m is BloomStockMember => !!m);
+    const rest = bs.roster.filter(m => !ids.includes(m.id));
+    bs.setRoster([...moved, ...rest]);
+  });
+}
+
 // ─── Weekly Schedule (52 weeks, 8 at a time) ───────────────────────────────────
 
 function WeeklyScheduleTab({ bs, roster }: { bs: BS; roster: BloomStockMember[] }) {
   const [offset, setOffset] = useState(0);
+  const [mode, setMode] = useState<InputMode>('hours');
+  const rowDrag = useBloomRowDrag(bs, roster);
   const windowWeeks = Array.from({ length: WINDOW }, (_, i) => offset + i).filter(w => w < WEEKS);
   return (
     <div className={card}>
       <div className={cardHead}>
-        <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.hoursPerMember">Hours per person per week</HelpTip></h2>
+        <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="sched.hoursPerMember">Hours per team member per week</HelpTip></h2>
         <div className="flex items-center gap-2">
+          <InputModeToggle mode={mode} onChange={setMode} unitLabel="Items" />
           <button onClick={() => setOffset(Math.max(0, offset - WINDOW))} disabled={offset === 0} className={navBtn}>← Prev</button>
           <span className="text-xs text-slate-400">{getWeekLabel(offset)} – {getWeekLabel(offset + WINDOW - 1)}</span>
           <button onClick={() => setOffset(Math.min(WEEKS - WINDOW, offset + WINDOW))} disabled={offset + WINDOW >= WEEKS} className={navBtn}>Next →</button>
@@ -427,39 +475,44 @@ function WeeklyScheduleTab({ bs, roster }: { bs: BS; roster: BloomStockMember[] 
         <table className="min-w-full text-xs">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-100">
-              <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 min-w-[140px]">Team member</th>
+              <th className="sticky left-0 bg-slate-50 px-4 py-2 text-left font-medium text-slate-500 whitespace-nowrap min-w-[160px]">Team member</th>
               {windowWeeks.map(w => (
-                <th key={w} className="px-3 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[90px]">
-                  {getWeekLabel(w)}
-                  {w === 0 && <span className="ml-1 text-[10px] bg-indigo-100 text-indigo-600 rounded px-1">now</span>}
+                <th key={w} className="px-1 py-2 text-center font-medium text-slate-500 whitespace-nowrap min-w-[110px]">
+                  <WeekHead label={getWeekLabel(w)} now={w === 0} />
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {roster.map((m, i) => (
-              <tr key={m.id} className={`border-b border-slate-50 ${i % 2 ? 'bg-slate-50/40' : ''}`}>
-                <td className={`sticky left-0 z-10 ${i % 2 ? 'bg-slate-50' : 'bg-white'} px-4 py-2 font-medium text-slate-700 whitespace-nowrap`}
-                  title="Set on the Roster (standard week) or This Week (one-off changes)">{m.name || '—'}</td>
-                {windowWeeks.map(w => {
-                  const h = bs.weekHours(m, isoMonday(w));
-                  return (
-                    <td key={w} className={`px-2 py-1.5 text-center ${w === 0 ? 'bg-indigo-50/30' : ''}`}>
-                      <div className="font-medium text-slate-700">{r1(h) || '—'}</div>
-                      {m.ratio && h > 0 ? <div className="text-slate-400 mt-0.5">{Math.round(bs.itemsOf(m, h))} items</div> : null}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
+            {roster.map((m, i) => {
+              const over = rowDrag.isOver(m.id);
+              return (
+                <tr key={m.id} {...rowDrag.rowProps(m.id)} className={`border-b border-slate-50 ${over ? 'bg-sky-50' : i % 2 ? 'bg-slate-50/40' : ''}`}>
+                  <td {...rowDrag.handleProps(m.id)} className={`sticky left-0 z-10 cursor-grab ${over ? 'bg-sky-50' : i % 2 ? 'bg-slate-50' : 'bg-white'} px-4 py-2 whitespace-nowrap`}>
+                    <PersonCell name={m.name || '—'} grip>
+                      <MemberTierBadges name={m.name} location="Utah" dept="Bloom Stock" fallbackRole={m.role} />
+                    </PersonCell>
+                  </td>
+                  {windowWeeks.map(w => {
+                    const h = bs.weekHours(m, isoMonday(w));
+                    return (
+                      <td key={w} className="p-1 align-top">
+                        <WeekCell tone="bloomstock" mode={mode} hours={h} output={bs.itemsOf(m, h)} outputUnit="items" />
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
             <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
-              <td className="sticky left-0 bg-slate-50 px-4 py-2 text-slate-600">Week total</td>
+              <td className="sticky left-0 bg-slate-50 px-4 py-2 text-xs text-slate-600">Week total</td>
               {windowWeeks.map(w => {
                 const h = bs.roster.reduce((t, m) => t + bs.weekHours(m, isoMonday(w)), 0);
+                const items = bs.roster.reduce((t, m) => t + bs.itemsOf(m, bs.weekHours(m, isoMonday(w))), 0);
                 return (
                   <td key={w} className={`px-2 py-2 text-center ${w === 0 ? 'bg-indigo-50/50' : ''}`}>
-                    <div className="text-indigo-700">{r1(h)}h</div>
-                    {h > 0 && <div className="text-[10px] font-normal text-slate-500">{Math.round(bs.roster.reduce((t, m) => t + bs.itemsOf(m, bs.weekHours(m, isoMonday(w))), 0))} items</div>}
+                    <div className="text-indigo-700">{Math.round(items)} items</div>
+                    <div className="text-[10px] font-normal text-slate-500">{r1(h)}h</div>
                   </td>
                 );
               })}
