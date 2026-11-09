@@ -11,7 +11,8 @@ A batch covers at most 200 distinct account UUIDs and seven inclusive UTC calend
 days. The backend counts order-product rows (not quantity) by each department's
 current owner and assignment timestamp, across all statuses. Deleted orders and
 order products are omitted. Product titles containing "bloom arrangement recreation"
-(case-insensitive) are excluded in the same query. This replaces the old proportional
+(case-insensitive) are excluded in the same query. Fulfillment's weekly Historicals
+sync adds them back from the per-person list; live This Week counts do not. This replaces the old proportional
 exclusion estimate, so affected multi-stage counts may correctly change.
 
 Duplicate accounts are summed. Unmatched names remain explicitly unmatched. A

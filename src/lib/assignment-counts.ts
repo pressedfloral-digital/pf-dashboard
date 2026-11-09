@@ -15,9 +15,11 @@ export type AssignmentDepartment = 'preservation' | 'design' | 'fulfillment';
 
 const ASSIGNMENT_DEPARTMENTS: AssignmentDepartment[] = ['preservation', 'design', 'fulfillment'];
 
-// Products that never count toward production order counts — and so never
-// toward Historicals, ratios or CPO — even though staff are assigned to them.
-// Matched on the product title, case-insensitively.
+// Products the PF API's batch counts leave out for every department, even
+// though staff are assigned to them. Matched on the product title,
+// case-insensitively, to mirror that filter. Preservation and Design leave them
+// out of Historicals, ratios and CPO too; Fulfillment's weekly actuals add them
+// back (see computeWeeklyActualCounts).
 const EXCLUDED_PRODUCT_TITLES = ['bloom arrangement recreation'];
 
 export function isExcludedFromCounts(productTitle: string | null | undefined): boolean {
@@ -214,6 +216,24 @@ export async function computeAssignmentCounts(start: string, end: string, reques
   };
 }
 
+/**
+ * The weekly totals written to Historicals: the batch counts, plus the excluded
+ * products each person fulfilled, which the batch can't include. Only people
+ * with a Fulfillment count that week are checked, to keep the list requests
+ * bounded, so someone who fulfilled nothing but these products stays at zero.
+ * Kept out of the live This Week counts, which refresh too often for this.
+ */
+export async function computeWeeklyActualCounts(start: string, end: string) {
+  const result = await computeAssignmentCounts(start, end);
+  const byName = new Map(result.rows.map(row => [row.staff, row]));
+  const names = result.rows.filter(row => row.counts.fulfillment > 0).map(row => row.staff);
+  const { targets } = resolveRequestedStaff(await fetchAssignableStaff(), names);
+  for (const target of targets) {
+    byName.get(target.requestedName)!.counts.fulfillment += await countFulfilledExcludedProducts(target.accounts, start, end);
+  }
+  return result;
+}
+
 export interface AssignedOrderProduct {
   uuid: string;
   orderName: string;
@@ -336,16 +356,26 @@ interface OrderProductHistoryEntry {
 }
 
 // The list can return a product because of a different stage the person holds
-// (see deptOrderProducts). Design is credited at Frame Completed, so that
-// history says which it was. A redone frame reaches Frame Completed more than
-// once and Design's date is usually the first, so any entry in range counts.
-// With no such entry, the list's answer stands.
-async function designCompletedInRange(uuid: string, start: string, end: string): Promise<boolean> {
+// (see deptOrderProducts). Design is credited at Frame Completed and Fulfillment
+// at Ready To Package, so that history says which it was. A redone frame reaches
+// Frame Completed more than once and Design's date is usually the first, so any
+// entry in range counts. With no such entry, the list's answer stands.
+async function stageCompletedInRange(uuid: string, stageStatus: RegExp, start: string, end: string): Promise<boolean> {
   const detail = await pfGet<{ history?: OrderProductHistoryEntry[] | null }>(`/OrderProducts/Details/${uuid}`);
   const days = (detail.history ?? [])
-    .filter(h => h.isStatusTransition && /frame.?completed/i.test(h.status ?? '') && h.effectiveAt)
+    .filter(h => h.isStatusTransition && stageStatus.test(h.status ?? '') && h.effectiveAt)
     .map(h => new Date(h.effectiveAt!).toISOString().slice(0, 10));
   return days.length === 0 || days.some(day => day >= start && day <= end);
+}
+
+async function countFulfilledExcludedProducts(accounts: AssignableStaff[], start: string, end: string): Promise<number> {
+  let count = 0;
+  for (const { row, otherStages } of deptOrderProducts(await listTargetOrderProducts(accounts, start, end), 'fulfillment')) {
+    if (!isExcludedFromCounts(row.productTitle)) continue;
+    if (otherStages.length > 0 && !await stageCompletedInRange(row.uuid, /ready.?to.?package/i, start, end)) continue;
+    count++;
+  }
+  return count;
 }
 
 /**
@@ -365,7 +395,7 @@ export async function fetchBloomStockDesignRows(
     for (const { row, otherStages } of deptOrderProducts(await listTargetOrderProducts(target.accounts, start, end), 'design')) {
       const productKey = bloomStockKeyFromTitle(row.productTitle);
       if (!productKey) continue;
-      if (otherStages.length > 0 && !await designCompletedInRange(row.uuid, start, end)) continue;
+      if (otherStages.length > 0 && !await stageCompletedInRange(row.uuid, /frame.?completed/i, start, end)) continue;
       rows.push({
         orderProductUuid: row.uuid,
         orderName: row.shopifyOrderName || `#${row.shopifyOrderNumber}`,

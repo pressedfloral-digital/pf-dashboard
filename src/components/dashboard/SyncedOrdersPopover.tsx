@@ -129,9 +129,13 @@ export function SyncedOrdersPopover({ name, department, start, end, syncedCount,
   // in range (see fetchAssignedOrderProducts). Comparing the count with the
   // single-stage products often settles exactly which multi-stage ones count.
   // Excluded products (e.g. Bloom Arrangement Recreation) are already taken
-  // out of the count, so set them aside before reconciling.
-  const notCountable = items?.filter(p => p.excluded) ?? [];
-  const countable = items?.filter(p => !p.excluded) ?? [];
+  // out of the count, so set them aside before reconciling — except Fulfillment's
+  // synced count, which adds them back (computeWeeklyActualCounts).
+  const listed = department === 'fulfillment' && countLabel === 'synced'
+    ? items?.map(p => ({ ...p, excluded: false }))
+    : items;
+  const notCountable = listed?.filter(p => p.excluded) ?? [];
+  const countable = listed?.filter(p => !p.excluded) ?? [];
   const single = countable.filter(p => p.otherStages.length === 0);
   const multi = countable.filter(p => p.otherStages.length > 0);
   const needed = syncedCount - single.length; // multi-stage products in the count
@@ -213,7 +217,7 @@ export function SyncedOrdersPopover({ name, department, start, end, syncedCount,
               {notCountable.length > 0 && (
                 <Section
                   title={`Excluded product — never counted (${notCountable.length})`}
-                  note="These products don't count toward order counts, ratios or CPO."
+                  note={`These products don't count toward ${department} order counts, ratios or CPO.`}
                   products={notCountable}
                 />
               )}
