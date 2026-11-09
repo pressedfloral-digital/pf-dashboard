@@ -20,11 +20,11 @@ import { ScheduleRulesEditor } from './ScheduleRulesEditor';
 import { TimeOffCalendar, toTimeOffMember } from './TimeOffCalendar';
 import { MemberTierBadges } from './MemberTierBadge';
 import { buildActiveMemberIds, InactiveToggle } from './memberActivity';
-import { DEPARTMENT_MANAGERS, STANDARD_WEEKLY_HOURS } from '@/lib/managers';
 import { HelpTip } from './HelpTip';
 import { PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock, useRowDrag } from './ScheduleBlocks';
 import { WeekHead, WeekCell } from './WeekCell';
 import { InputModeToggle, round2, type InputMode } from './InputModeToggle';
+import { BloomStockHistoricals } from './BloomStockHistoricals';
 import {
   BLOOM_STOCK_PRODUCTS, BLOOM_STOCK_LABEL, DEFAULT_BLOOM_STOCK_ROSTER, emptyByProduct, bloomStockDoneWeeks,
   BLOOM_STOCK_STATUSES, BLOOM_STOCK_TYPE_LABEL, QUEUE_STATUSES, forecastBloomStockWeek, type BloomStockWeekForecast,
@@ -35,7 +35,6 @@ import {
 
 const WEEKS = 52;
 const WINDOW = 8;            // weeks visible in the Weekly Schedule grid at once
-const HIST_WEEKS = 12;
 const RATIO_WEEKS = 8;     // Historicals weeks averaged into a roster ratio
 const DEFAULT_DEADLINE: BloomStockDeadline = { orderCutoff: '2026-12-01', dueBy: '2026-12-25' };
 const SHORT: Record<BloomStockProductKey, string> = { handprint: 'hand', pawprint: 'paw', footprint: 'foot', recreation: 'recreation' };
@@ -48,7 +47,6 @@ function fmtDate(iso: string): string {
 function fmtShort(iso: string): string {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
-function fmt$(n: number): string { return `$${n.toFixed(2)}`; }
 function addDaysIso(iso: string, days: number): string {
   const d = new Date(iso + 'T12:00:00');
   d.setDate(d.getDate() + days);
@@ -278,7 +276,7 @@ export default function BloomStockPage({ canEdit, canViewCPO }: { canEdit: boole
       {tab === 'thisweek'    && <ThisWeekTab bs={bs} roster={visibleRoster} canEdit={canEdit} holidays={holidays} />}
       {tab === 'schedule'    && <WeeklyScheduleTab bs={bs} roster={visibleRoster} />}
       {tab === 'queue'       && <QueueTab bs={bs} canEdit={canEdit} queue={queue} />}
-      {tab === 'historicals' && <HistoricalsTab bs={bs} canViewCPO={canViewCPO} />}
+      {tab === 'historicals' && <BloomStockHistoricals rosterNames={bs.roster.map(m => m.name).filter(Boolean)} canEdit={canEdit} canViewCPO={canViewCPO} />}
     </div>
   );
 }
@@ -1337,222 +1335,6 @@ function RosterPanel({ bs, canEdit, holidays, visibleRoster, inactiveCount, show
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ─── Historicals: hours + completed order numbers → CPO ───────────────────────
-
-interface Completion {
-  id: string; week_of: string; member_name: string; order_name: string; order_id: string;
-  line_item_id: string; product_key: BloomStockProductKey; units: number;
-}
-interface HoursRow { week_of: string; member_name: string; hours: number }
-
-function HistoricalsTab({ bs, canViewCPO }: { bs: BS; canViewCPO: boolean }) {
-  const weekOptions = useMemo(() => [isoMonday(0), ...Array.from({ length: HIST_WEEKS }, (_, i) => isoMonday(-(i + 1)))], []);
-  const [week, setWeek] = useState(isoMonday(-1));
-  const [hoursRows, setHoursRows] = useState<HoursRow[]>([]);
-  const [completions, setCompletions] = useState<Completion[]>([]);
-  // Recreation-department gross pay per person/week from the Rippling
-  // earnings upload (only sent to people who can see CPO).
-  const [payroll, setPayroll] = useState<{ week_of: string; member_name: string; cost: number }[]>([]);
-  const [hoursDraft, setHoursDraft] = useState<Record<string, string>>({});
-  const [orderDraft, setOrderDraft] = useState<Record<string, string>>({});
-  const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
-  const [busy, setBusy] = useState(false);
-  // Pay isn't on the roster. Salaried managers (Jennika) use the same hourly
-  // Design does — that week's salary from managers.ts ÷ 52 ÷ 40 — so the
-  // two departments cost her time identically; everyone else uses their
-  // Rippling-upload rate.
-  const [ripplingRates, setRipplingRates] = useState<Map<string, number>>(new Map());
-
-  const reload = useCallback(async () => {
-    const res = await fetch(`/api/bloom-stock/actuals?weeks=${HIST_WEEKS + 2}`);
-    const json = await res.json();
-    if (res.ok) { setHoursRows(json.hours ?? []); setCompletions(json.completions ?? []); setPayroll(json.payroll ?? []); }
-  }, []);
-  useEffect(() => { reload(); }, [reload]);
-  useEffect(() => {
-    fetch('/api/admin/employees-upload?location=Utah')
-      .then(r => r.json())
-      .then((d: { employees?: { full_name: string; pay_type: string; hourly_rate: number; annual_salary: number }[] }) => {
-        const m = new Map<string, number>();
-        for (const e of d.employees ?? []) {
-          m.set(e.full_name.trim().toLowerCase(), e.hourly_rate > 0 ? e.hourly_rate : e.annual_salary > 0 ? e.annual_salary / 2080 : 0);
-        }
-        setRipplingRates(m);
-      })
-      .catch(() => {});
-  }, []);
-
-  // Everyone on the roster, plus anyone with logged history in this window.
-  const memberNames = useMemo(() => {
-    const names = bs.roster.map(m => m.name).filter(Boolean);
-    for (const r of [...hoursRows, ...completions, ...payroll]) if (!names.includes(r.member_name)) names.push(r.member_name);
-    return names;
-  }, [bs.roster, hoursRows, completions, payroll]);
-  const rateOf = (name: string, weekOf: string) => {
-    const n = name.trim().toLowerCase();
-    const mgr = DEPARTMENT_MANAGERS.find(m => m.location === 'Utah' && m.name.trim().toLowerCase() === n
-      && (!m.from || weekOf >= m.from) && (!m.to || weekOf <= m.to));
-    if (mgr) return mgr.annualSalary / 52 / STANDARD_WEEKLY_HOURS;
-    return ripplingRates.get(n) ?? 0;
-  };
-  const hoursFor = (wk: string, name: string) => hoursRows.find(r => r.week_of === wk && r.member_name === name)?.hours ?? 0;
-
-  async function post(body: Record<string, unknown>) {
-    setBusy(true); setMsg(null);
-    try {
-      const res = await fetch('/api/bloom-stock/actuals', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
-      await reload();
-      return true;
-    } catch (e) {
-      setMsg({ text: e instanceof Error ? e.message : String(e), ok: false });
-      return false;
-    } finally { setBusy(false); }
-  }
-  async function saveHours(name: string) {
-    const raw = hoursDraft[name];
-    if (raw === undefined) return;
-    if (await post({ kind: 'hours', weekOf: week, memberName: name, hours: parseFloat(raw) || 0 })) {
-      setHoursDraft(d => { const n = { ...d }; delete n[name]; return n; });
-      setMsg({ text: `Saved ${name}'s hours`, ok: true });
-    }
-  }
-  async function addOrders(name: string) {
-    const nums = (orderDraft[name] ?? '').split(/[\s,]+/).filter(Boolean);
-    if (nums.length === 0) return;
-    let added = 0;
-    for (const n of nums) if (await post({ kind: 'order', weekOf: week, memberName: name, orderNumber: n })) added++;
-    if (added === nums.length) { setOrderDraft(d => ({ ...d, [name]: '' })); setMsg({ text: `Logged ${added} order${added === 1 ? '' : 's'}`, ok: true }); }
-  }
-  async function removeCompletion(id: string) {
-    setBusy(true);
-    await fetch(`/api/bloom-stock/actuals?id=${id}`, { method: 'DELETE' });
-    await reload();
-    setBusy(false);
-  }
-
-  function weekStats(wk: string) {
-    const comps = completions.filter(c => c.week_of === wk);
-    const units = emptyByProduct();
-    for (const c of comps) units[c.product_key] += c.units;
-    const totalUnits = BLOOM_STOCK_PRODUCTS.reduce((t, p) => t + units[p.key], 0);
-    const hours = memberNames.reduce((t, n) => t + hoursFor(wk, n), 0);
-    // Actual Recreation payroll for anyone paid under it that week; everyone
-    // else (e.g. Jennika, who clocks under Design) is hours × rate.
-    const cost = memberNames.reduce((t, n) => {
-      const paid = payroll.find(p => p.week_of === wk && p.member_name === n);
-      return t + (paid ? paid.cost : hoursFor(wk, n) * rateOf(n, wk));
-    }, 0);
-    return {
-      comps, units, totalUnits, hours, cost,
-      cpo: totalUnits > 0 && cost > 0 ? cost / totalUnits : null,
-      ratio: totalUnits > 0 && hours > 0 ? hours / totalUnits : null,
-    };
-  }
-  const cur = weekStats(week);
-
-  return (
-    <div className="space-y-6">
-      <div className={card}>
-        <div className={cardHead}>
-          <div>
-            <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="bloom.hours">Hours &amp; completed orders</HelpTip></h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              At the start of each week, log last week&apos;s order numbers per person. Hours fill in from Rippling&apos;s Recreation department when the hours report is uploaded — or type them here. Cost uses Recreation payroll from the earnings upload when there is one.
-            </p>
-          </div>
-          <select value={week} onChange={e => setWeek(e.target.value)} className="px-2 py-1 text-xs border border-slate-200 rounded bg-white text-slate-700">
-            {weekOptions.map(w => <option key={w} value={w}>Week of {fmtDate(w)}{w === isoMonday(0) ? ' (this week)' : ''}</option>)}
-          </select>
-        </div>
-        {msg && <div className={`px-5 py-2 text-xs ${msg.ok ? 'text-green-700 bg-green-50' : 'text-rose-700 bg-rose-50'}`}>{msg.text}</div>}
-        <div className="divide-y divide-slate-50">
-          {memberNames.map(name => {
-            const mine = cur.comps.filter(c => c.member_name === name);
-            const myUnits = mine.reduce((t, c) => t + c.units, 0);
-            const h = hoursDraft[name] ?? String(hoursFor(week, name) || '');
-            const myRatio = myUnits > 0 && hoursFor(week, name) > 0 ? hoursFor(week, name) / myUnits : null;
-            return (
-              <div key={name} className="px-5 py-3 space-y-2">
-                <div className="flex items-center gap-3 flex-wrap">
-                  <div className="font-medium text-sm text-slate-700 min-w-[140px]">{name}</div>
-                  <label className="flex items-center gap-1.5 text-xs text-slate-500">
-                    Hours
-                    <input type="number" min="0" step="0.25" value={h} placeholder="0" disabled={busy}
-                      onChange={e => setHoursDraft(d => ({ ...d, [name]: e.target.value }))}
-                      onBlur={() => saveHours(name)}
-                      onKeyDown={e => e.key === 'Enter' && saveHours(name)}
-                      className="w-20 px-2 py-1 text-center border border-slate-200 rounded text-xs" />
-                  </label>
-                  <span className="text-xs text-slate-500">{myUnits} items{myRatio != null ? ` · ${r1(myRatio)} hrs/item` : ''}</span>
-                  <div className="flex items-center gap-1.5 ml-auto">
-                    <input value={orderDraft[name] ?? ''} placeholder="Order #s, e.g. 41234 41301" disabled={busy}
-                      onChange={e => setOrderDraft(d => ({ ...d, [name]: e.target.value }))}
-                      onKeyDown={e => e.key === 'Enter' && addOrders(name)}
-                      className="w-56 px-2 py-1 border border-slate-200 rounded text-xs" />
-                    <button onClick={() => addOrders(name)} disabled={busy || !(orderDraft[name] ?? '').trim()}
-                      className="px-3 py-1 text-xs font-medium rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40">Log</button>
-                  </div>
-                </div>
-                {mine.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {mine.map(c => (
-                      <span key={c.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-[11px] text-slate-600">
-                        {c.order_name} · {BLOOM_STOCK_LABEL[c.product_key]}{c.units !== 1 ? ` ×${c.units}` : ''}
-                        <button onClick={() => removeCompletion(c.id)} disabled={busy} className="text-slate-400 hover:text-rose-600" title="Remove">×</button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4 border-t border-slate-100 bg-slate-50/50">
-          <Stat label="Hours" value={`${r1(cur.hours)}`} />
-          <Stat label="Items done" value={`${cur.totalUnits}`} sub={BLOOM_STOCK_PRODUCTS.filter(p => cur.units[p.key] > 0).map(p => `${cur.units[p.key]} ${SHORT[p.key]}`).join(' · ') || undefined} />
-          <Stat label="Actual ratio" value={cur.ratio != null ? `${r1(cur.ratio)} hrs/item` : '—'} sub={bs.ratio ? `planning at ${bs.ratio}` : undefined} />
-          {canViewCPO && <Stat label="CPO" value={cur.cpo != null ? fmt$(cur.cpo) : '—'} sub={cur.cost > 0 ? `${fmt$(cur.cost)} labor` : 'needs hours + pay rate'} highlight />}
-        </div>
-      </div>
-
-      <div className={card}>
-        <div className={cardHead}><h3 className="text-sm font-semibold text-slate-700">Last {HIST_WEEKS} weeks</h3></div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead className="bg-slate-50 text-slate-500">
-              <tr>
-                <th className="px-4 py-2 text-left font-medium">Week of</th>
-                <th className="px-3 py-2 text-center font-medium">Hours</th>
-                {BLOOM_STOCK_PRODUCTS.map(p => <th key={p.key} className="px-3 py-2 text-center font-medium">{p.label}</th>)}
-                <th className="px-3 py-2 text-center font-medium">Items</th>
-                <th className="px-3 py-2 text-center font-medium">Hrs / item</th>
-                {canViewCPO && <th className="px-3 py-2 text-center font-medium">CPO</th>}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {weekOptions.slice(1).map(wk => {
-                const st = weekStats(wk);
-                return (
-                  <tr key={wk} className={wk === week ? 'bg-indigo-50/40' : ''}>
-                    <td className="px-4 py-1.5 text-slate-700">{fmtDate(wk)}</td>
-                    <td className="px-3 py-1.5 text-center text-slate-600">{r1(st.hours) || '—'}</td>
-                    {BLOOM_STOCK_PRODUCTS.map(p => <td key={p.key} className="px-3 py-1.5 text-center text-slate-600">{st.units[p.key] || '—'}</td>)}
-                    <td className="px-3 py-1.5 text-center font-medium text-slate-700">{st.totalUnits || '—'}</td>
-                    <td className="px-3 py-1.5 text-center text-slate-600">{st.ratio != null ? r1(st.ratio) : '—'}</td>
-                    {canViewCPO && <td className="px-3 py-1.5 text-center font-medium text-slate-800">{st.cpo != null ? fmt$(st.cpo) : '—'}</td>}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
     </div>
   );
 }

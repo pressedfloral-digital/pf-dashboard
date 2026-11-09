@@ -7,8 +7,9 @@
  * department's assignment timestamp. Reassignments therefore move attribution
  * in both this dashboard and Support Assistant.
  */
-import { pfPost } from '@/lib/pf-api';
+import { pfGet, pfPost } from '@/lib/pf-api';
 import { assignmentDates, createSingleFlight, sumCounts, validateBatch, type BatchResponse } from '@/lib/assignment-batch';
+import { bloomStockKeyFromTitle, type BloomStockDesignRow } from '@/lib/bloomStock';
 
 export type AssignmentDepartment = 'preservation' | 'design' | 'fulfillment';
 
@@ -326,6 +327,54 @@ function deptOrderProducts(listed: ListedOrderProduct[], department: AssignmentD
     rows.push({ row, otherStages });
   }
   return rows;
+}
+
+interface OrderProductHistoryEntry {
+  status?: string | null;
+  effectiveAt?: string | null;
+  isStatusTransition?: boolean | null;
+}
+
+// The list can return a product because of a different stage the person holds
+// (see deptOrderProducts). Design is credited at Frame Completed, so that
+// history says which it was. A redone frame reaches Frame Completed more than
+// once and Design's date is usually the first, so any entry in range counts.
+// With no such entry, the list's answer stands.
+async function designCompletedInRange(uuid: string, start: string, end: string): Promise<boolean> {
+  const detail = await pfGet<{ history?: OrderProductHistoryEntry[] | null }>(`/OrderProducts/Details/${uuid}`);
+  const days = (detail.history ?? [])
+    .filter(h => h.isStatusTransition && /frame.?completed/i.test(h.status ?? '') && h.effectiveAt)
+    .map(h => new Date(h.effectiveAt!).toISOString().slice(0, 10));
+  return days.length === 0 || days.some(day => day >= start && day <= end);
+}
+
+/**
+ * Bloom Stock Products credited to each person in a date range — the same
+ * attribution and UTC calendar as Design's count (designer on the order
+ * product, by its design assignment date), narrowed to these products by
+ * title. The counts endpoint can't filter by product, hence the list.
+ */
+export async function fetchBloomStockDesignRows(
+  names: string[],
+  start: string,
+  end: string,
+): Promise<{ rows: BloomStockDesignRow[]; resolved: string[]; unmatched: string[] }> {
+  const { targets, unmatched } = resolveRequestedStaff(await fetchAssignableStaff(), names);
+  const rows: BloomStockDesignRow[] = [];
+  for (const target of targets) {
+    for (const { row, otherStages } of deptOrderProducts(await listTargetOrderProducts(target.accounts, start, end), 'design')) {
+      const productKey = bloomStockKeyFromTitle(row.productTitle);
+      if (!productKey) continue;
+      if (otherStages.length > 0 && !await designCompletedInRange(row.uuid, start, end)) continue;
+      rows.push({
+        orderProductUuid: row.uuid,
+        orderName: row.shopifyOrderName || `#${row.shopifyOrderNumber}`,
+        productKey,
+        member: target.requestedName,
+      });
+    }
+  }
+  return { rows, resolved: targets.map(t => t.requestedName), unmatched };
 }
 
 /**

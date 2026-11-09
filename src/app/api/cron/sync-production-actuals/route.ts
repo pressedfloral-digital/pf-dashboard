@@ -10,6 +10,7 @@ import {
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { adjustmentRowKey, netAdjustment, type OrderAdjustment } from '@/lib/orderAdjustments';
 import { hasBearerSecret } from '@/lib/bearerSecret';
+import { syncBloomStockWeek } from '@/lib/bloomStockSync';
 
 export const maxDuration = 300;
 
@@ -288,9 +289,26 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // ?bloomOnly=1 backfills Bloom Stock without re-syncing older Design,
+    // Preservation or Fulfillment weeks.
+    const bloomOnly = req.nextUrl.searchParams.get('bloomOnly') === '1';
     const weeks = [];
-    for (const monday of mondays) weeks.push(await syncWeek(monday, dryRun));
-    return NextResponse.json({ ok: true, dryRun, weeks });
+    if (!bloomOnly) for (const monday of mondays) weeks.push(await syncWeek(monday, dryRun));
+
+    // Separate from the sync above so a Bloom Stock failure can't lose the
+    // other departments' actuals. Oldest week first — see planBloomStockSync.
+    const bloomStock = [];
+    let bloomStockError: string | undefined;
+    try {
+      for (const weekOf of mondays.map(isoDate).sort()) bloomStock.push(await syncBloomStockWeek(weekOf, dryRun));
+    } catch (e) {
+      console.error('[sync-production-actuals] Bloom Stock sync failed:', e);
+      bloomStockError = String(e);
+    }
+    return NextResponse.json(
+      { ok: !bloomStockError || !bloomOnly, dryRun, weeks, bloomStock, bloomStockError },
+      { status: bloomStockError && bloomOnly ? 500 : 200 },
+    );
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }

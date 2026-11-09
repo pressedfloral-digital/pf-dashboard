@@ -45,6 +45,126 @@ export const productByShopifyId = new Map(BLOOM_STOCK_PRODUCTS.map(p => [p.produ
 export const emptyByProduct = (): Record<BloomStockProductKey, number> =>
   ({ handprint: 0, pawprint: 0, footprint: 0, recreation: 0 });
 
+// The PF API returns a product title, not the Shopify product id. PF titles
+// carry a prefix on some of these ("Custom Handprint Frame"), hence includes.
+export function bloomStockKeyFromTitle(title: string | null | undefined): BloomStockProductKey | undefined {
+  const t = title?.trim().toLowerCase() ?? '';
+  return BLOOM_STOCK_PRODUCTS.find(p => t.includes(p.label.toLowerCase()))?.key;
+}
+
+// ─── Actuals auto-sync ────────────────────────────────────────────────────────
+//
+// created_by on bloom_stock_completions rows the Monday sync wrote (see
+// bloomStockSync.ts). Those rows follow the PF app and are rewritten by each
+// sync; rows typed in Historicals or marked Finished on the board are never
+// touched.
+export const AUTO_SYNC_CREATED_BY = 'pf-design-sync';
+
+// One finished PF order product, credited to its designer. PF has one row per
+// unit, and Design's count counts these rows.
+export interface BloomStockDesignRow {
+  orderProductUuid: string;
+  orderName:        string;
+  productKey:       BloomStockProductKey;
+  member:           string;
+}
+export interface BloomStockShopifyOrder {
+  orderId:   string;
+  orderName: string;
+  lines:     { lineItemId: string; productKey: BloomStockProductKey; quantity: number }[];
+}
+export interface BloomStockExistingCompletion {
+  id:           string;
+  line_item_id: string;
+  week_of:      string;
+  member_name:  string;
+  units:        number;
+  created_by:   string;
+}
+export interface BloomStockSyncWrite {
+  week_of:      string;
+  member_name:  string;
+  order_name:   string;
+  order_id:     string;
+  line_item_id: string;
+  product_key:  BloomStockProductKey;
+  units:        number;
+}
+export interface BloomStockSyncPlan {
+  writes:          BloomStockSyncWrite[];
+  deleteIds:       string[];
+  alreadyLogged:   number;   // lines someone logged by hand or on the board
+  // PF rows with no live Shopify line to attach to (e.g. the item was edited
+  // off the order). Reported, never guessed at.
+  unmatched:       { orderName: string; productKey: BloomStockProductKey }[];
+}
+
+// Works out one week's writes. Completions are keyed by Shopify line item, so
+// PF rows are attached to their order's line items; a line credits the first
+// designer on it, with one unit per PF row.
+//   · A line logged by hand or on the board stays — it's already counted.
+//   · A line auto-credited to two weeks belongs to the earliest. Syncing oldest
+//     week first means a corrected date has already been cleared from the
+//     earlier week by the time the later one runs.
+//   · An auto row this week that PF no longer supports is removed — unless
+//     that person wasn't looked up this run (resolvedMembers), since missing
+//     data must never read as zero.
+export function planBloomStockSync(input: {
+  weekOf:          string;
+  rows:            BloomStockDesignRow[];
+  orders:          BloomStockShopifyOrder[];
+  existing:        BloomStockExistingCompletion[];
+  resolvedMembers: string[];
+}): BloomStockSyncPlan {
+  const { weekOf, rows, orders, existing } = input;
+  const orderByName = new Map(orders.map(o => [o.orderName, o]));
+  const existingByLine = new Map(existing.map(e => [e.line_item_id, e]));
+  const resolved = new Set(input.resolvedMembers.map(n => n.trim().toLowerCase()));
+
+  const groups = new Map<string, BloomStockDesignRow[]>();
+  for (const r of rows) {
+    const k = `${r.orderName}|${r.productKey}`;
+    groups.set(k, [...(groups.get(k) ?? []), r]);
+  }
+
+  const plan: BloomStockSyncPlan = { writes: [], deleteIds: [], alreadyLogged: 0, unmatched: [] };
+  const supported = new Set<string>();
+
+  for (const group of groups.values()) {
+    const remaining = [...group].sort((a, b) => a.orderProductUuid.localeCompare(b.orderProductUuid));
+    const { orderName, productKey } = remaining[0];
+    const order = orderByName.get(orderName);
+    const lines = (order?.lines ?? [])
+      .filter(l => l.productKey === productKey && l.quantity > 0)
+      .sort((a, b) => a.lineItemId.localeCompare(b.lineItemId));
+
+    for (const line of lines) {
+      if (remaining.length === 0) break;
+      const taken = remaining.splice(0, line.quantity);
+      supported.add(line.lineItemId);
+
+      const prior = existingByLine.get(line.lineItemId);
+      if (prior && prior.created_by !== AUTO_SYNC_CREATED_BY) { plan.alreadyLogged++; continue; }
+      if (prior && prior.week_of < weekOf) continue;
+      if (prior && prior.week_of === weekOf && prior.member_name === taken[0].member && Number(prior.units) === taken.length) continue;
+
+      plan.writes.push({
+        week_of: weekOf, member_name: taken[0].member, order_name: orderName, order_id: order!.orderId,
+        line_item_id: line.lineItemId, product_key: productKey, units: taken.length,
+      });
+    }
+    for (const r of remaining) plan.unmatched.push({ orderName: r.orderName, productKey: r.productKey });
+  }
+
+  for (const e of existing) {
+    if (e.created_by === AUTO_SYNC_CREATED_BY && e.week_of === weekOf
+      && !supported.has(e.line_item_id) && resolved.has(e.member_name.trim().toLowerCase())) {
+      plan.deleteIds.push(e.id);
+    }
+  }
+  return plan;
+}
+
 // Workflow status, mirroring the sections of the team's old tracking sheet.
 // Only new / ready / influencer count toward the work queue — waiting (on
 // the customer's own blooms or prints), hold and finished don't.
