@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
 import { shopifyGraphql } from '@/lib/shopifyGraphql';
-import { productByShopifyId } from '@/lib/bloomStock';
+import { AUTO_SYNC_CREATED_BY, productByShopifyId } from '@/lib/bloomStock';
 import { canonicalPayrollName } from '@/lib/payrollNames';
 
 // Bloom-stock Historicals: weekly hours per person plus the Shopify order
 // numbers they finished, which together give bloom-stock CPO. Utah only.
+// Most completions arrive from the Monday sync (bloomStockSync.ts); the POST
+// below is for anything the PF app didn't capture.
 //
 // GET  ?weeks=12                                   → { hours, completions, payroll? }
 //      payroll = Recreation-department gross pay per person/week from the
@@ -33,7 +35,7 @@ export async function GET(req: NextRequest) {
       .select('week_of, member_name, hours')
       .eq('location', LOCATION).gte('week_of', sinceIso),
     supabase.from('bloom_stock_completions')
-      .select('id, week_of, member_name, order_name, order_id, line_item_id, product_key, units, created_at')
+      .select('id, week_of, member_name, order_name, order_id, line_item_id, product_key, units, created_at, created_by')
       .eq('location', LOCATION).gte('week_of', sinceIso)
       .order('created_at', { ascending: true }),
   ]);
@@ -62,7 +64,7 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     hours:       (hoursRes.data ?? []).map(r => ({ ...r, hours: Number(r.hours) })),
-    completions: (compRes.data ?? []).map(r => ({ ...r, units: Number(r.units) })),
+    completions: (compRes.data ?? []).map(({ created_by, ...r }) => ({ ...r, units: Number(r.units), auto: created_by === AUTO_SYNC_CREATED_BY })),
     payroll,
   });
 }

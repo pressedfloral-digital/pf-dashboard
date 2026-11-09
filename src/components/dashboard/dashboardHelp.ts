@@ -292,7 +292,7 @@ export const DASHBOARD_HELP = {
   'bloom.whatIf':            { what: 'Add extra weekly orders (e.g. a launch) to see the effect. Toggle off to compare.', source: 'Your inputs.' },
   'bloom.deadline':          { what: 'Whether everything ordered before a cutoff can be finished by a due date.', source: 'Open orders + scheduled hours ÷ ratios.' },
   'bloom.queue':             { what: 'Open orders then forecast weeks, with turnaround from order placed to finished.', source: 'Shopify orders; forecast = same week last year × growth.' },
-  'bloom.hours':             { what: 'Hours and completed orders per person per week.', source: 'Order numbers you log + hours from Rippling\'s Recreation department.' },
+  'bloom.hours':             { what: 'Hours and completed orders per person per week.', source: 'PF app designer assignments, synced Mondays (plus any order numbers you log) + hours from Rippling\'s Recreation department.' },
 } satisfies Record<string, HelpEntry>;
 
 export type HelpKey = keyof typeof DASHBOARD_HELP;
