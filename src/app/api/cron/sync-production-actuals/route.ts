@@ -3,7 +3,7 @@ import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
 import { weekMonday } from '@/lib/pf-api';
 import {
-  computeAssignmentCounts,
+  computeWeeklyActualCounts,
   normalizeAssignmentStaffName,
   type AssignmentDepartment,
 } from '@/lib/assignment-counts';
@@ -64,7 +64,7 @@ async function syncWeek(monday: Date, dryRun: boolean) {
   weekEndDate.setDate(weekEndDate.getDate() + 6);
   const weekEnd = isoDate(weekEndDate);
 
-  const computed = await computeAssignmentCounts(weekStart, weekEnd);
+  const computed = await computeWeeklyActualCounts(weekStart, weekEnd);
 
   const [staffResult, rosterResult, payrollResult, employeeResult] = await Promise.all([
     supabase.from('staff_locations').select('name, location'),

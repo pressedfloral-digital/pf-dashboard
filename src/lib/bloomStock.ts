@@ -8,8 +8,9 @@ import type { ScheduleRule } from '@/lib/scheduleResolution';
 // role, under the separate Bloom Stock Products department (see
 // BloomStockPage.tsx).
 //
-// Note: Bloom Arrangement Recreation stays excluded from the main production
-// counts (see assignment-counts.ts) — this queue is its own separate view.
+// Note: Bloom Arrangement Recreation stays excluded from Preservation and Design
+// production counts, but Fulfillment's weekly actuals count it (see assignment-counts.ts) — this
+// queue is its own separate view.
 
 export type BloomStockProductKey = 'handprint' | 'pawprint' | 'footprint' | 'recreation';
 
