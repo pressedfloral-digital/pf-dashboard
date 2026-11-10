@@ -5828,7 +5828,7 @@ export function SchedulePage({
       {/* ── PRESERVATION dept ───────────────────────────────────────────────── */}
       {dept === 'preservation' && (
         <>
-        <DeptKpiBars dept="preservation" location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} plain />
+        <DeptKpiBars dept="preservation" location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} />
         <PreservationSection
           location={location}
           unavailability={settings.unavailability ?? []}
