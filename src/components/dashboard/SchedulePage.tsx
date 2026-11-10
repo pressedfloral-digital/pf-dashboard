@@ -1,6 +1,7 @@
 'use client';
 import ResinPage, { DEFAULT_RESIN_ROSTER, type ResinMember } from './ResinPage';
 import BloomStockPage from './BloomStockPage';
+import { DEFAULT_BLOOM_STOCK_ROSTER, type BloomStockMember } from '@/lib/bloomStock';
 import { RipplingUpload } from './RipplingUpload';
 import { EmployeeAutocomplete } from './EmployeeAutocomplete';
 import type { RipplingEmployee } from './EmployeeAutocomplete';
@@ -4062,7 +4063,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
 interface StaffMember {
   id:       string;
   name:     string;
-  homeDept: 'design' | 'preservation' | 'fulfillment' | 'resin';
+  homeDept: 'design' | 'preservation' | 'fulfillment' | 'resin' | 'bloomstock';
   onCall:   boolean;
 }
 
@@ -4125,7 +4126,7 @@ function getWeekdays(weekOffset: number): { iso: string; label: string; dateStr:
 // ─── MasterScheduleSection ────────────────────────────────────────────────────
 
 function MasterScheduleSection({ location, masterAvailability, onAvailabilityChange,
-  designHours, designSchedule, presHours, ffHours, resinHours, designRoster, presRoster, ffRoster, designDailyHours, ffDailyHours, presDailyHours, resinRoster, resinDailyHours, paidHolidays, unavailability, onUnavailabilityChange }: {
+  designHours, designSchedule, presHours, ffHours, resinHours, designRoster, presRoster, ffRoster, designDailyHours, ffDailyHours, presDailyHours, resinRoster, resinDailyHours, bloomRoster, bloomDailyHours, paidHolidays, unavailability, onUnavailabilityChange }: {
   location:             'Utah' | 'Georgia';
   masterAvailability:   Record<string, { defaultHours: number; overrides: Record<string, number> }>;
   onAvailabilityChange: (a: Record<string, { defaultHours: number; overrides: Record<string, number> }>) => void;
@@ -4142,6 +4143,8 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
   presDailyHours:       DailyHoursMap;
   resinRoster:          ResinMember[];
   resinDailyHours:      DailyHoursMap;
+  bloomRoster:          BloomStockMember[];
+  bloomDailyHours:      DailyHoursMap;
   paidHolidays:         string[];
   unavailability:       UnavailabilityEntry[];
   onUnavailabilityChange: (next: UnavailabilityEntry[]) => void;
@@ -4149,7 +4152,21 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
   const [showAvail] = useShowAvailability();
   const view = useGridView();
   const [weekOffset, setWeekOffset] = useState(0);
-  const staff = location === 'Utah' ? UTAH_STAFF : GEORGIA_STAFF;
+  const baseStaff = location === 'Utah' ? UTAH_STAFF : GEORGIA_STAFF;
+  // Bloom Stock (Utah-only) keeps its own roster with its own ids (bs-1…), so
+  // match people to the master list by name; anyone not already on it gets a
+  // row under a Bloom Stock group.
+  const normName = (n: string | undefined) => (n ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const bloomMembers = location === 'Utah' ? bloomRoster : [];
+  const staff: StaffMember[] = [
+    ...baseStaff,
+    ...bloomMembers
+      .filter(m => m.name?.trim() && !baseStaff.some(p => normName(p.name) === normName(m.name)))
+      .map(m => ({ id: m.id, name: m.name, homeDept: 'bloomstock' as const, onCall: false })),
+  ];
+  function bloomMemberFor(person: StaffMember): BloomStockMember | undefined {
+    return bloomMembers.find(m => m.id === person.id) ?? bloomMembers.find(m => normName(m.name) === normName(person.name));
+  }
   const days   = getWeekdays(weekOffset);
 
   // Week index for design/ff (weekly schedules)
@@ -4158,7 +4175,7 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
   // ── Weekly totals per person ──────────────────────────────────────────────
   // designSchedule is already merged (persisted + defaults) — use it directly
   function getWeeklyScheduled(person: StaffMember): {
-    design: number; preservation: number; fulfillment: number; resin: number; total: number;
+    design: number; preservation: number; fulfillment: number; resin: number; bloomstock: number; total: number;
   } {
     // Design: read from the already-merged schedule array
     const dHrs = designSchedule[weekIdx]?.[person.id] ?? 0;
@@ -4187,7 +4204,13 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
       standardWeeklyHours: rMember?.standardWeeklyHours,
       employment: { weekIso, startDate: rMember?.startDate, endDate: rMember?.endDate, rules: rMember?.scheduleRules, daysOff: rMember?.daysOff, hoursOff: rMember?.hoursOff }, holidays: paidHolidays,
     });
-    return { design: dHrs, preservation: pHrs, fulfillment: fHrs, resin: rHrs, total: dHrs + pHrs + fHrs + rHrs };
+    const bMember = bloomMemberFor(person);
+    const bHrs = bMember ? resolveWeekHours({
+      dailyMap: bloomDailyHours, weekKey: `${weekIso}-${bMember.id}`,
+      standardWeeklyHours: bMember.standardWeeklyHours,
+      employment: { weekIso, startDate: bMember.startDate, endDate: bMember.endDate, rules: bMember.scheduleRules, daysOff: bMember.daysOff, hoursOff: bMember.hoursOff }, holidays: paidHolidays,
+    }) : 0;
+    return { design: dHrs, preservation: pHrs, fulfillment: fHrs, resin: rHrs, bloomstock: bHrs, total: dHrs + pHrs + fHrs + rHrs + bHrs };
   }
 
   // Weekly available = defaultHours × 5, overridable per week
@@ -4237,6 +4260,8 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
       { tone: 'fulfillment',  r: resolveFor(ffDailyHours, ffRoster[person.id], person.id, di) },
       { tone: 'resin',        r: resolveFor(resinDailyHours, resinRoster.find(m => m.id === person.id), person.id, di) },
     ];
+    const bMember = bloomMemberFor(person);
+    if (bMember) parts.push({ tone: 'bloomstock', r: resolveFor(bloomDailyHours, bMember, bMember.id, di) });
     const shifts = parts.filter(p => p.r.hours > 0).map(p => ({ tone: p.tone, hours: p.r.hours }));
     return {
       shifts,
@@ -4252,7 +4277,7 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
     const home = person.homeDept === 'design' ? designRoster : person.homeDept === 'preservation' ? presRoster : person.homeDept === 'fulfillment' ? ffRoster : null;
     if ((home?.[person.id] as { _removed?: boolean } | undefined)?._removed) return false;
     if (days.some((_, di) => getDaySchedule(person, di).total > 0)) return true;
-    const homeR = (home?.[person.id] as Parameters<typeof standardHoursOn>[0]) ?? resinRoster.find(r => r.id === person.id);
+    const homeR = (home?.[person.id] as Parameters<typeof standardHoursOn>[0]) ?? resinRoster.find(r => r.id === person.id) ?? (person.homeDept === 'bloomstock' ? bloomMemberFor(person) : undefined);
     const employment = { weekIso, startDate: homeR?.startDate, endDate: homeR?.endDate };
     return days.some((_, di) => isWithinEmployment(di, employment));
   }
@@ -4284,7 +4309,7 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
 
       {/* Legend */}
       <div className="flex gap-2 flex-wrap">
-        {(['design','preservation','fulfillment','resin'] as const).map(d => (
+        {(['design','preservation','fulfillment','resin', ...(bloomMembers.length ? ['bloomstock'] as const : [])] as const).map(d => (
           <span key={d} className={`text-xs rounded-md border px-2 py-0.5 ${SHIFT_TONE[d]}`}>{SHIFT_LABEL[d]}</span>
         ))}
         <span className="text-xs rounded-md border border-dashed border-slate-300 text-slate-500 px-2 py-0.5">Available</span>
@@ -4316,7 +4341,7 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
               </tr>
             </thead>
             <tbody>
-              {(['design','preservation','fulfillment','resin'] as const).map(deptKey => {
+              {(['design','preservation','fulfillment','resin','bloomstock'] as const).map(deptKey => {
                 const isScheduled = (p: StaffMember) => days.some((_, di) => getDaySchedule(p, di).total > 0);
                 const deptMembers = staff.filter(s => s.homeDept === deptKey).filter(personVisible)
                   .sort((a, b) => Number(isScheduled(b)) - Number(isScheduled(a)));
@@ -4354,7 +4379,7 @@ function MasterScheduleSection({ location, masterAvailability, onAvailabilityCha
                             const { shifts, total, dayOff, holiday } = getDaySchedule(person, di);
                             const dayAvail = isPres ? getDailyAvail(person, d.iso) : (di < 5 ? defaultH : 0);
                             const dayOver  = isPres && total > dayAvail && total > 0;
-                            const homeRoster = person.homeDept === 'design' ? designRoster[person.id] : person.homeDept === 'preservation' ? presRoster[person.id] : person.homeDept === 'fulfillment' ? ffRoster[person.id] : resinRoster.find(r => r.id === person.id);
+                            const homeRoster = person.homeDept === 'design' ? designRoster[person.id] : person.homeDept === 'preservation' ? presRoster[person.id] : person.homeDept === 'fulfillment' ? ffRoster[person.id] : person.homeDept === 'bloomstock' ? bloomMemberFor(person) : resinRoster.find(r => r.id === person.id);
                             const dayEntries = withDefaultUnavailable(withStandardPreferred(entriesOn(unavailability, person.id, d.iso), person.id, person.name, d.iso, standardHoursOn(homeRoster, weekIso, di)), person.id, person.name, d.iso);
                             const avail    = showAvail ? dayEntries : [];
                             const unav     = avail.some(e => e.kind === 'unavailable');
@@ -7016,6 +7041,8 @@ export function SchedulePage({
           presDailyHours={settings.presDailyHours}
           resinRoster={Array.isArray(settings.resinRoster) ? settings.resinRoster as ResinMember[] : DEFAULT_RESIN_ROSTER}
           resinDailyHours={settings.resinDailyHours}
+          bloomRoster={Array.isArray(settings.bloomStockRoster) ? settings.bloomStockRoster as BloomStockMember[] : DEFAULT_BLOOM_STOCK_ROSTER}
+          bloomDailyHours={settings.bloomStockDailyHours ?? {}}
         />
         </>
       )}
