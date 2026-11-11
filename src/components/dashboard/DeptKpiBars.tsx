@@ -45,8 +45,9 @@ function Tick({ pct, label, color }: { pct: number; label: string; color: string
   );
 }
 
-function MetricPaceBar({ label, actual, goal, expected, fmt, plain }: {
+function MetricPaceBar({ label, actual, goal, expected, fmt, plain, note }: {
   label:    string;
+  note?:    string;
   plain:    boolean;
   actual:   number | null;
   goal:     number | null;
@@ -78,8 +79,19 @@ function MetricPaceBar({ label, actual, goal, expected, fmt, plain }: {
         <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-green-700 mr-1 align-middle" />Goal {fmt(goal)}</span>
         <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-600 mr-1 align-middle" />Expected {fmt(expected)}</span>
       </div>
+      {note && <p className="mt-0.5 text-[10px] text-slate-400 italic">{note}</p>}
     </div>
   );
+}
+
+// Month to date counts finished weeks only (the same weeks All KPIs' weekly
+// rows show) — the week in progress has no production or hourly payroll until
+// it's synced the Monday after. Says which weeks are in, under the CPO.
+function fullWeeksNote(periodStart: string, periodEnd: string): string {
+  const mondays = getWeekMondays(periodStart, periodEnd);
+  if (mondays.length === 0) return "No full weeks yet this month — this week's numbers land Monday";
+  const last = new Date(mondays[mondays.length - 1] + 'T12:00:00');
+  return `Full weeks through W/C ${last.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — this week's numbers land Monday`;
 }
 
 // Share of the month's working days (Mon–Fri of every week whose Monday
@@ -310,7 +322,8 @@ export function DeptKpiBars({ dept, location, kpiState, showCPO, plain = false }
           fmt={n => fmtRatio(n)} plain={plain} />
         {showCPO && (
           <MetricPaceBar label="CPO" actual={actual?.cpo ?? null} goal={goal?.cpo ?? null} expected={expected?.cpo ?? null}
-            fmt={n => fmtCPO(n)} plain={plain} />
+            fmt={n => fmtCPO(n)} plain={plain}
+            note={mtdWindow ? fullWeeksNote(mtdWindow.periodStart, mtdWindow.periodEnd) : undefined} />
         )}
         {dept === 'preservation'
           // Keyed so switching location starts clean instead of showing the other site's numbers
