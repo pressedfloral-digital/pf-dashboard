@@ -1114,21 +1114,28 @@ export async function GET(req: NextRequest) {
 
     const results: WindowResult[] = [];
 
+    // MTD/QTD/YTD count finished weeks only (Mon–Sun, through last Sunday),
+    // the same weeks the weekly series shows. The week in progress has no
+    // production yet (actuals sync Monday for the week before) and no hourly
+    // payroll, but salaried managers would still be charged for it — which
+    // made a department's MTD CPO read far above its finished weeks.
+    const lastFullWeekEnd = getSundayOf(isoDate(new Date(new Date(getMondayOf(today) + 'T12:00:00').getTime() - 7 * 24 * 60 * 60 * 1000)));
+
     // ── MTD ───────────────────────────────────────────────────────────────────
     if (requested.includes('mtd')) {
       const mtdStart = `${businessMonthKey}-01`;
-      results.push(buildWindowResult(`${monthLabel(mtdStart.slice(0, 7))} MTD`, mtdStart, today, laborRows, confirmedActualRows, managerNames));
+      results.push(buildWindowResult(`${monthLabel(mtdStart.slice(0, 7))} MTD`, mtdStart, lastFullWeekEnd, laborRows, confirmedActualRows, managerNames));
     }
 
     // ── QTD ───────────────────────────────────────────────────────────────────
     if (requested.includes('qtd')) {
       const qtdStart = isoDate(getQuarterStart(now));
-      results.push(buildWindowResult(`${getQuarterLabel(now)} QTD`, qtdStart, today, laborRows, confirmedActualRows, managerNames));
+      results.push(buildWindowResult(`${getQuarterLabel(now)} QTD`, qtdStart, lastFullWeekEnd, laborRows, confirmedActualRows, managerNames));
     }
 
     // ── YTD ───────────────────────────────────────────────────────────────────
     if (requested.includes('ytd')) {
-      results.push(buildWindowResult(`${now.getFullYear()} YTD`, `${now.getFullYear()}-01-01`, today, laborRows, confirmedActualRows, managerNames));
+      results.push(buildWindowResult(`${now.getFullYear()} YTD`, `${now.getFullYear()}-01-01`, lastFullWeekEnd, laborRows, confirmedActualRows, managerNames));
     }
 
     // ── Schedule projection context — needed by the weekly/monthly/quarterly
