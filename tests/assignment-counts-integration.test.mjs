@@ -21,6 +21,8 @@ test('weekly roster makes one batch, sums duplicate accounts, shares overlapping
       { uuid: 'a', firstName: 'Chloe', lastName: 'Leonard' },
       { uuid: 'b', firstName: 'Chloe', lastName: 'Jensen' },
     ] });
+    // No resin pieces, so nothing to subtract and no list fan-out.
+    if (path === '/OrderProducts/Search') return Response.json({ items: [], totalPages: 1 });
     assert.equal(path, '/OrderProducts/ForUser/Counts/Batch', 'must never fall back to count/list fan-out');
     const body = JSON.parse(String(options?.body));
     assert.deepEqual(body.userUuids, ['a','b']);
@@ -61,6 +63,7 @@ test('weekly actuals add fulfilled recreations to Fulfillment only', async () =>
       { uuid: 'b', firstName: 'Chloe', lastName: 'Jensen' },
     ] });
     if (path.startsWith('/OrderProducts/Details/')) return Response.json({ history: history[path.split('/').pop()] });
+    if (path === '/OrderProducts/Search') return Response.json({ items: [], totalPages: 1 });
     const body = JSON.parse(String(options?.body));
     if (path.endsWith('/Batch')) return Response.json({ refreshedAt: '2026-11-09T20:00:00Z', rows: body.userUuids.flatMap(userUuid =>
       Array.from({ length: 7 }, (_, i) => ({ userUuid, date: `2026-11-0${2 + i}`, design: 1, preservation: 1, fulfillment: 1 }))) });

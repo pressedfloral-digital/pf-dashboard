@@ -22,7 +22,7 @@ const SEARCH_PAGE_BATCH = 5;
 type SearchPage = { totalPages: number; items: { orderUuid: string; shopifyOrderNumber: string | number }[] };
 
 const search = (body: Record<string, unknown>) =>
-  pfPost<SearchPage>('/OrderProducts/Search', { searchTerm: '', pageSize: SEARCH_PAGE_SIZE, ...body });
+  pfPost<SearchPage>('/OrderProducts/Search', { searchTerm: '', pageSize: SEARCH_PAGE_SIZE, workflowFamily: 'frames', ...body });
 
 /** Every order with a line in one of `statuses`, paged through 50 at a time. */
 async function searchAllByStatus(statuses: string[]): Promise<Record<string, string>> {

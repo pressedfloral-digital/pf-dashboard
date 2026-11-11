@@ -8,12 +8,24 @@
  * in both this dashboard and Support Assistant.
  */
 import { pfGet, pfPost } from '@/lib/pf-api';
-import { assignmentDates, createSingleFlight, sumCounts, validateBatch, type BatchResponse } from '@/lib/assignment-batch';
+import { assignmentDates, createSingleFlight, sumCounts, validateBatch, zeroCounts, type BatchResponse, type Counts } from '@/lib/assignment-batch';
 import { bloomStockKeyFromTitle, type BloomStockDesignRow } from '@/lib/bloomStock';
 
 export type AssignmentDepartment = 'preservation' | 'design' | 'fulfillment';
 
 const ASSIGNMENT_DEPARTMENTS: AssignmentDepartment[] = ['preservation', 'design', 'fulfillment'];
+
+// Resin jewelry has its own workflow in the production app (workflow profiles
+// resinNoBlooms / resinSendMyOwn / resinRecreation) and counts only in Resin —
+// never Preservation, Design or Fulfillment. The API's counts include it, so
+// the dashboard takes it back out (see resinCreditsByAccountDay), and the
+// per-person lists drop its rows.
+const RESIN_PROFILE_ORDINALS = new Set(['2', '3', '4']);
+
+export function isResinWorkflow(workflowProfile: string | number | null | undefined): boolean {
+  const value = String(workflowProfile ?? '').trim();
+  return value.toLowerCase().startsWith('resin') || RESIN_PROFILE_ORDINALS.has(value);
+}
 
 // Products the PF API's batch counts leave out for every department, even
 // though staff are assigned to them. Matched on the product title,
@@ -179,6 +191,7 @@ export interface DailyAssignmentCountRow {
 }
 
 const batchFlight = createSingleFlight<BatchResponse>(5 * 60 * 1000);
+const resinCreditFlight = createSingleFlight<Map<string, Counts>>(5 * 60 * 1000);
 
 /** One request for every account, date and department. No legacy fan-out fallback. */
 export async function computeDailyAssignmentCounts(
@@ -197,11 +210,22 @@ export async function computeDailyAssignmentCounts(
     return response;
   });
   const counts = validateBatch(result, users, dates);
+  const resin = await resinCreditFlight(JSON.stringify([start, end, users]), () => resinCreditsByAccountDay(users, dates, counts));
+  const withoutResin = (key: string): Counts => {
+    const count = counts.get(key)!;
+    const credit = resin.get(key);
+    if (!credit) return count;
+    return {
+      preservation: Math.max(0, count.preservation - credit.preservation),
+      design:       Math.max(0, count.design - credit.design),
+      fulfillment:  Math.max(0, count.fulfillment - credit.fulfillment),
+    };
+  };
   const rows = targets.map(target => ({
     staff: target.requestedName,
     userUuid: target.accounts[0].uuid,
     days: Object.fromEntries(dates.map(date => [date, sumCounts(target.accounts.map(account =>
-      counts.get(`${account.uuid.toLowerCase()}/${date}`)!,
+      withoutResin(`${account.uuid.toLowerCase()}/${date}`),
     ))])),
   }));
   return { rows, unmatched, refreshedAt: result.refreshedAt };
@@ -261,6 +285,7 @@ interface OrderProductSummaryDTO {
   assignedToUserUuid?: string | null;
   preservationUserUuid?: string | null;
   fulfillmentUserUuid?: string | null;
+  workflowProfile?: string | number | null;
 }
 
 interface OrderProductSummaryPage {
@@ -290,7 +315,7 @@ interface DeptOrderProduct {
 // five repeats, five missing, #57736 among them). Asking one day at a time
 // keeps almost every request to a single page, and de-duplicating by uuid
 // stops a repeat from showing twice when a day still runs past one page.
-async function listOrderProductsForAccountDay(account: AssignableStaff, day: string): Promise<OrderProductSummaryDTO[]> {
+async function listOrderProductsForAccountDay(account: { uuid: string }, day: string): Promise<OrderProductSummaryDTO[]> {
   const rows: OrderProductSummaryDTO[] = [];
   const pageSize = 50;
   for (let pageNumber = 1; pageNumber <= 40; pageNumber++) {
@@ -334,6 +359,7 @@ async function listTargetOrderProducts(
 function deptOrderProducts(listed: ListedOrderProduct[], department: AssignmentDepartment): DeptOrderProduct[] {
   const rows: DeptOrderProduct[] = [];
   for (const { account, row } of listed) {
+    if (isResinWorkflow(row.workflowProfile)) continue;
     const mine = (d: AssignmentDepartment) =>
       String(row[DEPT_USER_FIELD[d]] ?? '').toLowerCase() === account.uuid.toLowerCase();
     if (!mine(department)) continue;
@@ -451,4 +477,150 @@ export async function fetchAssignedOrderProducts(
     }))
     .sort((a, b) => a.orderName.localeCompare(b.orderName, undefined, { numeric: true }));
   return { matched: true, items };
+}
+
+// ── Resin, taken back out of the department counts ──────────────────────────
+// The batch counts credit a resin piece to whoever holds its design,
+// preservation or fulfillment stage, like any frame. Resin counts only in
+// Resin, so each credit is found and subtracted, using only what the API
+// already returns (no API change):
+//   1. Every resin piece and who holds each stage now (search by workflow).
+//   2. For each person holding a resin stage, their list for each day the
+//      batch counted something in one of those departments. The list returns
+//      a product on a day when one of the person's stage dates is that day.
+//   3. A person holding one stage of the piece: that stage, that day. Holding
+//      two (e.g. designed and packed it): the product history snapshots who
+//      held each stage after every change, which dates each stage.
+
+interface ResinPiece {
+  /** Lowercased user uuid holding each stage now, or null. */
+  holders: Record<AssignmentDepartment, string | null>;
+}
+
+const resinPieceFlight = createSingleFlight<Map<string, ResinPiece>>(10 * 60 * 1000, 1);
+
+/** Every resin piece in the production app, keyed by lowercased order-product uuid. */
+export function fetchResinPieces(): Promise<Map<string, ResinPiece>> {
+  return resinPieceFlight('resin', loadResinPieces);
+}
+
+async function loadResinPieces(): Promise<Map<string, ResinPiece>> {
+  const pageSize = 50; // .NET validates this as the maximum page size.
+  const page = (pageNumber: number) => pfPost<OrderProductSummaryPage>('/OrderProducts/Search', {
+    searchTerm: '', workflowFamily: 'resin', pageNumber, pageSize,
+  });
+  const first = await page(1);
+  const pages = [first];
+  const totalPages = first.totalPages ?? 1;
+  if (totalPages > 200) throw new Error('Resin piece list exceeds supported size.');
+  for (let next = 2; next <= totalPages; next += 5) {
+    const batch = Array.from({ length: Math.min(5, totalPages - next + 1) }, (_, i) => page(next + i));
+    pages.push(...await Promise.all(batch));
+  }
+  const pieces = new Map<string, ResinPiece>();
+  for (const row of pages.flatMap(p => p.items ?? [])) {
+    if (!row.uuid) continue;
+    const holder = (d: AssignmentDepartment) => String(row[DEPT_USER_FIELD[d]] ?? '').toLowerCase() || null;
+    pieces.set(row.uuid.toLowerCase(), {
+      holders: { preservation: holder('preservation'), design: holder('design'), fulfillment: holder('fulfillment') },
+    });
+  }
+  return pieces;
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  }));
+  return results;
+}
+
+interface StageSnapshot {
+  dateCreated?: string | null;
+  effectiveAt?: string | null;
+  assignedToUserUuid?: string | null;
+  preservationUserUuid?: string | null;
+  fulfillmentUserUuid?: string | null;
+}
+
+/** UTC day each stage was last handed to `account`, from the history snapshots. */
+async function resinStageDays(uuid: string, account: string, stages: AssignmentDepartment[]): Promise<Partial<Record<AssignmentDepartment, string>>> {
+  const detail = await pfGet<{ history?: StageSnapshot[] | null }>(`/OrderProducts/Details/${uuid}`);
+  const history = [...(detail.history ?? [])]
+    .filter(h => h.dateCreated ?? h.effectiveAt)
+    .sort((a, b) => String(a.dateCreated ?? a.effectiveAt).localeCompare(String(b.dateCreated ?? b.effectiveAt)));
+  const days: Partial<Record<AssignmentDepartment, string>> = {};
+  for (const stage of stages) {
+    const field = DEPT_USER_FIELD[stage] as keyof StageSnapshot;
+    let held = false;
+    for (const h of history) {
+      const holds = String(h[field] ?? '').toLowerCase() === account;
+      if (holds && !held) days[stage] = new Date(String(h.dateCreated ?? h.effectiveAt)).toISOString().slice(0, 10);
+      held = holds;
+    }
+  }
+  return days;
+}
+
+/** Resin credits inside the batch counts, keyed like them (`account/day`). */
+async function resinCreditsByAccountDay(users: string[], dates: string[], counts: Map<string, Counts>): Promise<Map<string, Counts>> {
+  const pieces = await fetchResinPieces();
+  const wanted = new Set(users);
+  // Departments each requested account holds on at least one resin piece.
+  const heldDepts = new Map<string, Set<AssignmentDepartment>>();
+  for (const piece of pieces.values()) {
+    for (const d of ASSIGNMENT_DEPARTMENTS) {
+      const holder = piece.holders[d];
+      if (holder && wanted.has(holder)) heldDepts.set(holder, (heldDepts.get(holder) ?? new Set()).add(d));
+    }
+  }
+  // Only days where the batch counted something those pieces could explain.
+  const lookups = [...heldDepts].flatMap(([account, depts]) => dates
+    .filter(day => [...depts].some(d => (counts.get(`${account}/${day}`)?.[d] ?? 0) > 0))
+    .map(day => ({ account, day })));
+
+  const credits = new Map<string, Counts>();
+  const credit = (account: string, day: string, d: AssignmentDepartment) => {
+    if (!dates.includes(day)) return;
+    const key = `${account}/${day}`;
+    const c = credits.get(key) ?? zeroCounts();
+    c[d]++;
+    credits.set(key, c);
+  };
+  // Products where the account holds more than one stage, with the days they appeared.
+  const multi = new Map<string, { account: string; uuid: string; stages: AssignmentDepartment[]; days: string[] }>();
+
+  const lists = await mapLimit(lookups, 5, ({ account, day }) => listOrderProductsForAccountDay({ uuid: account }, day));
+  lookups.forEach(({ account, day }, i) => {
+    const seen = new Set<string>();
+    for (const row of lists[i]) {
+      const uuid = row.uuid?.toLowerCase();
+      if (!uuid || seen.has(uuid)) continue;
+      seen.add(uuid);
+      if (!pieces.has(uuid) && !isResinWorkflow(row.workflowProfile)) continue;
+      const stages = ASSIGNMENT_DEPARTMENTS.filter(d => String(row[DEPT_USER_FIELD[d]] ?? '').toLowerCase() === account);
+      if (stages.length === 1) credit(account, day, stages[0]);
+      else if (stages.length > 1) {
+        const key = `${account}/${uuid}`;
+        const entry = multi.get(key) ?? { account, uuid, stages, days: [] };
+        entry.days.push(day);
+        multi.set(key, entry);
+      }
+    }
+  });
+
+  await mapLimit([...multi.values()], 5, async ({ account, uuid, stages, days }) => {
+    const stageDays = await resinStageDays(uuid, account, stages);
+    for (const stage of stages) {
+      // No snapshot for the hand-off: credit the first day it appeared.
+      const day = stageDays[stage] ?? [...days].sort()[0];
+      if (days.includes(day)) credit(account, day, stage);
+    }
+  });
+  return credits;
 }
