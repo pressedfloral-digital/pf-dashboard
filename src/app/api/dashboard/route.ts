@@ -61,7 +61,7 @@ async function getDesignerFrameData(anchorDate: Date): Promise<DesignerFrameData
       const results = await Promise.all(
         batch.map(num =>
           pfPost<SearchResponse>('/OrderProducts/Search', {
-            searchTerm: num, pageNumber: 1, pageSize: 1,
+            searchTerm: num, pageNumber: 1, pageSize: 1, workflowFamily: 'frames',
           }).catch(() => null)
         )
       );

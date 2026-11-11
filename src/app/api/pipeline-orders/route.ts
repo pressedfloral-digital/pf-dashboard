@@ -154,6 +154,7 @@ export async function GET(req: NextRequest) {
             searchTerm: o.num,
             pageNumber: 1,
             pageSize: 1,
+            workflowFamily: 'frames',
           }).catch(() => null)
         )
       );

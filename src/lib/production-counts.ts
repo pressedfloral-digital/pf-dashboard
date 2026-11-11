@@ -1,5 +1,6 @@
 /** Completed production uses the API's corrected effective date, never assignment dates. */
 import { pfGet } from '@/lib/pf-api';
+import { fetchResinPieces } from '@/lib/assignment-counts';
 export interface OrderDetail { orderNum: string; variant: string; enteredAt: string; eventDate: string }
 export interface StaffRow { staff: string; count: number; orders: OrderDetail[] }
 export interface ProductionCounts { Preservation: StaffRow[]; Design: StaffRow[]; Fulfillment: StaffRow[] }
@@ -29,6 +30,10 @@ export async function computeProductionCounts(start: string, end: string): Promi
     for (const row of rows) events.set(row.uuid, row);
     if (rows.length < pageSize) break;
   }
+  // Resin pieces count only in Resin — a resin piece reaching Ready To Package
+  // isn't Fulfillment's work.
+  const resin = await fetchResinPieces();
+  for (const [key, event] of events) if (resin.has(event.orderProductUuid?.toLowerCase())) events.delete(key);
   function department(status: string): StaffRow[] {
     const staff = new Map<string, OrderDetail[]>();
     // A product can revisit a stage. Count each product once within the requested period.

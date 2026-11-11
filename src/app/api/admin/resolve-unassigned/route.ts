@@ -44,6 +44,7 @@ export async function POST(req: NextRequest) {
           searchTerm: row.order_num,
           pageNumber: 1,
           pageSize: 1,
+          workflowFamily: 'frames',
         }).catch(() => null)
       )
     );

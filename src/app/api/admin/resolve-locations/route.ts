@@ -113,7 +113,7 @@ async function runResolve(previewOnly: boolean) {
       const results = await Promise.all(
         batch.map(([, v]) =>
           pfPost<SearchResponse>('/OrderProducts/Search', {
-            searchTerm: v.orderNum, pageNumber: 1, pageSize: 1,
+            searchTerm: v.orderNum, pageNumber: 1, pageSize: 1, workflowFamily: 'frames',
           }).catch(() => null)
         )
       );
@@ -244,7 +244,7 @@ async function runResolve(previewOnly: boolean) {
       const results = await Promise.all(
         batch.map(([, v]) =>
           pfPost<SearchStaffResponse>('/OrderProducts/Search', {
-            searchTerm: v.orderNum, pageNumber: 1, pageSize: 1,
+            searchTerm: v.orderNum, pageNumber: 1, pageSize: 1, workflowFamily: 'frames',
           }).catch(() => null)
         )
       );

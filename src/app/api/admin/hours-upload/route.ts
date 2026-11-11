@@ -158,8 +158,10 @@ export async function POST(req: NextRequest) {
         // A row created here has no typed order count, so leave it open to
         // the production sync. The column defaults to 'manual', which would
         // lock a new row at 0 orders forever (sync-production-actuals skips
-        // anything not 'auto').
-        orders_source: existing?.orders_source ?? 'auto',
+        // anything not 'auto'). Resin is the exception: the sync doesn't cover
+        // it, so its managers type the count, and 'auto' would make Historicals
+        // read-only for them with nothing ever filling it in.
+        orders_source: existing?.orders_source ?? (rec.department === 'Resin' ? 'manual' : 'auto'),
         hours_source: 'upload',
         updated_at:   now,
       };

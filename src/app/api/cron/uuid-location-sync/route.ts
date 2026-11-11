@@ -132,6 +132,7 @@ async function runSync() {
         searchTerm: ' ',
         pageSize:   PAGE_SIZE,
         pageNumber,
+        workflowFamily: 'frames',
       });
 
       if (!res.items || res.items.length === 0) break;
@@ -168,6 +169,7 @@ async function runSync() {
             searchTerm: orderNum,
             pageNumber: 1,
             pageSize:   10,
+            workflowFamily: 'frames',
           }).catch(() => null)
         )
       );
