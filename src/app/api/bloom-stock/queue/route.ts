@@ -10,6 +10,7 @@ import {
   RECREATE_VARIANT_IDS, bloomStockTypeFor, asBloomStockType,
 } from '@/lib/bloomStock';
 import { bloomStockAutoAssignee } from '@/lib/bloomStockAssignees';
+import { errorMessage } from '@/lib/errorMessage';
 
 // Live read of the bloom-stock queue from Shopify. Shopify's order search can
 // filter by product_id, so the whole open set is only a few hundred line
@@ -32,6 +33,13 @@ interface RawData {
   fetchedAt:   string;
 }
 let cache: { at: number; data: RawData } | null = null;
+
+// Supabase returns errors as plain objects; rethrow them as real Errors that
+// name the step, so a failure says which query broke instead of
+// "[object Object]".
+function check(error: unknown, step: string): void {
+  if (error) throw new Error(`${step}: ${errorMessage(error)}`);
+}
 
 const ORDER_FIELDS = `
       legacyResourceId
@@ -173,7 +181,7 @@ async function loadRaw(): Promise<RawData> {
     .from('bloom_stock_order_tracking')
     .select('line_item_id, order_id, product_key')
     .neq('status', 'finished');
-  if (trackedErr) throw trackedErr;
+  check(trackedErr, 'Reading open board rows');
   const extra = (tracked ?? []).filter(t => !found.has(t.line_item_id));
   const extraByLine = new Map(extra.map(t => [t.line_item_id, BLOOM_STOCK_PRODUCTS.find(p => p.key === t.product_key)]));
   const orderIds = [...new Set(extra.map(t => t.order_id))];
@@ -206,7 +214,7 @@ async function loadRaw(): Promise<RawData> {
   const { data: allTracked, error: allTrackedErr } = await supabase
     .from('bloom_stock_order_tracking')
     .select('line_item_id, order_id, product_key');
-  if (allTrackedErr) throw allTrackedErr;
+  check(allTrackedErr, 'Reading switched-order history');
   const searched = new Set<string>();
   for (const o of recentOrders) for (const li of o.lineItems.nodes) {
     if (li.product && productByShopifyId.has(li.product.legacyResourceId)) searched.add(li.id.split('/').pop()!);
@@ -265,8 +273,8 @@ export async function GET(req: NextRequest) {
         supabase.from('bloom_stock_completions').select('line_item_id, units').in('line_item_id', batch),
         supabase.from('bloom_stock_order_tracking').select('line_item_id, status, type, assignee, notes').in('line_item_id', batch),
       ]);
-      if (comp.error) throw comp.error;
-      if (track.error) throw track.error;
+      check(comp.error, 'Reading logged completions');
+      check(track.error, 'Reading board statuses');
       for (const r of comp.data ?? []) done.set(r.line_item_id, (done.get(r.line_item_id) ?? 0) + Number(r.units));
       for (const r of track.data ?? []) tracking.set(r.line_item_id, r);
     }
@@ -309,10 +317,15 @@ export async function GET(req: NextRequest) {
       .sort((a, b) => a.orderDate.localeCompare(b.orderDate) || a.orderNumber.localeCompare(b.orderNumber));
 
     // ignoreDuplicates: never overwrite an edit the team made in the meantime.
+    // Saving the auto-sort is a convenience: if it fails, still show the board
+    // (items already carry their assignee) and retry on the next load.
     for (let i = 0; i < autoSorted.length; i += 200) {
       const { error } = await supabase.from('bloom_stock_order_tracking')
         .upsert(autoSorted.slice(i, i + 200), { onConflict: 'line_item_id', ignoreDuplicates: true });
-      if (error) throw error;
+      if (error) {
+        console.error('[bloom-stock/queue] Saving auto-sort failed:', error);
+        break;
+      }
     }
 
     const body: BloomStockQueueResponse = {
@@ -325,6 +338,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(body);
   } catch (err) {
     console.error('[bloom-stock/queue] Error:', err);
-    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
   }
 }
