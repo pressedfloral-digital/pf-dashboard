@@ -59,9 +59,14 @@ test('resin pieces are taken back out of department counts', async () => {
     assert.deepEqual(days['2026-11-04'], { design: 1, preservation: 1, fulfillment: 1 }); // r2's design
     assert.deepEqual(days['2026-11-06'], { design: 2, preservation: 1, fulfillment: 0 }); // r2's packing
     assert.deepEqual(days['2026-11-05'], { design: 2, preservation: 1, fulfillment: 1 }); // untouched
+    // Each resin piece counts once in Resin, for the person who made it (design stage).
+    assert.deepEqual(daily.rows[0].resinDays, {
+      '2026-11-02': 0, '2026-11-03': 1, '2026-11-04': 1, '2026-11-05': 0,
+      '2026-11-06': 0, '2026-11-07': 0, '2026-11-08': 0,
+    });
 
     const weekly = await computeWeeklyActualCounts('2026-11-02', '2026-11-08');
     const row = weekly.rows.find(r => r.staff === 'Chloe Jensen');
-    assert.deepEqual(row.counts, { design: 12, preservation: 7, fulfillment: 6 });
+    assert.deepEqual(row.counts, { design: 12, preservation: 7, fulfillment: 6, resin: 2 });
   } finally { globalThis.fetch = originalFetch; }
 });

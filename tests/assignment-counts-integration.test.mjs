@@ -39,7 +39,7 @@ test('weekly roster makes one batch, sums duplicate accounts, shares overlapping
     assert.deepEqual(results[0].unmatched, ['Unknown']);
     assert.deepEqual(results[0].rows[0].days['2026-10-26'], { design: 5, preservation: 0, fulfillment: 2 });
     const weekly = await computeAssignmentCounts('2026-10-26','2026-11-01',['Chloe Jensen']);
-    assert.deepEqual(weekly.rows[0].counts, { design: 35, preservation: 0, fulfillment: 14 });
+    assert.deepEqual(weekly.rows[0].counts, { design: 35, preservation: 0, fulfillment: 14, resin: 0 });
     assert.equal(paths.filter(p => p.endsWith('/Batch')).length, 1);
     assert.equal(results[0].refreshedAt, '2026-10-27T20:00:00Z');
   } finally { globalThis.fetch = originalFetch; }
@@ -82,6 +82,6 @@ test('weekly actuals add fulfilled recreations to Fulfillment only', async () =>
     const weekly = await computeWeeklyActualCounts('2026-11-02', '2026-11-08');
     const row = weekly.rows.find(r => r.staff === 'Chloe Jensen');
     // Two accounts x 7 days from the batch, plus the two recreations credited here.
-    assert.deepEqual(row.counts, { design: 14, preservation: 14, fulfillment: 16 });
+    assert.deepEqual(row.counts, { design: 14, preservation: 14, fulfillment: 16, resin: 0 });
   } finally { globalThis.fetch = originalFetch; }
 });

@@ -92,9 +92,10 @@ const WINDOW = 8;  // weeks visible in the schedule grid at once
 const RESIN_NEW_HIRE_RATIO = 2.0;
 
 // The production app has no Resin stage — resin pieces are assigned to the
-// resin team member as the designer, so live Resin actuals read the Design
-// assignment count for the resin roster.
-const RESIN_MT_DEPARTMENT = 'design' as const;
+// resin team member as the designer. Those credits are taken out of Design
+// and counted as Resin instead (see computeDailyAssignmentCounts), the same
+// count the weekly Historicals sync writes.
+const RESIN_MT_DEPARTMENT = 'resin' as const;
 
 // Mon–Sun ISO dates for a "This week" offset, built the same way as
 // SchedulePage's getWeekdays so both pages ask MT for identical days.
@@ -923,8 +924,8 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                                   {totalDayVal > 0 ? `${round2(totalDayVal)}h total` : '+ total'}
                                 </InlineNumber>
                               )}
-                              {view.actuals && <ProductionActual value={actualFor(m.name, thisWeekDates[di])} loading={resinActuals.loading} unit="u"
-                                drill={{ name: m.name, start: thisWeekDates[di], end: thisWeekDates[di], department: RESIN_MT_DEPARTMENT }} />}
+                              {/* No drill-down: the order list behind it covers the three frame stages only. */}
+                              {view.actuals && <ProductionActual value={actualFor(m.name, thisWeekDates[di])} loading={resinActuals.loading} unit="u" />}
                               <AvailabilityChips entries={avail} iso={thisWeekIsos[di]} scheduled={working} list={unavailability} onChange={setUnavailability} />
                               {isHoliday && <div className="text-[10px] text-amber-700">holiday pay</div>}
                               {hoursOff > 0 && <div className="text-[10px] font-semibold text-red-500" title="Hours off on the Days off calendar">{hoursOff}h off</div>}
@@ -940,7 +941,6 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
                           value={sumActuals(thisWeekDates.map(iso => actualFor(m.name, iso)))}
                           loading={resinActuals.loading}
                           unit="u"
-                          drill={{ name: m.name, start: thisWeekDates[0], end: thisWeekDates[6], department: RESIN_MT_DEPARTMENT }}
                         />
                       </td>
                     </tr>
