@@ -24,6 +24,11 @@ interface SyncedOrdersPopoverProps {
   syncedCount:  number;
   /** Wording for the stored number, e.g. "synced count" or "actual". */
   countLabel?:  string;
+  /**
+   * The count is a Historicals weekly sync, which adds Fulfillment's excluded
+   * products back in (computeWeeklyActualCounts). Live counts leave this off.
+   */
+  weeklySync?:  boolean;
   /** Historicals weeks only: add/remove order numbers from the count. */
   adjust?:      OrderAdjustProps;
   onClose:      () => void;
@@ -42,7 +47,7 @@ function fmtEventDate(iso: string): string {
 // auto-synced Historicals weeks and This Week's per-day Actuals. Fetched live,
 // so reassignments since the count was taken can make the list differ from
 // the shown number — that's called out rather than hidden.
-export function SyncedOrdersPopover({ name, department, start, end, syncedCount, countLabel = 'synced count', adjust, onClose }: SyncedOrdersPopoverProps) {
+export function SyncedOrdersPopover({ name, department, start, end, syncedCount, countLabel = 'synced count', weeklySync = false, adjust, onClose }: SyncedOrdersPopoverProps) {
   const [items, setItems] = useState<AssignedOrderProduct[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adjustError, setAdjustError] = useState<string | null>(null);
@@ -130,8 +135,8 @@ export function SyncedOrdersPopover({ name, department, start, end, syncedCount,
   // single-stage products often settles exactly which multi-stage ones count.
   // Excluded products (e.g. Bloom Arrangement Recreation) are already taken
   // out of the count, so set them aside before reconciling — except Fulfillment's
-  // synced count, which adds them back (computeWeeklyActualCounts).
-  const listed = department === 'fulfillment' && countLabel === 'synced'
+  // weekly synced count, which adds them back (computeWeeklyActualCounts).
+  const listed = department === 'fulfillment' && weeklySync
     ? items?.map(p => ({ ...p, excluded: false }))
     : items;
   const notCountable = listed?.filter(p => p.excluded) ?? [];

@@ -434,6 +434,7 @@ export function HistoricalsSection({ department, location, members, ordersLabel,
             start={syncedDetail.weekOf}
             end={(() => { const d = new Date(syncedDetail.weekOf + 'T12:00:00'); d.setDate(d.getDate() + 6); return isoDate(d); })()}
             syncedCount={syncedCount}
+            weeklySync
             adjust={{
               location,
               weekOf: syncedDetail.weekOf,
