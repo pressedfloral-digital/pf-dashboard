@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { getAccess, forbidden } from '@/lib/routeAccess';
 import { pfPost, pfGetAll, fmtDate } from '@/lib/pf-api';
 import { supabase } from '@/lib/supabase';
 import type { WeeklyReportItem } from '@/types/dashboard';
@@ -100,8 +100,10 @@ async function getDesignerFrameCount(uuid: string): Promise<number> {
 }
 
 export async function POST() {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  // Manual admin tool — no dashboard button calls this.
+  if (access.role !== 'admin') return forbidden('Admin only');
 
   try {
     // Step 1: Get known designers from Supabase, or discover from API

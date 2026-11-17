@@ -1,14 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
-
-// Admin/manager Clerk user IDs — same gate as /api/actuals and /api/design-promises
-const ADMIN_IDS = (process.env.ADMIN_CLERK_USER_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
-
-function isAdmin(userId: string): boolean {
-  if (ADMIN_IDS.length === 0) return true;
-  return ADMIN_IDS.includes(userId);
-}
+import { getAccess, forbidden } from '@/lib/routeAccess';
+import { canEditLocation } from '@/lib/permissions';
 
 interface BloomUpdateRow {
   weekOf: string;
@@ -41,14 +35,17 @@ export async function GET(req: NextRequest) {
 // ── POST /api/bloom-updates ───────────────────────────────────────────────────────
 // Records a sent biweekly bloom update. Body: { location, rows }
 export async function POST(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (!isAdmin(userId)) return NextResponse.json({ error: 'Admin only' }, { status: 403 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  const { userId } = access;
 
   const body = await req.json() as { location: string; rows: BloomUpdateRow[] };
   const { location, rows } = body;
   if (!location || !Array.isArray(rows) || rows.length === 0) {
     return NextResponse.json({ error: 'location and rows are required' }, { status: 400 });
+  }
+  if (!canEditLocation(access.permissions, location)) {
+    return forbidden(`You can't record bloom updates for ${location}`);
   }
 
   try {
@@ -68,14 +65,20 @@ export async function POST(req: NextRequest) {
 // Removes an update from the sent history (e.g. a test send). Only the history
 // record goes — locked-in design_delivery_promises are left as they are.
 export async function DELETE(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (!isAdmin(userId)) return NextResponse.json({ error: 'Admin only' }, { status: 403 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
 
   const id = Number(req.nextUrl.searchParams.get('id'));
   if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: 'id is required' }, { status: 400 });
 
   try {
+    const { data: row, error: rowErr } = await supabase
+      .from('biweekly_bloom_updates').select('location').eq('id', id).maybeSingle();
+    if (rowErr) throw rowErr;
+    if (!row) return NextResponse.json({ error: 'Update not found' }, { status: 404 });
+    if (!canEditLocation(access.permissions, row.location as string)) {
+      return forbidden(`You can't delete ${row.location}'s bloom updates`);
+    }
     const { error } = await supabase.from('biweekly_bloom_updates').delete().eq('id', id);
     if (error) throw error;
     return NextResponse.json({ ok: true });

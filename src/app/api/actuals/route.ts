@@ -1,30 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
+import { getAccess, forbidden } from '@/lib/routeAccess';
+import { canEditLocation } from '@/lib/permissions';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { fetchAllRows } from '@/lib/fetchAllRows';
-
-// Admin/manager Clerk user IDs — add yours here
-// You can also use Clerk organizations or roles; this is the simple approach
-const ADMIN_IDS = (process.env.ADMIN_CLERK_USER_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
-
-function isAdmin(userId: string): boolean {
-  // If no admin IDs are configured, allow any authenticated user (dev mode)
-  if (ADMIN_IDS.length === 0) return true;
-  return ADMIN_IDS.includes(userId);
-}
-
-// Auto-synced order counts (orders_source='auto') can only be overridden by
-// a dashboard admin — everyone else can see the orders behind them (the
-// "synced" drill-down) and ask an admin to correct it.
-async function hasAdminRole(userId: string): Promise<boolean> {
-  const { data } = await supabase
-    .from('user_profiles')
-    .select('role')
-    .eq('clerk_user_id', userId)
-    .maybeSingle();
-  return data?.role === 'admin';
-}
 
 // ── GET /api/actuals?location=Utah&type=preservation&weeks=26 ─────────────────
 // Returns preservation_week_actuals + team_member_week_actuals for a location
@@ -87,13 +67,18 @@ export async function GET(req: NextRequest) {
 // ── POST /api/actuals ─────────────────────────────────────────────────────────
 // Upserts actuals. Body: { type, location, weekOf, ...fields }
 export async function POST(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (!isAdmin(userId)) return NextResponse.json({ error: 'Admin only' }, { status: 403 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  const { userId } = access;
 
   const body = await req.json() as Record<string, unknown>;
   const { type, location, weekOf } = body as { type: string; location: string; weekOf: string };
   const department = (body as { department?: string }).department;
+
+  // Admins edit both locations; GMs/managers only their own (canEditLocation).
+  if (!access.permissions.canEditHistoricals || !canEditLocation(access.permissions, location)) {
+    return forbidden(`You can't edit ${location ?? 'this location'}'s historicals`);
+  }
 
   // Enforce edit window — Resin gets a longer window since its queue-based
   // turnaround means actuals often get entered further after the fact.
@@ -129,7 +114,9 @@ export async function POST(req: NextRequest) {
         .maybeSingle();
       if (existingErr) throw existingErr;
       const ordersChanged = Number(existing?.actual_orders ?? 0) !== Number(actualOrders);
-      if (existing?.orders_source === 'auto' && ordersChanged && !(await hasAdminRole(userId))) {
+      // Auto-synced order counts can only be overridden by an admin — everyone
+      // else can see the orders behind them and ask an admin to correct it.
+      if (existing?.orders_source === 'auto' && ordersChanged && access.role !== 'admin') {
         return NextResponse.json({ error: 'Only an admin can change an auto-synced order count' }, { status: 403 });
       }
       const { error } = await supabase

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
+import { getAccess, forbidden } from '@/lib/routeAccess';
+import { canEditCompanyData } from '@/lib/permissions';
 import { supabase } from '@/lib/supabase';
 
 // GET /api/planned-state-moves — every planned reassignment, upcoming and past.
@@ -18,8 +20,11 @@ export async function GET() {
 
 // POST /api/planned-state-moves — body: { state_code, new_location, effective_date, note? }
 export async function POST(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  // Company-wide planning for both locations.
+  if (!canEditCompanyData(access.role)) return forbidden('Only admins and general managers can change state routing');
+  const { userId } = access;
 
   const body = await req.json() as { state_code: string; new_location: 'Utah' | 'Georgia'; effective_date: string; note?: string };
   const { state_code, new_location, effective_date, note } = body;
@@ -43,8 +48,10 @@ export async function POST(req: NextRequest) {
 
 // DELETE /api/planned-state-moves?id=123
 export async function DELETE(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  // Company-wide planning for both locations.
+  if (!canEditCompanyData(access.role)) return forbidden('Only admins and general managers can change state routing');
 
   const id = req.nextUrl.searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });

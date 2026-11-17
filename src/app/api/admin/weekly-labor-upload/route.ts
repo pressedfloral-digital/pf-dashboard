@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { getAccess, forbidden } from '@/lib/routeAccess';
+import { canEditCompanyData } from '@/lib/permissions';
 import { supabase } from '@/lib/supabase';
 import { fetchAllRows } from '@/lib/fetchAllRows';
 
@@ -49,8 +50,10 @@ interface WeeklyLaborRow {
 // POST /api/admin/weekly-labor-upload
 // Body: { rows: WeeklyLaborRow[] }
 export async function POST(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  // Changes pay rates, hours and CPO for both locations.
+  if (!canEditCompanyData(access.role)) return forbidden('Only admins and general managers can upload payroll data');
 
   try {
     const { rows } = await req.json() as { rows: WeeklyLaborRow[] };
@@ -118,8 +121,10 @@ export async function POST(req: NextRequest) {
 // GET /api/admin/weekly-labor-upload?location=Georgia&from=2026-03-30&to=2026-03-30
 // Returns weekly labor cost grouped by dept for CPO calculation
 export async function GET(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  // Returns pay — same people who can see CPO.
+  if (!access.permissions.canViewCPO) return forbidden("You don't have access to payroll data");
 
   const location = req.nextUrl.searchParams.get('location');
   const from     = req.nextUrl.searchParams.get('from');

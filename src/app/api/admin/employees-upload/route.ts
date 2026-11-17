@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { getAccess, forbidden } from '@/lib/routeAccess';
+import { canEditCompanyData } from '@/lib/permissions';
 import { supabase } from '@/lib/supabase';
 import { syncRosterRoles } from '@/lib/rosterRoleSync';
 import { recordRateHistory } from '@/lib/rateHistorySync';
@@ -43,8 +44,10 @@ interface EmployeeRow {
 // POST /api/admin/employees-upload
 // Body: { employees: EmployeeRow[] }
 export async function POST(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  // Changes pay rates, hours and CPO for both locations.
+  if (!canEditCompanyData(access.role)) return forbidden('Only admins and general managers can upload payroll data');
 
   try {
     const { employees } = await req.json() as { employees: EmployeeRow[] };
@@ -96,8 +99,8 @@ export async function POST(req: NextRequest) {
 // GET /api/admin/employees-upload?location=Utah&department=Design
 // Returns employees for autocomplete in roster editor
 export async function GET(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
 
   const location   = req.nextUrl.searchParams.get('location');
   const department = req.nextUrl.searchParams.get('department');
@@ -116,7 +119,12 @@ export async function GET(req: NextRequest) {
 
     const { data, error } = await query;
     if (error) throw error;
-    return NextResponse.json({ ok: true, employees: data ?? [] });
+    // Names/titles/tiers are fine for everyone (autocomplete, tier badges);
+    // pay only goes to roles that can see CPO.
+    const employees = access.permissions.canViewCPO
+      ? (data ?? [])
+      : (data ?? []).map(e => ({ ...e, pay_type: null, hourly_rate: null, annual_salary: null }));
+    return NextResponse.json({ ok: true, employees });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }

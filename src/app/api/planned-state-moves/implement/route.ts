@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { getAccess, forbidden } from '@/lib/routeAccess';
+import { canEditCompanyData } from '@/lib/permissions';
 import { supabase } from '@/lib/supabase';
 
 // POST /api/planned-state-moves/implement — body: { id }
@@ -9,8 +10,11 @@ import { supabase } from '@/lib/supabase';
 // implemented_at so the Growth & Distribution tab can show it as done
 // instead of still-pending.
 export async function POST(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  // Company-wide planning for both locations.
+  if (!canEditCompanyData(access.role)) return forbidden('Only admins and general managers can change state routing');
+  const { userId } = access;
 
   const body = await req.json() as { id: number };
   const { id } = body;

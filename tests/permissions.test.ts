@@ -39,3 +39,23 @@ test('unknown role gets nothing', () => {
   const x = p('something-else');
   assert.equal(Object.values(x).some(Boolean), false);
 });
+
+test('canEditLocation: own location for managers, both for admin, Global for any staff', async () => {
+  const { canEditLocation } = await import('../src/lib/permissions.ts');
+  assert.equal(canEditLocation(p('manager', 'Utah'), 'Utah'), true);
+  assert.equal(canEditLocation(p('manager', 'Utah'), 'Georgia'), false);
+  assert.equal(canEditLocation(p('general_manager', 'Georgia'), 'Utah'), false);
+  assert.equal(canEditLocation(p('admin', null), 'Georgia'), true);
+  assert.equal(canEditLocation(p('manager', 'Utah'), 'Global'), true);
+  for (const role of ['user', 'viewer']) {
+    for (const loc of ['Utah', 'Georgia', 'Global']) assert.equal(canEditLocation(p(role, 'Utah'), loc), false, `${role} ${loc}`);
+  }
+  assert.equal(canEditLocation(p('admin', null), 'utah'), false);
+  assert.equal(canEditLocation(p('admin', null), undefined), false);
+});
+
+test('canEditCompanyData: admin and GM only', async () => {
+  const { canEditCompanyData } = await import('../src/lib/permissions.ts');
+  assert.deepEqual(['admin', 'general_manager', 'manager', 'user', 'viewer', null].map(canEditCompanyData),
+    [true, true, false, false, false, false]);
+});
