@@ -100,11 +100,11 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
       <div className="flex border-b border-slate-200">
         {([
           ['dashboard',  'Department Dashboard'],
-          ...((user?.permissions.canViewScheduling ?? true) ? [['scheduling', 'Scheduling'] as const] : []),
-          ...((user?.permissions.canViewScheduling ?? true) ? [['inventory', 'Inventory'] as const] : []),
-          ...((user?.permissions.canViewScorecards ?? true) ? [['scorecards',  'Scorecards'] as const] : []),
-          ...((user?.permissions.canViewScorecards ?? true) ? [['kpis', 'All KPIs'] as const] : []),
-          ...((user?.permissions.canViewScheduling ?? true) ? [['growth', 'Growth & Distribution'] as const] : []),
+          ...((user?.permissions.canViewScheduling ?? false) ? [['scheduling', 'Scheduling'] as const] : []),
+          ...((user?.permissions.canViewScheduling ?? false) ? [['inventory', 'Inventory'] as const] : []),
+          ...((user?.permissions.canViewScorecards ?? false) ? [['scorecards',  'Scorecards'] as const] : []),
+          ...((user?.permissions.canViewScorecards ?? false) ? [['kpis', 'All KPIs'] as const] : []),
+          ...((user?.permissions.canViewScheduling ?? false) ? [['growth', 'Growth & Distribution'] as const] : []),
           ...(user?.profile.role === 'admin'      ? [['labor', 'Labor Cost'] as const] : []),
           ...(user?.permissions.canManageUsers    ? [['team', 'Team Access'] as const] : []),
         ] as const).map(([id, label]) => (
@@ -152,19 +152,19 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
       )}
 
       {/* ── INVENTORY TAB ───────────────────────────────────────────────────── */}
-      {mainTab === 'inventory' && <InventoryPage />}
+      {mainTab === 'inventory' && user.permissions.canViewScheduling && <InventoryPage />}
       {/* ── SCORECARDS TAB ──────────────────────────────────────────────────── */}
-      {mainTab === 'scorecards' && <ScorecardTab />}
+      {mainTab === 'scorecards' && user.permissions.canViewScorecards && <ScorecardTab />}
       {/* ── ALL KPIs TAB ────────────────────────────────────────────────────────── */}
-      {mainTab === 'kpis' && <AllKpisPage />}
+      {mainTab === 'kpis' && user.permissions.canViewScorecards && <AllKpisPage />}
       {/* ── GROWTH & DISTRIBUTION TAB ────────────────────────────────────────── */}
-      {mainTab === 'growth' && <GrowthDistributionPage />}
+      {mainTab === 'growth' && user.permissions.canViewScheduling && <GrowthDistributionPage />}
       {/* ── LABOR COST TAB (admins only; API enforces it too) ─────────────── */}
       {mainTab === 'labor' && user?.profile.role === 'admin' && <LaborCostPage />}
       {/* ── TEAM ACCESS TAB ─────────────────────────────────────────────────── */}
-      {mainTab === 'team' && <UserManagementPage />}
+      {mainTab === 'team' && user.permissions.canManageUsers && <UserManagementPage />}
       {/* ── SCHEDULING TAB ───────────────────────────────────────────────────── */}
-      {mainTab === 'scheduling' && (
+      {mainTab === 'scheduling' && user.permissions.canViewScheduling && (
         <SchedulePage
           utahDesignable={utahDesignable}
           georgiaDesignable={georgiaDesignable}
@@ -175,7 +175,7 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
           countsLoading={locationCounts === null}
           canEditUtah={user?.permissions.canEditUtah ?? false}
           canEditGeorgia={user?.permissions.canEditGeorgia ?? false}
-          canViewCPO={user?.permissions.canViewCPO ?? true}
+          canViewCPO={user?.permissions.canViewCPO ?? false}
           userLocation={user?.profile.location ?? null}
           userDepartment={user?.profile.department ?? null}
           userRole={user?.profile.role ?? 'admin'}

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
+import type { Role as UserRole, Permissions as UserPermissions } from "@/lib/permissions";
 
-export type UserRole = "admin" | "general_manager" | "manager" | "user" | "viewer";
+export type { UserRole };
 
 export interface UserProfile {
   clerk_user_id: string;
@@ -15,21 +16,7 @@ export interface UserProfile {
   created_at: string;
 }
 
-export interface UserPermissions {
-  canEditUtah: boolean;
-  canEditGeorgia: boolean;
-  canViewUtah: boolean;
-  canViewGeorgia: boolean;
-  canViewCPO: boolean;
-  canManageUsers: boolean;
-  canViewAllLocations: boolean;
-  canEditSchedule: boolean;
-  canEditHistoricals: boolean;
-  canViewScheduling: boolean;
-  canViewScorecards: boolean;
-  isUserRole: boolean;
-  isViewerRole: boolean;
-}
+export type { UserPermissions };
 
 interface CurrentUser {
   profile: UserProfile;
