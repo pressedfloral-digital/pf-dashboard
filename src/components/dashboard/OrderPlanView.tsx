@@ -1,10 +1,11 @@
 'use client';
 
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { applyEdits, type OrderEdits, type OrderPlan, type PlanRow } from '@/lib/katanaPlan';
 import { mondayOf, addWeeks as addWeeksIso } from '@/lib/designInventory';
 import SupplierPoCard, { OrderByBadge, fmtWeek, label, urgency, weeksUntilShort, type EditAction } from './SupplierPoCard';
 import { HelpTip } from './HelpTip';
+import { useCurrentUser } from '@/hooks/useCurrentUser';
 
 function fmtQty(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -81,17 +82,10 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
   const [showUnmatched, setShowUnmatched] = useState(false);
   const [showSubs, setShowSubs] = useState(false);
   const [groupBy, setGroupBy] = useState<'week' | 'supplier'>('supplier');
-  const [canOrder, setCanOrder] = useState(false);
+  // The real signed-in user, as before: the order API checks their access.
+  const { realUser } = useCurrentUser();
+  const canOrder = !!realUser?.permissions[plan.location === 'Georgia' ? 'canEditGeorgia' : 'canEditUtah'];
   const week = picked ?? firstShort;
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/auth/me')
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (!cancelled) setCanOrder(!!d?.permissions?.[plan.location === 'Georgia' ? 'canEditGeorgia' : 'canEditUtah']); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [plan.location]);
 
   const dueNow = short.filter(r => r.orderNowQty > 0);
   const lateCount = dueNow.filter(r => urgency(r.orderBy, thisWeek) === 'late').length;

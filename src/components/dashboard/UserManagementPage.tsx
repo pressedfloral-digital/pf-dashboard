@@ -53,7 +53,7 @@ const roleBadgeColor = (role: UserRole) => {
 };
 
 export default function UserManagementPage() {
-  const { user, startImpersonating, realUser } = useCurrentUser();
+  const { user, startImpersonating, realUser, loading: userLoading, error: userError, retry: retryUser } = useCurrentUser();
   const router = useRouter();
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -151,7 +151,20 @@ export default function UserManagementPage() {
     }
   };
 
-  if (!user?.permissions.canManageUsers) {
+  // Only say "no permission" once we actually know the user's permissions —
+  // not while loading, and not when the profile request failed.
+  if (userLoading) {
+    return <div className="p-8 text-gray-500">Loading your access…</div>;
+  }
+  if (userError || !user) {
+    return (
+      <div className="p-8 text-sm text-rose-600">
+        Couldn&apos;t load your account{userError ? `: ${userError}` : ""}.{" "}
+        <button onClick={retryUser} className="underline font-medium">Try again</button>
+      </div>
+    );
+  }
+  if (!user.permissions.canManageUsers) {
     return <div className="p-8 text-gray-500">You don't have permission to view this page.</div>;
   }
 

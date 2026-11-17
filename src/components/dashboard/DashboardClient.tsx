@@ -30,7 +30,7 @@ interface LocationCounts {
 export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
   const [mainTab, setMainTab] = useState<'dashboard' | 'scheduling' | 'inventory' | 'scorecards' | 'kpis' | 'growth' | 'labor' | 'team'>('dashboard');
   // Redirect user role to personal dashboard handled server-side
-  const { user, loading: userLoading, error: userError } = useCurrentUser();
+  const { user, loading: userLoading, error: userError, retry: retryUser } = useCurrentUser();
 
   // ── Shared location counts (used by both SortedLocationSection and SchedulePage) ──
   const [locationCounts, setLocationCounts] = useState<LocationCounts | null>(null);
@@ -60,7 +60,8 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
   if (userError || !user) {
     return (
       <div className="py-16 text-center text-sm text-rose-600">
-        Unable to load your dashboard access. Please refresh and try again.
+        Unable to load your dashboard access{userError ? `: ${userError}` : ''}.{' '}
+        <button onClick={retryUser} className="underline font-medium">Try again</button>
       </div>
     );
   }
