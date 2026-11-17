@@ -2,6 +2,7 @@ import { auth } from "@clerk/nextjs/server";
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { errorMessage } from "@/lib/errorMessage";
+import { derivePermissions } from "@/lib/permissions";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -31,24 +32,7 @@ export async function GET() {
     return NextResponse.json({ error: "No profile found" }, { status: 403 });
   }
 
-  // Derive permissions from role + location + department
-  const isAdmin = profile.role === "admin";
-  const isGM = profile.role === "general_manager";
-  const isManager = profile.role === "manager";
-  const isUser = profile.role === "user";
-
-  const permissions = {
-    canEditUtah: isAdmin || (isGM && profile.location === "Utah") || (isManager && profile.location === "Utah"),
-    canEditGeorgia: isAdmin || (isGM && profile.location === "Georgia") || (isManager && profile.location === "Georgia"),
-    canViewUtah: isAdmin || isGM || (isManager && profile.location === "Utah") || (isUser && profile.location === "Utah"),
-    canViewGeorgia: isAdmin || isGM || (isManager && profile.location === "Georgia") || (isUser && profile.location === "Georgia"),
-    canViewCPO: !isUser,
-    canManageUsers: isAdmin || isGM || isManager,
-    canViewAllLocations: isAdmin || isGM,
-    canEditSchedule: isAdmin || isGM || isManager,
-    canEditHistoricals: isAdmin || isGM || isManager,
-    isUserRole: isUser,
-  };
+  const permissions = derivePermissions(profile);
 
   return NextResponse.json({ profile, permissions });
 }
