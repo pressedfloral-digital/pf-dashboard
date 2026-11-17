@@ -56,3 +56,26 @@ export function derivePermissions(profile: { role: string | null; location: stri
     isViewerRole:        isViewer,
   };
 }
+
+/**
+ * Whether these permissions allow editing data stored under `location`.
+ * 'Global' holds settings shared by both locations (paid holidays, company
+ * growth multipliers) — any admin/GM/manager may edit those, matching what
+ * the Scheduling and Growth tabs already let them do. Anything else
+ * (missing, misspelled) is never editable.
+ */
+export function canEditLocation(p: Permissions, location: string | null | undefined): boolean {
+  if (location === 'Utah')    return p.canEditUtah;
+  if (location === 'Georgia') return p.canEditGeorgia;
+  if (location === 'Global')  return p.canEditSchedule;
+  return false;
+}
+
+/**
+ * Company-wide data that changes pay, CPO or planning for both locations:
+ * Rippling/payroll uploads, state routing, the design anchor. Only admins
+ * and general managers — the same people who see the Payroll Upload tab.
+ */
+export function canEditCompanyData(role: string | null): boolean {
+  return role === 'admin' || role === 'general_manager';
+}

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { getAccess, forbidden } from '@/lib/routeAccess';
 import { supabase } from '@/lib/supabase';
 
 // GET /api/admin/rate-history?location=Utah
@@ -8,8 +8,10 @@ import { supabase } from '@/lib/supabase';
 // than only ever seeing the current value. See src/lib/rateHistorySync.ts
 // for how rows get written.
 export async function GET(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  // Returns pay — same people who can see CPO.
+  if (!access.permissions.canViewCPO) return forbidden("You don't have access to payroll data");
 
   const location = req.nextUrl.searchParams.get('location');
   if (!location) return NextResponse.json({ error: 'location is required' }, { status: 400 });

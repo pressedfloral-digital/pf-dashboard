@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
+import { getAccess, forbidden } from '@/lib/routeAccess';
 import { supabase } from '@/lib/supabase';
 import { shopifyGraphql } from '@/lib/shopifyGraphql';
 import { AUTO_SYNC_CREATED_BY, productByShopifyId } from '@/lib/bloomStock';
@@ -83,8 +84,11 @@ query BloomStockOrderByName($q: String!) {
 }`;
 
 export async function POST(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  // Bloom Stock is Utah-only — same rule as the tab (canEditUtah).
+  if (!access.permissions.canEditUtah) return forbidden('Only Utah admins and managers can edit Bloom Stock historicals');
+  const { userId } = access;
 
   const body = await req.json() as {
     kind: 'hours' | 'order'; weekOf: string; memberName: string; hours?: number; orderNumber?: string;
@@ -159,8 +163,10 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  // Bloom Stock is Utah-only — same rule as the tab (canEditUtah).
+  if (!access.permissions.canEditUtah) return forbidden('Only Utah admins and managers can edit Bloom Stock historicals');
   const id = req.nextUrl.searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
   const { error } = await supabase.from('bloom_stock_completions').delete().eq('id', id).eq('location', LOCATION);

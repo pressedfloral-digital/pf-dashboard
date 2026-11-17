@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { getAccess, forbidden } from '@/lib/routeAccess';
 import { supabase } from '@/lib/supabase';
 import { isoMondayFromDate } from '@/lib/weekDates';
 import { bloomStockAutoAssignee } from '@/lib/bloomStockAssignees';
@@ -22,8 +22,11 @@ const STATUSES = new Set(BLOOM_STOCK_STATUSES.map(s => s.key));
 const TYPES = new Set(Object.keys(BLOOM_STOCK_TYPE_LABEL));
 
 export async function POST(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  // Bloom Stock is Utah-only — same rule as the tab (canEditUtah).
+  if (!access.permissions.canEditUtah) return forbidden('Only Utah admins and managers can edit the Bloom Stock orders board');
+  const { userId } = access;
 
   const raw = await req.json() as Record<string, unknown>;
   if (typeof raw.addOrderNumber === 'string') return addOrder(raw.addOrderNumber, userId);

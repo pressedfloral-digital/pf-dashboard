@@ -1,15 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
+import { getAccess, forbidden } from '@/lib/routeAccess';
+import { canEditLocation } from '@/lib/permissions';
 import { isoMonday } from '@/lib/weekDates';
-
-// Admin/manager Clerk user IDs — same gate as /api/actuals
-const ADMIN_IDS = (process.env.ADMIN_CLERK_USER_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
-
-function isAdmin(userId: string): boolean {
-  if (ADMIN_IDS.length === 0) return true;
-  return ADMIN_IDS.includes(userId);
-}
 
 function addDays(iso: string, days: number): string {
   const d = new Date(iso + 'T12:00:00');
@@ -53,14 +47,17 @@ export async function GET(req: NextRequest) {
 // slipped must never quietly push that date back.
 // Body: { location, cohorts: { weekOf: string; weeksFromNow: number }[] }
 export async function POST(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (!isAdmin(userId)) return NextResponse.json({ error: 'Admin only' }, { status: 403 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  const { userId } = access;
 
   const body = await req.json() as { location: string; cohorts: { weekOf: string; weeksFromNow: number }[] };
   const { location, cohorts } = body;
   if (!location || !Array.isArray(cohorts) || cohorts.length === 0) {
     return NextResponse.json({ error: 'location and cohorts are required' }, { status: 400 });
+  }
+  if (!canEditLocation(access.permissions, location)) {
+    return forbidden(`You can't lock in design promises for ${location}`);
   }
 
   try {

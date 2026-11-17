@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
 import { syncRosterRoles } from '@/lib/rosterRoleSync';
+import { getAccess, forbidden } from '@/lib/routeAccess';
+import { canEditLocation } from '@/lib/permissions';
 
 // A roster save posts the *entire* roster object as it exists in the
 // saving browser tab's memory — if that tab has been open since before a
@@ -16,8 +17,10 @@ const ROSTER_KEYS = new Set(['designRoster', 'presRoster', 'ffRoster', 'resinRos
 // GET /api/schedule-settings?location=Utah
 // Returns all settings for a location as a flat object { key: value }
 export async function GET(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  // Rosters include pay rates — only roles that can open Scheduling read them.
+  if (!access.permissions.canViewScheduling) return forbidden('You don\'t have access to schedule settings');
 
   const location = req.nextUrl.searchParams.get('location') ?? 'Utah';
 
@@ -38,14 +41,20 @@ export async function GET(req: NextRequest) {
 // Body: { location, key, value }
 // Upserts a single key for a location
 export async function POST(req: NextRequest) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  const { userId } = access;
 
   const body = await req.json() as { location: string; key: string; value: unknown };
   const { location, key, value } = body;
 
   if (!location || !key) {
     return NextResponse.json({ error: 'location and key required' }, { status: 400 });
+  }
+  if (!canEditLocation(access.permissions, location)) {
+    return forbidden(location === 'Global'
+      ? 'Only admins and managers can change shared settings'
+      : `You can't edit ${location}'s schedule settings`);
   }
 
   const { error } = await supabase
