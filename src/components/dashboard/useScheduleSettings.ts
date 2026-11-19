@@ -202,13 +202,17 @@ const KEYS: (keyof ScheduleSettings)[] = [
   'designQueueFront','unavailability',
 ];
 
-export function useScheduleSettings(location: 'Utah' | 'Georgia') {
+// canEdit = false makes the settings read-only: edits are ignored instead of
+// changing the screen and then failing to save (the server rejects them).
+export function useScheduleSettings(location: 'Utah' | 'Georgia', canEdit = true) {
   const [settings,  setSettings]  = useState<ScheduleSettings>(DEFAULTS);
   const [loading,   setLoading]   = useState(true);
   // Which location `settings` currently holds — `loading` alone still reads
   // false for the first render after a location switch.
   const [loadedLocation, setLoadedLocation] = useState<'Utah' | 'Georgia' | null>(null);
   const [saveState, setSaveState] = useState<'idle'|'saving'|'saved'|'error'>('idle');
+  // The server's reason when a save fails (e.g. no permission for this location).
+  const [saveError, setSaveError] = useState<string | null>(null);
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
@@ -260,24 +264,30 @@ export function useScheduleSettings(location: 'Utah' | 'Georgia') {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ location, key, value }),
         });
-        if (!res.ok) throw new Error('Save failed');
+        if (!res.ok) {
+          const body = await res.json().catch(() => null) as { error?: string } | null;
+          throw new Error(body?.error ?? `Save failed (HTTP ${res.status})`);
+        }
+        setSaveError(null);
         setSaveState('saved');
         setTimeout(() => setSaveState('idle'), 1500);
-      } catch {
+      } catch (e) {
+        setSaveError(e instanceof Error && e.message !== 'Failed to fetch' ? e.message : 'Save failed — check connection');
         setSaveState('error');
-        setTimeout(() => setSaveState('idle'), 3000);
+        setTimeout(() => setSaveState('idle'), 5000);
       }
     }, 500);
   }, [location]);
 
   const update = useCallback(<K extends keyof ScheduleSettings>(key: K, value: ScheduleSettings[K]) => {
+    if (!canEdit) return;
     setSettings(prev => ({ ...prev, [key]: value }));
     save(key, value);
-  }, [save]);
+  }, [save, canEdit]);
 
   useEffect(() => () => { Object.values(timers.current).forEach(clearTimeout); }, []);
 
-  return { settings, loading, loadedLocation, saveState, update };
+  return { settings, loading, loadedLocation, saveState, saveError, update };
 }
 
 // Paid holidays: one shared calendar for both locations (staff are paid but

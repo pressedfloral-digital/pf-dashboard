@@ -38,6 +38,7 @@ import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { ratioFromActuals, syncRosterRatios, type RatioActualRow } from '@/lib/rosterRatio';
 import { HelpTip } from './HelpTip';
 import { WeekCell, WeekHead } from './WeekCell';
+import { ReadOnlyGate } from './PermissionGate';
 import { PreservationFlowTab, TurnaroundDots, type PresFlowWeek } from './PreservationFlowTab';
 import { DEFAULT_FLOW_DAY_PCTS, simulateFlowWeek, splitArrivals, type FlowDayInput } from '@/lib/preservationFlow';
 
@@ -1602,7 +1603,9 @@ type BouquetEstimateSource =
 
 function PreservationSection({ location, preservationQueue, countsLoading, teamActuals, onActualsSaved,
   presHours, presDailyHours, presCheckHours, presCheckCounts, onPresCheckCountsChange, onPresDailyHoursChange, onPresCheckHoursChange, presRoster, presSettings, mgrTotalHours, mgrTotalDailyHours, onPresHoursChange, onPresRosterChange, onPresSettingsChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {}, weeklyEstimates = {}, presActuals = {}, onReceivedSaved, canViewCPO = true, userRole = 'admin', canSeeManagerCPO = () => false,
-  bouquetsReceivedByWeek, bouquetsEstimateSourceByWeek, presNewHireHours, onPresNewHireHoursChange, paidHolidays, unavailability, onUnavailabilityChange }: {
+  bouquetsReceivedByWeek, bouquetsEstimateSourceByWeek, presNewHireHours, onPresNewHireHoursChange, paidHolidays, unavailability, onUnavailabilityChange, readOnly = false }: {
+  /** This location can't be edited by the viewer: roster shows view-only. */
+  readOnly?:             boolean;
   location:              'Utah' | 'Georgia';
   preservationQueue:     number;
   countsLoading:         boolean;
@@ -2350,9 +2353,10 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
       {/* Roster editor — always visible regardless of tab, matching Design/Fulfillment */}
       <div>
         <button onClick={() => setShowRoster(r => !r)} className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">
-          {showRoster ? '▲ Hide' : '▼ Edit'} preservation roster, ratios &amp; pay rates
+          {showRoster ? '▲ Hide' : readOnly ? '▼ View' : '▼ Edit'} preservation roster, ratios &amp; pay rates
         </button>
         {showRoster && (
+          <ReadOnlyGate isReadOnly={readOnly}>
           <div className="mt-3 bg-white border border-slate-100 rounded-xl p-5">
             <PresRosterEditor
               team={team}
@@ -2382,6 +2386,7 @@ function PreservationSection({ location, preservationQueue, countsLoading, teamA
             <ArchivedMembers members={buildPresTeam(true).filter(m => presRoster[m.id]?._removed)} onRestore={handleRestoreMember} />
             <p className="mt-3 text-xs text-slate-400"><strong>Ratio:</strong> hours per order. e.g. 0.7 = 1 order takes 0.7 hrs.</p>
           </div>
+          </ReadOnlyGate>
         )}
       </div>
 
@@ -3107,7 +3112,9 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
   ffHours, ffRoster, mgrTotalHours, mgrTotalDailyHours, onFfHoursChange, onFfRosterChange, onMgrTotalHoursChange, onMgrTotalDailyHoursChange, employeeRates = {},
   ffDailyHoursProp, onFfDailyHoursChange, canViewCPO = true, userRole = 'admin', canSeeManagerCPO = () => false,
   ffNewHireHours, onFfNewHireHoursChange, ffCohortIntake,
-  fullPipelineRemaining, ffStaffingByWeek, paidHolidays, unavailability, onUnavailabilityChange }: {
+  fullPipelineRemaining, ffStaffingByWeek, paidHolidays, unavailability, onUnavailabilityChange, readOnly = false }: {
+  /** This location can't be edited by the viewer: roster shows view-only. */
+  readOnly?:       boolean;
   location:        'Utah' | 'Georgia';
   fulfillmentQueue: number;
   countsLoading:   boolean;
@@ -3367,9 +3374,10 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
       {/* Roster editor — always visible regardless of tab, matching Design */}
       <div>
         <button onClick={() => setShowRoster(r => !r)} className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">
-          {showRoster ? '▲ Hide' : '▼ Edit'} fulfillment roster, ratios &amp; pay rates
+          {showRoster ? '▲ Hide' : readOnly ? '▼ View' : '▼ Edit'} fulfillment roster, ratios &amp; pay rates
         </button>
         {showRoster && (
+          <ReadOnlyGate isReadOnly={readOnly}>
           <div className="mt-3 bg-white border border-slate-100 rounded-xl p-5">
             <FfRosterEditor
               team={team}
@@ -3402,6 +3410,7 @@ function FulfillmentSection({ location, fulfillmentQueue, countsLoading, teamAct
             <ArchivedMembers members={buildFfTeam(true).filter(m => ffRoster[m.id]?._removed)} onRestore={handleRestoreFfMember} />
             <p className="mt-3 text-xs text-slate-400"><strong>Ratio:</strong> hours per order. e.g. 0.5 = 1 order per 0.5 hrs.</p>
           </div>
+          </ReadOnlyGate>
         )}
       </div>
 
@@ -4554,7 +4563,7 @@ export function SchedulePage({
   };
 
   // ── Supabase-persisted settings ───────────────────────────────────────────────
-  const { settings, loading: settingsLoading, loadedLocation: settingsLocation, saveState, update } = useScheduleSettings(location);
+  const { settings, loading: settingsLoading, loadedLocation: settingsLocation, saveState, saveError, update } = useScheduleSettings(location, canEditCurrent);
   const { holidays: paidHolidays, addHoliday, removeHoliday } = usePaidHolidays();
   const [pendingHolidayDate, setPendingHolidayDate] = useState('');
   // Employee rates from Rippling — used to fill zero rates for flex members
@@ -5828,7 +5837,7 @@ export function SchedulePage({
             <span className="text-xs text-green-600">✓ Saved</span>
           )}
           {saveState === 'error' && (
-            <span className="text-xs text-red-500">Save failed — check connection</span>
+            <span className="text-xs text-red-500">{saveError ?? 'Save failed'}</span>
           )}
         </div>
         <div className="flex items-center gap-3">
@@ -5855,6 +5864,7 @@ export function SchedulePage({
         <>
         <DeptKpiBars dept="preservation" location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} plain />
         <PreservationSection
+          readOnly={!canEditCurrent}
           location={location}
           unavailability={settings.unavailability ?? []}
           onUnavailabilityChange={(n) => update('unavailability', n)}
@@ -5917,6 +5927,7 @@ export function SchedulePage({
         <>
         <DeptKpiBars dept="fulfillment" location={location} kpiState={kpiMetrics} showCPO={hasAnyRates} />
         <FulfillmentSection
+          readOnly={!canEditCurrent}
           location={location}
           unavailability={settings.unavailability ?? []}
           onUnavailabilityChange={(n) => update('unavailability', n)}
@@ -5960,9 +5971,10 @@ export function SchedulePage({
           <div>
             <button onClick={() => setShowRoster(r => !r)}
               className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">
-              {showRoster ? '▲ Hide' : '▼ Edit'} designer roster, ratios &amp; pay rates
+              {showRoster ? '▲ Hide' : !canEditCurrent ? '▼ View' : '▼ Edit'} designer roster, ratios &amp; pay rates
             </button>
             {showRoster && (
+              <ReadOnlyGate isReadOnly={!canEditCurrent}>
               <div className="mt-3 bg-white border border-slate-100 rounded-xl p-5">
                 <RosterEditor
                   designers={designers}
@@ -5988,6 +6000,7 @@ export function SchedulePage({
                 )}
                 <ArchivedMembers members={buildDesigners(true).filter(d => settings.designRoster[d.id]?._removed)} onRestore={handleRestoreDesigner} />
               </div>
+              </ReadOnlyGate>
             )}
           </div>
 
@@ -6983,7 +6996,7 @@ export function SchedulePage({
       {dept === 'resin' && (
         <>
         <DeptKpiBars dept="resin" location="Utah" kpiState={kpiMetrics} showCPO={hasAnyRates} />
-        <ResinPage canViewCPO={canViewCPO} canSeeManagerCPO={canSeeManagerCPO} userRole={userRole}
+        <ResinPage canEdit={canEditUtah} canViewCPO={canViewCPO} canSeeManagerCPO={canSeeManagerCPO} userRole={userRole}
           // Resin is Utah-only; share this page's list only while it holds Utah's.
           {...(location === 'Utah' && settingsLocation === 'Utah'
             ? { unavailability: settings.unavailability ?? [], onUnavailabilityChange: (n: UnavailabilityEntry[]) => update('unavailability', n) }

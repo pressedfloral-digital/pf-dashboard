@@ -20,6 +20,7 @@ import { PersonCell, DayHead, InlineNumber, ShiftBlock, OffBlock, ArchiveButton,
 import { HelpTip } from './HelpTip';
 import { useProductionAssignmentCounts } from '@/hooks/useProductionAssignmentCounts';
 import { ProductionActual, ProductionActualsStatus, sumActuals } from './ProductionActual';
+import { ReadOnlyGate } from './PermissionGate';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -122,8 +123,8 @@ function mondayOf(dateStr: string): Date {
 
 // ─── Persistence helpers ───────────────────────────────────────────────────────
 
-function useResinSettings() {
-  const { settings, loading, saveState, update } = useScheduleSettings('Utah');
+function useResinSettings(canEdit: boolean) {
+  const { settings, loading, saveState, saveError, update } = useScheduleSettings('Utah', canEdit);
   const { holidays: paidHolidays } = usePaidHolidays();
 
   const resinDailyHours: DailyHoursMap = settings.resinDailyHours ?? {};
@@ -173,7 +174,7 @@ function useResinSettings() {
     newHireHours, setNewHireHours,
     unavailability, setUnavailability,
     paidHolidays,
-    loading, saveState,
+    loading, saveState, saveError,
   };
 }
 
@@ -184,6 +185,8 @@ interface ResinPageProps {
   canViewCPO?: boolean;
   canSeeManagerCPO?: (name: string) => boolean;
   userRole?: string;
+  /** Can edit Utah (Resin is Utah-only). False = roster and settings are view-only. */
+  canEdit?: boolean;
   // Utah's availability list, when the page around Resin already holds it —
   // one copy, so edits here and in the other Utah grids don't overwrite each
   // other. Falls back to Resin's own Utah settings when not passed.
@@ -191,7 +194,7 @@ interface ResinPageProps {
   onUnavailabilityChange?: (next: UnavailabilityEntry[]) => void;
 }
 
-export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManagerCPO = () => false, userRole = 'admin', unavailability: unavailabilityProp, onUnavailabilityChange }: ResinPageProps) {
+export default function ResinPage({ resinQueue, canEdit = true, canViewCPO = true, canSeeManagerCPO = () => false, userRole = 'admin', unavailability: unavailabilityProp, onUnavailabilityChange }: ResinPageProps) {
   const [activeTab, setActiveTab] = useState<'thisweek' | 'schedule' | 'queue' | 'historicals'>('thisweek');
   const [thisWeekOffset, setThisWeekOffset] = useState(0);
   const resinSel = useCellSelection(thisWeekOffset);
@@ -213,8 +216,8 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
     newHireHours, setNewHireHours,
     unavailability: ownUnavailability, setUnavailability: setOwnUnavailability,
     paidHolidays,
-    loading, saveState,
-  } = useResinSettings();
+    loading, saveState, saveError,
+  } = useResinSettings(canEdit);
   const unavailability = unavailabilityProp ?? ownUnavailability;
   const setUnavailability = onUnavailabilityChange ?? setOwnUnavailability;
   const [showAvail] = useShowAvailability();
@@ -658,7 +661,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
           <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="resin.title">Resin Scheduling</HelpTip></h2>
           {saveState === 'saving' && <span className="text-xs text-slate-400">Saving…</span>}
           {saveState === 'saved'  && <span className="text-xs text-emerald-500">Saved</span>}
-          {saveState === 'error'  && <span className="text-xs text-red-500">Save failed</span>}
+          {saveState === 'error'  && <span className="text-xs text-red-500">{saveError ?? 'Save failed'}</span>}
         </div>
 
         {/* Queue summary pills */}
@@ -718,9 +721,10 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
       <div>
         <button onClick={() => setShowRoster(r => !r)}
           className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">
-          {showRoster ? '▲ Hide' : '▼ Edit'} resin roster, ratios &amp; pay rates
+          {showRoster ? '▲ Hide' : canEdit ? '▼ Edit' : '▼ View'} resin roster, ratios &amp; pay rates
         </button>
         {showRoster && (
+          <ReadOnlyGate isReadOnly={!canEdit}>
           <div className="mt-3 bg-white border border-slate-100 rounded-xl p-5">
             <div className="grid grid-cols-[16px_1fr_80px_90px_20px] gap-2 mb-2 px-1 text-xs font-medium text-slate-400">
               <span /><span>Name</span><span className="text-center">Role</span><span className="text-center">Ratio</span><span />
@@ -794,6 +798,7 @@ export default function ResinPage({ resinQueue, canViewCPO = true, canSeeManager
             <ArchivedMembers members={allRoster.filter(m => m._removed)} onRestore={restoreMember} />
             <p className="mt-3 text-xs text-slate-400"><strong>Ratio:</strong> hours per unit. e.g. 1.5 = 1 unit takes 1.5 hrs.</p>
           </div>
+          </ReadOnlyGate>
         )}
       </div>
 
