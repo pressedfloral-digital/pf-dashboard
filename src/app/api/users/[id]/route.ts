@@ -1,34 +1,38 @@
-import { auth } from "@clerk/nextjs/server";
-import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { supabase } from "@/lib/supabase";
+import { getAccess, forbidden } from "@/lib/routeAccess";
+import { editDenied, manageDenied, type TargetUser } from "@/lib/userManagement";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+async function loadTarget(id: string): Promise<TargetUser | NextResponse> {
+  const { data, error } = await supabase
+    .from("user_profiles")
+    .select("clerk_user_id, role, location")
+    .eq("clerk_user_id", id)
+    .maybeSingle();
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!data) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  return data as TargetUser;
+}
 
-// PATCH /api/users/[id] — update a user profile (admin only)
+// PATCH /api/users/[id] — update a user profile. Admins: anyone. GMs and
+// managers: people in their own location, within the roles they can assign.
 export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
 
-  const { data: requestor } = await supabase
-    .from("user_profiles")
-    .select("role")
-    .eq("clerk_user_id", userId)
-    .single();
-
-  if (requestor?.role !== "admin") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const target = await loadTarget((await params).id);
+  if (target instanceof NextResponse) return target;
 
   const body = await req.json();
   const { role, location, department, team_member_name, manager_id } = body;
 
-  const updates: Record<string, any> = {};
+  const denied = editDenied(access, target, { role, location });
+  if (denied) return forbidden(denied);
+
+  const updates: Record<string, unknown> = {};
   if (role !== undefined) updates.role = role;
   if (location !== undefined) updates.location = location;
   if (department !== undefined) updates.department = department;
@@ -38,35 +42,31 @@ export async function PATCH(
   const { error } = await supabase
     .from("user_profiles")
     .update(updates)
-    .eq("clerk_user_id", (await params).id);
+    .eq("clerk_user_id", target.clerk_user_id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   return NextResponse.json({ success: true });
 }
 
-// DELETE /api/users/[id] — remove a user (admin only)
+// DELETE /api/users/[id] — remove a user. Same who-can-manage-whom rules.
 export async function DELETE(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
 
-  const { data: requestor } = await supabase
-    .from("user_profiles")
-    .select("role")
-    .eq("clerk_user_id", userId)
-    .single();
+  const target = await loadTarget((await params).id);
+  if (target instanceof NextResponse) return target;
 
-  if (requestor?.role !== "admin") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const denied = manageDenied(access, target);
+  if (denied) return forbidden(denied);
 
   const { error } = await supabase
     .from("user_profiles")
     .delete()
-    .eq("clerk_user_id", (await params).id);
+    .eq("clerk_user_id", target.clerk_user_id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 

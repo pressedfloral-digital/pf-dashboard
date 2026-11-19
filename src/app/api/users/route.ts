@@ -1,27 +1,15 @@
-import { auth } from "@clerk/nextjs/server";
-import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { clerkClient } from "@clerk/nextjs/server";
+import { supabase } from "@/lib/supabase";
+import { getAccess, forbidden } from "@/lib/routeAccess";
+import { inviteDenied } from "@/lib/userManagement";
+import { errorMessage } from "@/lib/errorMessage";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-// GET /api/users — list all users (admin only)
+// GET /api/users — list all users (admins, GMs, managers)
 export async function GET() {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
-
-  const { data: requestor } = await supabase
-    .from("user_profiles")
-    .select("role")
-    .eq("clerk_user_id", userId)
-    .single();
-
-  if (!["admin", "general_manager", "manager"].includes(requestor?.role ?? "")) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  if (!access.permissions.canManageUsers) return forbidden("You don't have access to Team Access");
 
   const { data: users, error } = await supabase
     .from("user_profiles")
@@ -33,20 +21,12 @@ export async function GET() {
   return NextResponse.json({ users });
 }
 
-// POST /api/users — invite a new user (admin only)
+// POST /api/users — invite a new user. Admins: anyone. GMs and managers:
+// their own location, at the roles in lib/userManagement.ts.
 export async function POST(req: Request) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
-
-  const { data: requestor } = await supabase
-    .from("user_profiles")
-    .select("role")
-    .eq("clerk_user_id", userId)
-    .single();
-
-  if (requestor?.role !== "admin") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const access = await getAccess();
+  if (access instanceof NextResponse) return access;
+  const { userId } = access;
 
   const body = await req.json();
   const { email, full_name, role, location, department, team_member_name, manager_id } = body;
@@ -54,7 +34,8 @@ export async function POST(req: Request) {
   if (!email || !full_name || !role) {
     return NextResponse.json({ error: "email, full_name, and role are required" }, { status: 400 });
   }
-
+  const denied = inviteDenied(access, { role, location: location ?? null });
+  if (denied) return forbidden(denied);
   try {
     const clerk = await clerkClient();
     await clerk.invitations.createInvitation({
@@ -72,8 +53,8 @@ export async function POST(req: Request) {
     });
 
     return NextResponse.json({ success: true });
-  } catch (err: any) {
+  } catch (err) {
     console.error("Invite error:", err);
-    return NextResponse.json({ error: err.message ?? "Failed to send invite" }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(err) || "Failed to send invite" }, { status: 500 });
   }
 }

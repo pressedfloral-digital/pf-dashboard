@@ -3,8 +3,9 @@ import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { useRouter } from "next/navigation";
 import { TeamMemberSelect } from "./TeamMemberSelect";
 import { HelpTip } from "./HelpTip";
+import { assignableLocations, assignableRoles, manageDenied, type Actor } from "@/lib/userManagement";
 
-type UserRole = "admin" | "general_manager" | "manager" | "user";
+type UserRole = "admin" | "general_manager" | "manager" | "user" | "viewer";
 
 interface UserProfile {
   clerk_user_id: string;
@@ -19,7 +20,7 @@ interface UserProfile {
   manager?: { full_name: string; email: string } | null;
 }
 
-const ROLES: UserRole[] = ["admin", "general_manager", "manager", "user"];
+const ROLES: UserRole[] = ["admin", "general_manager", "manager", "user", "viewer"];
 const LOCATIONS = ["Utah", "Georgia"];
 const DEPARTMENTS = ["design", "preservation", "fulfillment"];
 
@@ -33,6 +34,7 @@ const roleLabel = (role: UserRole) => {
   if (role === "general_manager") return "General Manager";
   if (role === "admin") return "Admin";
   if (role === "manager") return "Manager";
+  if (role === "viewer") return "Viewer";
   return "User";
 };
 
@@ -132,7 +134,12 @@ export default function UserManagementPage() {
 
   const deleteUser = async (id: string) => {
     if (!confirm("Remove this user? They will lose access immediately.")) return;
-    await fetch(`/api/users/${id}`, { method: "DELETE" });
+    setError(null);
+    const res = await fetch(`/api/users/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null) as { error?: string } | null;
+      setError(data?.error ?? "Couldn't remove this user");
+    }
     fetchUsers();
   };
 
@@ -168,6 +175,20 @@ export default function UserManagementPage() {
     return <div className="p-8 text-gray-500">You don't have permission to view this page.</div>;
   }
 
+  // Invites and edits run as the real signed-in user (the server checks
+  // them, not the impersonated one), so offer only what they're allowed:
+  // see lib/userManagement.ts.
+  const me = realUser?.profile;
+  const actor: Actor = { userId: me?.clerk_user_id ?? "", role: me?.role ?? null, location: me?.location ?? null };
+  const isAdmin = actor.role === "admin";
+  const roleOptions = assignableRoles(actor.role);
+  const locationOptions = assignableLocations(actor) ?? LOCATIONS;
+  const canManage = (u: UserProfile) => !manageDenied(actor, u);
+  const openInvite = () => {
+    if (!isAdmin) setInviteLocation(actor.location ?? "");
+    setShowInviteForm(true);
+  };
+
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
@@ -176,7 +197,7 @@ export default function UserManagementPage() {
           <p className="text-sm text-gray-500 mt-1">{users.length} registered user{users.length !== 1 ? "s" : ""}</p>
         </div>
         <button
-          onClick={() => setShowInviteForm(true)}
+          onClick={openInvite}
           className="px-4 py-2 bg-[#703C2E] text-white text-sm font-medium rounded-lg hover:bg-[#5a3025] transition-colors"
         >
           + Invite User
@@ -226,7 +247,7 @@ export default function UserManagementPage() {
                 value={inviteRole}
                 onChange={e => setInviteRole(e.target.value as UserRole)}
               >
-                {ROLES.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
+                {roleOptions.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
               </select>
             </div>
             <div>
@@ -236,8 +257,8 @@ export default function UserManagementPage() {
                 value={inviteLocation}
                 onChange={e => setInviteLocation(e.target.value)}
               >
-                <option value="">— None —</option>
-                {LOCATIONS.map(l => <option key={l} value={l}>{l}</option>)}
+                {isAdmin && <option value="">— None —</option>}
+                {locationOptions.map(l => <option key={l} value={l}>{l}</option>)}
               </select>
             </div>
             <div>
@@ -306,7 +327,7 @@ export default function UserManagementPage() {
                   value={editingUser.role}
                   onChange={e => setEditingUser({ ...editingUser, role: e.target.value as UserRole })}
                 >
-                  {ROLES.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
+                  {roleOptions.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
                 </select>
               </div>
               <div>
@@ -316,8 +337,8 @@ export default function UserManagementPage() {
                   value={editingUser.location ?? ""}
                   onChange={e => setEditingUser({ ...editingUser, location: e.target.value || null })}
                 >
-                  <option value="">— None —</option>
-                  {LOCATIONS.map(l => <option key={l} value={l}>{l}</option>)}
+                  {isAdmin && <option value="">— None —</option>}
+                  {locationOptions.map(l => <option key={l} value={l}>{l}</option>)}
                 </select>
               </div>
               <div>
@@ -408,12 +429,14 @@ export default function UserManagementPage() {
                   <td className="px-4 py-3 text-gray-600">{u.team_member_name ?? "—"}</td>
                   <td className="px-4 py-3">
                     <div className="flex gap-2 justify-end">
-                      <button
-                        onClick={() => setEditingUser(u)}
-                        className="text-xs px-3 py-1 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
-                      >
-                        Edit
-                      </button>
+                      {canManage(u) && (
+                        <button
+                          onClick={() => setEditingUser(u)}
+                          className="text-xs px-3 py-1 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+                        >
+                          Edit
+                        </button>
+                      )}
                       {u.clerk_user_id !== realUser?.profile.clerk_user_id &&
                        outranks(user?.profile.role as UserRole, u.role) && (
                         <button
@@ -423,8 +446,8 @@ export default function UserManagementPage() {
                           View as
                         </button>
                       )}
-                      {u.clerk_user_id !== realUser?.profile.clerk_user_id &&
-                       outranks(user?.profile.role as UserRole, u.role) && (
+                      {u.clerk_user_id !== realUser?.profile.clerk_user_id && canManage(u) &&
+                       (!isAdmin || u.role !== "admin") && (
                         <button
                           onClick={() => deleteUser(u.clerk_user_id)}
                           className="text-xs px-3 py-1 rounded-lg border border-red-100 text-red-500 hover:bg-red-50 transition-colors"
