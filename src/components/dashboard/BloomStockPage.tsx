@@ -162,7 +162,7 @@ type BS = ReturnType<typeof useBloomStock>;
 // ─── Page ──────────────────────────────────────────────────────────────────────
 
 export default function BloomStockPage({ canEdit, canViewCPO }: { canEdit: boolean; canViewCPO: boolean }) {
-  const { settings, loading, saveState, update } = useScheduleSettings('Utah');
+  const { settings, loading, saveState, saveError, update } = useScheduleSettings('Utah', canEdit);
   const { holidays } = usePaidHolidays();
   const bs = useBloomStock(settings, update, holidays);
   const queue = useBloomStockQueue();
@@ -244,7 +244,7 @@ export default function BloomStockPage({ canEdit, canViewCPO }: { canEdit: boole
           {loading && <span className="text-slate-400 italic">Loading…</span>}
           {saveState === 'saving' && <span className="text-slate-400">Saving…</span>}
           {saveState === 'saved' && <span className="text-green-600">✓ Saved</span>}
-          {saveState === 'error' && <span className="text-red-500">Save failed</span>}
+          {saveState === 'error' && <span className="text-red-500">{saveError ?? 'Save failed'}</span>}
         </div>
       </div>
 
