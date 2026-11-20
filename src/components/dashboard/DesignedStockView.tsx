@@ -12,8 +12,8 @@ function fmtQty(n: number): string {
 
 // Production order of the designed statuses, for the filter chips.
 const STATUS_ORDER = [
-  'frameCompleted', 'disapproved', 'frameDisapproved', 'approved', 'frameApproved',
-  'glued', 'readyToSeal', 'readyToPackage', 'readyToShip', 'readyToFulfill', 'preparingToBeShipped',
+  'frameCompleted', 'disapproved', 'approved',
+  'glued', 'readyToSeal', 'readyToPackage', 'readyToFulfill', 'preparingToBeShipped',
 ];
 
 function downloadCsv(location: string, lines: QueueLine[]) {
