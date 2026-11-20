@@ -6,14 +6,14 @@ import { isoMonday, getWeekMondays } from '@/lib/weekDates';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { projectDept, buildManagerHomeDept, type DesignRosterEntry, type HoursMap, type DailyHoursMap } from '@/lib/scheduleProjection';
 import {
-  DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, PRESERVATION_WEEKS,
+  DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, DESIGNED_STATUSES, PRESERVATION_WEEKS,
   parseVariant, mondayOf, addWeeks, scheduleLines, matchMaterials, type QueueLine,
 } from '@/lib/designInventory';
 import { loadKatana } from '@/lib/katana';
 import { buildOrderPlan, ORDER_EDITS_KEY, type OrderPlan, type OrderEdits } from '@/lib/katanaPlan';
 import { MAX_LEAD_WEEKS } from '@/lib/supplierLeadTimes';
 import { resolveOrderUuids } from '@/lib/orderUuids';
-import { loadPipelineLines } from '@/lib/designPipeline';
+import { loadPipelineLines, PIPELINE_STATUSES } from '@/lib/designPipeline';
 import { readSavedAddOns, fetchAddOns, ADDONS_REFRESH_HOURS, type SavedAddOns } from '@/lib/orderAddOns';
 import { saveSnapshot, loadSnapshot } from '@/lib/inventorySnapshots';
 
@@ -75,10 +75,14 @@ export async function GET(req: NextRequest) {
       }, { status: 503 });
     }
     let missingLocation = 0;
-    const raw = pipeline.lines.filter(({ item }) => {
+    const here = pipeline.lines.filter(({ item }) => {
       if (!item.location) { missingLocation++; return false; }
       return item.location === location;
     });
+    // Already designed, not shipped: their materials come out of stock
+    // instead of being scheduled.
+    const raw = here.filter(({ item }) => !DESIGNED_STATUSES.has(item.status ?? ''));
+    const designedRaw = here.filter(({ item }) => DESIGNED_STATUSES.has(item.status ?? ''));
 
     // ── 2. Bouquet-received dates (intake week) ────────────────────────────
     const receivedAt: Record<string, string> = {};
@@ -112,6 +116,18 @@ export async function GET(req: NextRequest) {
         designableWeek: DESIGN_QUEUE_STATUSES.has(status) ? thisWeek : addWeeks(mondayOf(intakeDate), PRESERVATION_WEEKS),
       };
     });
+
+    const designedLines: QueueLine[] = designedRaw.map(({ item, num }) => ({
+      orderNumber:  num,
+      customer:     item.orderName ?? '',
+      product:      item.productTitle ?? '',
+      variant:      item.variantTitle ?? '',
+      ...parseVariant(item.variantTitle),
+      status:       item.status ?? '',
+      intakeDate:   item.eventDate?.slice(0, 10) ?? item.originalOrderDate?.slice(0, 10) ?? thisWeek,
+      intakeSource: 'eventDate',
+      designableWeek: thisWeek,
+    }));
 
     // ── 3. Design capacity per week (same projection as /api/kpis) ─────────
     const [{ data: settingsData, error: settingsError }, { data: managerEmpRows }, actualRows] = await Promise.all([
@@ -160,21 +176,30 @@ export async function GET(req: NextRequest) {
     const weeks = scheduled.weeks.slice(0, keep);
     const capacityWeeks = allCapacityWeeks.slice(0, keep);
 
-    // ── 4. Backing & glass for every scheduled order ───────────────────────
+    // ── 4. Backing & glass for every scheduled and designed order ──────────
     const scheduledNums = [...new Set(weeks.flatMap(w => w.lines.map(l => l.orderNumber)))];
+    const designedNums = [...new Set(designedLines.map(l => l.orderNumber))];
+    // Scheduled orders first, so they get the live-fetch budget first.
+    const allNums = [...new Set([...scheduledNums, ...designedNums])];
     // WeeklyReport has order numbers but not the order UUIDs /Orders/{uuid}
     // (the only endpoint returning backing/glass add-ons) needs.
-    const orderUuids = await resolveOrderUuids(scheduledNums, [...DESIGN_QUEUE_STATUSES, ...PRESERVATION_STATUSES]);
+    const orderUuids = await resolveOrderUuids(allNums, PIPELINE_STATUSES);
     // Saved add-ons (kept current by /api/cron/refresh-order-addons); orders
     // never saved are fetched now, within the time budget.
-    const { saved, tableOk } = await readSavedAddOns(scheduledNums);
-    const neverSaved = scheduledNums.filter(n => !saved[n] && orderUuids[n]);
+    const { saved, tableOk } = await readSavedAddOns(allNums);
+    const neverSaved = allNums.filter(n => !saved[n] && orderUuids[n]);
     const live = await fetchAddOns(neverSaved.map(num => ({ num, uuid: orderUuids[num] })), {
       concurrency: LIVE_ADDON_CONCURRENCY, deadline: startedAt + LIVE_ADDON_BUDGET_MS, save: tableOk,
     });
     const addOnsByOrder: Record<string, SavedAddOns> = { ...saved, ...live.fetched };
 
+    // One set across both, so an order with a designed frame and a scheduled
+    // one never pairs both with the same backing or glass. Designed lines
+    // pick first: their add-ons are already built in.
     const usedAddOns = new Set<string>();
+    for (const line of designedLines) {
+      line.materials = matchMaterials(line, addOnsByOrder[line.orderNumber]?.addOns ?? null, usedAddOns);
+    }
     let unknownLines = 0;
     for (const w of weeks) {
       for (const line of w.lines) {
@@ -188,7 +213,7 @@ export async function GET(req: NextRequest) {
     let orderPlan: OrderPlan | null = null;
     let katanaError: string | null = null;
     try {
-      orderPlan = buildOrderPlan(await katanaPromise, location, weeks, thisWeek);
+      orderPlan = buildOrderPlan(await katanaPromise, location, weeks, thisWeek, designedLines);
     } catch (e) {
       katanaError = String(e);
     }
@@ -204,6 +229,8 @@ export async function GET(req: NextRequest) {
       designedThisWeek,
       weeks: weeks.map((w, i) => ({ ...w, scheduled: Math.round(capacityWeeks[i].scheduled) })),
       unscheduledCount: unscheduled.length,
+      // Already designed, not shipped — subtracted from Katana stock.
+      designedLines,
       through: weeks[weeks.length - 1]?.weekOf ?? thisWeek,
       totals: {
         lines: lines.length,

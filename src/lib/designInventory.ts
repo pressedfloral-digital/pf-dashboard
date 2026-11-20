@@ -16,6 +16,14 @@ export const DESIGN_QUEUE_STATUSES = new Set(['readyToFrame', 'readyToDesign']);
 // Still drying; will graduate into Design's queue.
 export const PRESERVATION_STATUSES = new Set(['bouquetReceived', 'checkedOn', 'progress', 'almostReadyToFrame']);
 
+// Already designed but not shipped: the frame (and its backing and glass) is
+// built into the piece, yet Katana keeps counting it in stock until the order
+// is fulfilled. These are subtracted from Katana stock.
+export const DESIGNED_STATUSES = new Set([
+  'frameCompleted', 'frameApproved', 'approved', 'disapproved', 'frameDisapproved',
+  'glued', 'readyToSeal', 'readyToPackage', 'readyToShip', 'readyToFulfill', 'preparingToBeShipped',
+]);
+
 // Line items that ride along on an order but aren't anything Design builds —
 // counting them would eat design capacity and pad the inventory list.
 export const NON_DESIGN_PRODUCTS = new Set(['Floral Preservation Deposit', 'Pre-paid Overnight Shipping Label']);
