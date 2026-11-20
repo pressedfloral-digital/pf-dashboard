@@ -5,7 +5,7 @@ import { weekMonday } from '@/lib/pf-api';
 import {
   computeWeeklyActualCounts,
   normalizeAssignmentStaffName,
-  type AssignmentDepartment,
+  type ActualsCountKey,
 } from '@/lib/assignment-counts';
 import { isNonProductionStaff } from '@/lib/nonProductionStaff';
 import { adjustmentRowKey, netAdjustment, type OrderAdjustment } from '@/lib/orderAdjustments';
@@ -14,7 +14,8 @@ import { syncBloomStockWeek } from '@/lib/bloomStockSync';
 
 export const maxDuration = 300;
 
-// Weekly (Mondays): auto-fills team_member_week_actuals.actual_orders from the exact
+// Weekly (Mondays): auto-fills team_member_week_actuals.actual_orders (Preservation,
+// Design, Fulfillment and Resin) from the exact
 // assignment-count endpoint used by Support Assistant's Frames > Team view,
 // so managers no longer have to hand-type these counts. Re-syncs the last
 // RESYNC_WEEKS completed Mon–Sun weeks so app-side date corrections and
@@ -26,17 +27,22 @@ export const maxDuration = 300;
 //
 // ?dryRun=1 computes and reports what would change without writing anything.
 
-const DEPT_KEYS = ['Preservation', 'Design', 'Fulfillment'] as const;
+// Resin is credited per piece made — the resin pieces the assignment counts
+// take back out of Design (see computeDailyAssignmentCounts). Its Historicals
+// rows use the department name 'Resin', not a lowercase key.
+const DEPT_KEYS = ['Preservation', 'Design', 'Fulfillment', 'Resin'] as const;
 const ACTUALS_DEPT: Record<(typeof DEPT_KEYS)[number], string> = {
   Preservation: 'preservation',
   Design:       'design',
   Fulfillment:  'fulfillment',
+  Resin:        'Resin',
 };
 
-const COUNT_KEY: Record<(typeof DEPT_KEYS)[number], AssignmentDepartment> = {
+const COUNT_KEY: Record<(typeof DEPT_KEYS)[number], ActualsCountKey> = {
   Preservation: 'preservation',
   Design:       'design',
   Fulfillment:  'fulfillment',
+  Resin:        'resin',
 };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -71,7 +77,7 @@ async function syncWeek(monday: Date, dryRun: boolean) {
     supabase
       .from('schedule_settings')
       .select('location, value')
-      .in('key', ['designRoster', 'presRoster', 'ffRoster']),
+      .in('key', ['designRoster', 'presRoster', 'ffRoster', 'resinRoster']),
     supabase
       .from('weekly_labor_cost')
       .select('employee, location')
@@ -93,7 +99,8 @@ async function syncWeek(monday: Date, dryRun: boolean) {
   payrollResult.data?.forEach(row => setLocation(row.employee, row.location));
   staffResult.data?.forEach(row => setLocation(row.name, row.location));
   rosterResult.data?.forEach(row => {
-    const roster = row.value as Record<string, { name?: string; _removed?: boolean }> | null;
+    // resinRoster is an array; the others are keyed by member id.
+    const roster = row.value as Record<string, { name?: string; _removed?: boolean }> | { name?: string; _removed?: boolean }[] | null;
     Object.values(roster ?? {}).forEach(member => {
       const name = member.name?.trim();
       if (name && !member._removed) {

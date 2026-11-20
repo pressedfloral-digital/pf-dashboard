@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { AssignmentCounts, AssignmentDepartment, DailyAssignmentCountRow } from '@/lib/assignment-counts';
+import type { ActualsCountKey, AssignmentCounts, DailyAssignmentCountRow } from '@/lib/assignment-counts';
 import { createSingleFlight } from '@/lib/assignment-batch';
 import { pollAfterCompletion } from '@/lib/poll-after-completion';
 
@@ -55,7 +55,10 @@ export function useProductionAssignmentCounts({ names, dates, enabled = true }: 
           return result;
         });
         if (cancelled) return;
-        setSnapshot({ key, counts: Object.fromEntries(data.rows.map(row => [row.staff, row.days])),
+        // Resin rides alongside the three stage counts, so one lookup serves every department.
+        const withResin = (row: DailyAssignmentCountRow): Record<string, AssignmentCounts> => Object.fromEntries(
+          Object.entries(row.days).map(([date, counts]) => [date, { ...counts, resin: row.resinDays?.[date] ?? 0 }]));
+        setSnapshot({ key, counts: Object.fromEntries(data.rows.map(row => [row.staff, withResin(row)])),
           unmatched: data.unmatched, refreshedAt: data.refreshedAt, loading: false, error: null });
       } catch (error) {
         if (cancelled) return;
@@ -67,7 +70,7 @@ export function useProductionAssignmentCounts({ names, dates, enabled = true }: 
     return () => { cancelled = true; stop(); };
   }, [key, namesKey, datesKey]);
 
-  const getCount = useCallback((name: string, date: string, department: AssignmentDepartment): number | null =>
+  const getCount = useCallback((name: string, date: string, department: ActualsCountKey): number | null =>
     current.counts[name.trim()]?.[date]?.[department] ?? null, [current.counts]);
   return { getCount, unmatched: new Set(current.unmatched.map(name => name.trim())), loading: current.loading,
     error: current.error, refreshedAt: current.refreshedAt };
