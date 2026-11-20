@@ -3,7 +3,7 @@
 import { Fragment, useMemo, useState } from 'react';
 import { applyEdits, type OrderEdits, type OrderPlan, type PlanRow } from '@/lib/katanaPlan';
 import { mondayOf, addWeeks as addWeeksIso } from '@/lib/designInventory';
-import SupplierPoCard, { OrderByBadge, fmtWeek, label, urgency, weeksUntilShort, type EditAction } from './SupplierPoCard';
+import SupplierPoCard, { availableTitle, OrderByBadge, fmtWeek, label, urgency, weeksUntilShort, type EditAction } from './SupplierPoCard';
 import { HelpTip } from './HelpTip';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 
@@ -28,11 +28,11 @@ function bySupplierThenName(a: PlanRow, b: PlanRow): number {
 function downloadCsv(plan: OrderPlan, weeks: string[], generatedAt: string) {
   const esc = (v: string | number) => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
   const rows: (string | number)[][] = [[
-    'Supplier', 'Lead time (weeks)', 'Order by', 'Need by', 'To order now', 'Component', 'Options', 'SKU', 'Category', 'Unit', 'In stock', 'On order', 'Needed through end of plan',
+    'Supplier', 'Lead time (weeks)', 'Order by', 'Need by', 'To order now', 'Component', 'Options', 'SKU', 'Category', 'Unit', 'In stock (Katana)', 'In designs not shipped', 'Available', 'On order', 'Needed through end of plan',
     ...weeks.map(w => `To order — week of ${w}`), 'Total to order', 'Purchase unit', 'Total to order (purchase units)',
   ]];
   [...plan.rows].sort(bySupplierThenName).forEach(r => rows.push([
-    r.supplier ?? '', r.leadWeeks, r.orderBy ?? '', r.firstShortWeek ?? '', r.orderNowQty || '', r.name, r.options, r.sku ?? '', r.category, r.uom, r.inStock, r.onOrder, r.totalNeeded,
+    r.supplier ?? '', r.leadWeeks, r.orderBy ?? '', r.firstShortWeek ?? '', r.orderNowQty || '', r.name, r.options, r.sku ?? '', r.category, r.uom, r.katanaStock ?? r.inStock, r.alreadyUsed ?? 0, r.inStock, r.onOrder, r.totalNeeded,
     ...weeks.map(w => r.toOrder[w] ?? ''), r.totalToOrder,
     r.purchaseUom ?? '', r.purchaseConversion && r.totalToOrder ? Math.ceil(r.totalToOrder / r.purchaseConversion) : '',
   ]));
@@ -131,7 +131,9 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
           <h2 className="text-sm font-semibold text-slate-700"><HelpTip id="inv.plan.title">What to order — Katana stock vs. the Design schedule</HelpTip></h2>
           <p className="text-xs text-slate-500 mt-1 max-w-3xl">
             Each scheduled order (frame, backing and glass) is broken into its Katana recipe. Each week&apos;s components are
-            taken out of {plan.location}&apos;s Katana stock plus what&apos;s already on order, in schedule order. The number shown
+            taken out of {plan.location}&apos;s available stock plus what&apos;s already on order, in schedule order.
+            Available is Katana stock minus the frames, backing and glass already built into designed pieces that haven&apos;t
+            shipped (Katana only removes them at fulfillment). The number shown
             for a week is how much more you need to order so it&apos;s on hand by that Monday. Katana&apos;s &ldquo;committed&rdquo;
             figure isn&apos;t subtracted, because these orders are the demand. Managers can edit any quantity
             or delete an item from the list; edits are shared and stay until someone resets them.
@@ -346,6 +348,8 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
                 <th className="px-3 py-2 text-left font-medium"><HelpTip id="inv.col.supplier">Supplier</HelpTip></th>
                 <th className="px-2 py-2 text-left font-medium"><HelpTip id="inv.col.orderBy">Order by</HelpTip></th>
                 <th className="px-2 py-2 text-right font-medium"><HelpTip id="inv.col.inStock">In stock</HelpTip></th>
+                <th className="px-2 py-2 text-right font-medium whitespace-nowrap"><HelpTip id="inv.col.inDesigns">In designs</HelpTip></th>
+                <th className="px-2 py-2 text-right font-medium"><HelpTip id="inv.col.available">Available</HelpTip></th>
                 <th className="px-2 py-2 text-right font-medium"><HelpTip id="inv.col.onOrder">On order</HelpTip></th>
                 <th className="px-2 py-2 text-right font-medium whitespace-nowrap"><HelpTip id="inv.col.neededThru">Needed thru {thruShort}</HelpTip></th>
                 {weeks.map(w => (
@@ -356,12 +360,12 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
             </thead>
             <tbody>
               {gridRows.length === 0 && (
-                <tr><td colSpan={7 + weeks.length} className="px-3 py-6 text-center text-slate-500">Nothing to order.</td></tr>
+                <tr><td colSpan={9 + weeks.length} className="px-3 py-6 text-center text-slate-500">Nothing to order.</td></tr>
               )}
               {categories.map(cat => (
                 <Fragment key={cat}>
                   <tr className="bg-slate-50/60">
-                    <td colSpan={7 + weeks.length} className="sticky left-0 px-3 py-1 font-semibold text-slate-600">{cat}</td>
+                    <td colSpan={9 + weeks.length} className="sticky left-0 px-3 py-1 font-semibold text-slate-600">{cat}</td>
                   </tr>
                   {gridRows.filter(r => r.category === cat).map(r => (
                     <tr key={r.variantId} className="border-t border-slate-100 hover:bg-slate-50">
@@ -375,8 +379,10 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
                         className={`px-2 py-1.5 text-right ${r.negativeStock !== null ? 'text-amber-600' : 'text-slate-700'}`}
                         title={r.negativeStock !== null ? `Katana shows ${fmtQty(r.negativeStock)}, counted as 0` : undefined}
                       >
-                        {fmtQty(r.inStock)}{r.negativeStock !== null && '*'}
+                        {fmtQty(r.katanaStock ?? r.inStock)}{r.negativeStock !== null && '*'}
                       </td>
+                      <td className="px-2 py-1.5 text-right text-violet-700">{r.alreadyUsed ? `−${fmtQty(r.alreadyUsed)}` : ''}</td>
+                      <td className="px-2 py-1.5 text-right font-medium text-slate-800" title={availableTitle(r)}>{fmtQty(r.inStock)}</td>
                       <td className="px-2 py-1.5 text-right text-slate-500">{r.onOrder ? fmtQty(r.onOrder) : ''}</td>
                       <td className="px-2 py-1.5 text-right text-slate-700">{fmtQty(r.totalNeeded)}</td>
                       {weeks.map(w => (

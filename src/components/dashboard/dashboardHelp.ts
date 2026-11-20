@@ -149,6 +149,10 @@ export const DASHBOARD_HELP = {
     what:   'Frames, backing and glass each upcoming week needs, order by order, in the order Design will work them.',
     source: 'PF API orders in Ready to Frame (plus late Preservation), their Shopify add-ons, and Design capacity from the Weekly Schedule.',
   },
+  'inv.view.designed': {
+    what:   'Frames, backing and glass already built into pieces that are designed but not shipped. Katana still counts them as in stock, so What to order subtracts them.',
+    source: 'PF API orders in No Response, Approved, Disapproved, Glued, Ready to Seal, Ready to Package and Ready to Fulfill, their Shopify add-ons, and Katana recipes.',
+  },
   'inv.csv': {
     what:   'Downloads the order-by-order list below as a spreadsheet.',
     source: 'The same data shown on this view.',
@@ -175,7 +179,9 @@ export const DASHBOARD_HELP = {
   'inv.col.toOrder':      { what: 'How many more to order to cover every week shown.', source: 'Needed minus Katana in-stock and on-order.' },
   'inv.col.neededWk':     { what: 'Amount of this component the week\'s scheduled orders use.', source: 'Katana recipes × the Design schedule.' },
   'inv.col.neededThru':   { what: 'Total this component is needed through the end of the schedule.', source: 'Katana recipes × the Design schedule.' },
-  'inv.col.inStock':      { what: 'On hand right now at this location (negative counts as 0).', source: 'Katana MRP stock.' },
+  'inv.col.inStock':      { what: 'On hand at this location according to Katana (negative counts as 0). Includes pieces already built into designs that haven\'t shipped.', source: 'Katana MRP stock.' },
+  'inv.col.inDesigns':    { what: 'Already built into pieces that are designed but not shipped (No Response through Ready to Fulfill). Katana still counts them until the order is fulfilled.', source: 'PF API order statuses × Katana recipes, including each order\'s backing and glass.' },
+  'inv.col.available':    { what: 'What\'s really free to use: Katana stock minus what\'s already in designs. The order plan works from this.', source: 'Katana stock − In designs.' },
   'inv.col.onOrder':      { what: 'Already on an open purchase order and not received yet.', source: 'Katana MRP purchase orders.' },
   'inv.col.orderBy':      { what: 'Latest week to place the order so it arrives in time, using the supplier\'s lead time.', source: 'Calculated from the schedule and lead times.' },
   'inv.col.usePerWk':     { what: 'Average used per week in the current schedule.', source: 'Katana recipes × the Design schedule.' },

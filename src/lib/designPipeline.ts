@@ -1,10 +1,13 @@
 /**
- * Every order line in Preservation or Design, from the PF API's monthly
- * WeeklyReport. Shared by /api/design-inventory (one location's schedule) and
+ * Every order line in Preservation or Design, plus every line already
+ * designed but not yet shipped, from the PF API's monthly WeeklyReport. Shared by /api/design-inventory (one location's schedule) and
  * the order add-on refresh cron (every location's orders).
  */
 import { pfGet, fmtDate } from '@/lib/pf-api';
-import { DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, isNonDesignProduct } from '@/lib/designInventory';
+import { DESIGN_QUEUE_STATUSES, PRESERVATION_STATUSES, DESIGNED_STATUSES, isNonDesignProduct } from '@/lib/designInventory';
+
+/** Every status loadPipelineLines keeps — for looking up order UUIDs. */
+export const PIPELINE_STATUSES = [...DESIGN_QUEUE_STATUSES, ...PRESERVATION_STATUSES, ...DESIGNED_STATUSES];
 
 // Orders are placed around the event date, so anything still in
 // Preservation or Design was ordered within roughly this many months.
@@ -45,7 +48,8 @@ async function fetchMonth(path: string): Promise<WeeklyReportItem[] | null> {
   }
 }
 
-/** Design/Preservation lines across all locations, deduped by key.
+/** Preservation, Design and designed-not-shipped lines across all
+ *  locations, deduped by key.
  *  `failedMonths` > 0 means some months' orders are missing from `lines`. */
 export async function loadPipelineLines(): Promise<{ lines: PipelineLine[]; failedMonths: number; totalMonths: number }> {
   const today = new Date();
@@ -65,7 +69,7 @@ export async function loadPipelineLines(): Promise<{ lines: PipelineLine[]; fail
   for (const items of reports) {
     for (const item of items ?? []) {
       const status = item.status ?? '';
-      if (!DESIGN_QUEUE_STATUSES.has(status) && !PRESERVATION_STATUSES.has(status)) continue;
+      if (!DESIGN_QUEUE_STATUSES.has(status) && !PRESERVATION_STATUSES.has(status) && !DESIGNED_STATUSES.has(status)) continue;
       if (isNonDesignProduct(item.productTitle ?? '')) continue;
       const num = String(item.orderNumber ?? item.shopifyOrderNumber ?? '');
       if (!num) continue;

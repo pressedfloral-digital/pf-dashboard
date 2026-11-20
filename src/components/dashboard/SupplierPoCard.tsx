@@ -454,7 +454,7 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
                 <thead className="text-slate-400">
                   <tr>
                     <th className="py-1 text-left font-medium">Component</th>
-                    <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.inStock">In stock</HelpTip></th>
+                    <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.available">Available</HelpTip></th>
                     <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.onOrder">On order</HelpTip></th>
                     <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.usePerWk">Use / wk</HelpTip></th>
                     <th className="px-2 py-1 text-right font-medium"><HelpTip id="inv.col.coveredUntil">Covered until</HelpTip></th>
@@ -465,7 +465,7 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
                   {covered.map(({ r, c }) => (
                     <tr key={r.variantId}>
                       <td className="py-1 text-slate-700">{label(r)}</td>
-                      <td className="px-2 py-1 text-right text-slate-600">{fmtQty(r.inStock)}{unitSuffix(r)}</td>
+                      <td className="px-2 py-1 text-right text-slate-600" title={availableTitle(r)}>{fmtQty(r.inStock)}{unitSuffix(r)}</td>
                       <td className="px-2 py-1 text-right text-slate-500">{r.onOrder ? fmtQty(r.onOrder) : ''}</td>
                       <td className="px-2 py-1 text-right text-slate-500">{c.weeklyUse ? fmtQty(Math.round(c.weeklyUse * 10) / 10) : '—'}</td>
                       <td className="px-2 py-1 text-right text-slate-600 whitespace-nowrap">
@@ -515,6 +515,14 @@ export default function SupplierPoCard({ supplier, supplierId, rows: allRows, lo
   );
 }
 
+// Katana stock less what designed, not-yet-shipped pieces already hold.
+export function availableTitle(r: PlanRow): string | undefined {
+  const parts: string[] = [];
+  if (r.negativeStock !== null) parts.push(`Katana shows ${fmtQty(r.negativeStock)}, counted as 0`);
+  if (r.alreadyUsed) parts.push(`${fmtQty(r.katanaStock ?? 0)} in Katana − ${fmtQty(r.alreadyUsed)} already in designed pieces not yet shipped`);
+  return parts.length ? parts.join('. ') : undefined;
+}
+
 // What we have vs. what the schedule uses, for context next to a PO line:
 // stock, on order, total need, how far short, and when it runs out — on
 // stock alone, and with open orders counted (their arrival dates aren't known).
@@ -527,8 +535,9 @@ function StockContext({ r, thruShort }: { r: PlanRow; thruShort: string }) {
   return (
     <div className="mt-0.5 rounded bg-slate-50 px-2 py-1 text-[11px] text-slate-600">
       <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-        <span title={r.negativeStock !== null ? `Katana shows ${fmtQty(r.negativeStock)}, counted as 0` : undefined}>
-          In stock <span className={`font-semibold ${r.negativeStock !== null ? 'text-amber-600' : 'text-slate-800'}`}>{fmtQty(r.inStock)}{r.negativeStock !== null ? '*' : ''}</span>{u}
+        <span title={availableTitle(r)}>
+          Available <span className={`font-semibold ${r.negativeStock !== null ? 'text-amber-600' : 'text-slate-800'}`}>{fmtQty(r.inStock)}{r.negativeStock !== null ? '*' : ''}</span>{u}
+          {!!r.alreadyUsed && <span className="text-slate-400"> ({fmtQty(r.katanaStock ?? 0)} in Katana − {fmtQty(r.alreadyUsed)} in designs)</span>}
         </span>
         <span>On order <span className="font-semibold text-slate-800">{fmtQty(r.onOrder)}</span>{u}</span>
         <span>Needed thru {thruShort} <span className="font-semibold text-slate-800">{fmtQty(r.totalNeeded)}</span>{u}</span>

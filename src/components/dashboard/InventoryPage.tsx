@@ -2,6 +2,8 @@
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { PRESERVATION_WEEKS, NOT_ON_ORDER, ADDONS_UNKNOWN, sizeLabel, type QueueLine } from '@/lib/designInventory';
+import { MATERIALS, STATUS_LABELS, materialClass, itemFor, tally, type Material } from './inventoryTally';
+import DesignedStockView from './DesignedStockView';
 import type { OrderEdits, OrderPlan } from '@/lib/katanaPlan';
 import OrderPlanView from './OrderPlanView';
 import SupplierForecastView from './SupplierForecastView';
@@ -20,6 +22,8 @@ interface InventoryResponse {
   designedThisWeek: number;
   weeks:            InventoryWeek[];
   unscheduledCount: number;
+  // Absent on copies saved before designed pieces were subtracted.
+  designedLines?:   QueueLine[];
   through?: string;
   orderPlan:        OrderPlan | null;
   katanaError:      string | null;
@@ -37,37 +41,12 @@ interface InventoryResponse {
   error?: string;
 }
 
-type Material = 'frame' | 'backing' | 'glass';
-
-const MATERIALS: { id: Material; label: string; typeLabel: string }[] = [
-  { id: 'frame',   label: 'Frames',  typeLabel: 'Moulding / Color' },
-  { id: 'backing', label: 'Backing', typeLabel: 'Backing' },
-  { id: 'glass',   label: 'Glass',   typeLabel: 'Glass type' },
-];
-
-const STATUS_LABELS: Record<string, string> = {
-  readyToFrame:       'Ready to Frame',
-  readyToDesign:      'Ready to Design',
-  bouquetReceived:    'Bouquet Received',
-  checkedOn:          'Checked On',
-  progress:           'In Progress',
-  almostReadyToFrame: 'Almost Ready to Frame',
-};
-
 function fmtWeek(iso: string): string {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function fmtTime(iso: string): string {
   return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-}
-
-// "Not on order" (the order has none) and "Couldn't load" (unknown) must
-// never look alike.
-function materialClass(v: string | null | undefined): string {
-  if (v === ADDONS_UNKNOWN) return 'text-rose-600 font-medium';
-  if (v === NOT_ON_ORDER) return 'text-amber-600';
-  return 'text-slate-700';
 }
 
 async function fetchInventory(url: string): Promise<InventoryResponse> {
@@ -80,43 +59,6 @@ async function fetchInventory(url: string): Promise<InventoryResponse> {
   const d = await r.json() as InventoryResponse;
   if (!r.ok) throw new Error(d.error ?? `the server returned ${r.status}`);
   return d;
-}
-
-// One countable item per line for a material, or null when the line's
-// product doesn't use it (ornaments have no backing/glass).
-function itemFor(l: QueueLine, m: Material): { size: string; shape: string; type: string } | null {
-  const size = l.materials?.sizeLabel ?? sizeLabel(l);
-  const shape = l.shape || '—';
-  if (m === 'frame') return { size, shape, type: l.finish || '—' };
-  const type = m === 'backing' ? l.materials?.backing : l.materials?.glass;
-  if (type === null) return null;
-  return { size, shape, type: type ?? NOT_ON_ORDER };
-}
-
-// Smallest frame first, then non-sized products (Boutonniere, Custom…) by name.
-function sizeOrder(s: string): [number, number, string] {
-  const m = s.match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/);
-  return m ? [0, Number(m[1]) * Number(m[2]), s] : [1, 0, s];
-}
-function bySize(a: string, b: string): number {
-  const [ga, na, sa] = sizeOrder(a), [gb, nb, sb] = sizeOrder(b);
-  return ga - gb || na - nb || sa.localeCompare(sb);
-}
-
-interface Row { size: string; shape: string; type: string; byWeek: Record<string, number>; total: number }
-
-function tally(weeks: InventoryWeek[], m: Material): Row[] {
-  const map = new Map<string, Row>();
-  weeks.forEach(w => w.lines.forEach(l => {
-    const it = itemFor(l, m);
-    if (!it) return;
-    const k = `${it.size}|${it.shape}|${it.type}`;
-    const row = map.get(k) ?? { ...it, byWeek: {}, total: 0 };
-    row.byWeek[w.weekOf] = (row.byWeek[w.weekOf] ?? 0) + 1;
-    row.total++;
-    map.set(k, row);
-  }));
-  return [...map.values()].sort((a, b) => bySize(a.size, b.size) || b.total - a.total || a.type.localeCompare(b.type));
 }
 
 function downloadCsv(data: InventoryResponse) {
@@ -146,7 +88,7 @@ export default function InventoryPage() {
   const [refresh, setRefresh] = useState<{ location: string; state: 'failed' | 'done'; error?: string } | null>(null);
   const [selectedWeek, setSelectedWeek] = useState<string | null>(null);
   const [material, setMaterial] = useState<Material>('frame');
-  const [view, setView] = useState<'order' | 'supplier' | 'schedule'>('order');
+  const [view, setView] = useState<'order' | 'supplier' | 'schedule' | 'designed'>('order');
   // Edits made on What to order this visit, so the supplier forecast (and
   // What to order when it remounts) shows them without a reload.
   const [liveEdits, setLiveEdits] = useState<{ location: string; edits: OrderEdits } | null>(null);
@@ -216,7 +158,7 @@ export default function InventoryPage() {
           ))}
         </div>
         <div className="flex rounded-lg border border-slate-200 overflow-hidden">
-          {([['order', 'What to order'], ['schedule', 'Frames, backing & glass'], ['supplier', 'Supplier forecast']] as const).map(([id, name]) => (
+          {([['order', 'What to order'], ['schedule', 'Frames, backing & glass'], ['supplier', 'Supplier forecast'], ['designed', 'Already designed']] as const).map(([id, name]) => (
             <button
               key={id}
               onClick={() => setView(id)}
@@ -270,6 +212,10 @@ export default function InventoryPage() {
             ? <OrderPlanView key={data.location} plan={data.orderPlan} generatedAt={data.generatedAt} edits={orderEdits}
                 onEditsChange={e => setLiveEdits({ location: data.location, edits: e })} />
             : <SupplierForecastView key={data.location} plan={data.orderPlan} generatedAt={data.generatedAt} edits={orderEdits} />
+      )}
+
+      {view === 'designed' && data && !data.error && (
+        <DesignedStockView key={data.location} location={data.location} lines={data.designedLines} used={data.orderPlan?.used} katanaError={data.katanaError} />
       )}
 
       {view === 'schedule' && <>

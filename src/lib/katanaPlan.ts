@@ -6,6 +6,10 @@
 // each week's component demand is drawn down against Katana stock. Whatever
 // a week can't cover from stock + open purchase orders is what still needs
 // to be ordered for that week.
+//
+// Lines already designed but not shipped (DESIGNED_STATUSES) are exploded the
+// same way and taken out of Katana stock first: their frames, backing and
+// glass are built into a piece, but Katana only removes them at fulfillment.
 
 import type { KatanaData, KatanaItem, KatanaVariant } from './katana';
 import { addWeeks, type QueueLine } from './designInventory';
@@ -180,7 +184,9 @@ export interface PlanRow {
   orderBy:     string | null;         // Monday the first shortfall must be ordered by
   orderNowQty: number;                // shortfall whose order-by date is this week or already past
   purchasePrice: number;              // Katana purchase price per stock unit
-  inStock:     number;                // never below 0 — see negativeStock
+  inStock:     number;                // available: Katana stock minus alreadyUsed, never below 0
+  katanaStock?: number;               // Katana's on-hand figure (never below 0 — see negativeStock)
+  alreadyUsed?: number;               // built into designed, not-yet-shipped pieces
   negativeStock: number | null;       // Katana's raw figure when it's below zero
   onOrder:     number;                // Katana "expected" — open purchase / manufacturing orders
   needed:      Record<string, number>; // weekOf → quantity Design will use
@@ -220,6 +226,31 @@ export interface Substitution {
   count:    number;
 }
 
+// One Katana component used by designed, not-yet-shipped pieces.
+export interface UsedRow {
+  variantId:   number;
+  sku:         string | null;
+  name:        string;
+  options:     string;
+  category:    string;
+  uom:         string;
+  katanaStock: number;          // never below 0
+  negativeStock: number | null;
+  used:        number;
+  available:   number;          // katanaStock - used, never below 0
+  overUsed:    number;          // how far used exceeds Katana stock (0 normally)
+  lines:       number;          // designed lines that use it
+}
+
+export interface UsedSummary {
+  rows:         UsedRow[];
+  unmatched:    Unmatched[];
+  substitutions: Substitution[];
+  matchedLines: number;
+  totalLines:   number;
+  unknownAddOnLines: number;
+}
+
 export interface OrderPlan {
   location:   string;
   weeks:      string[];   // design weeks with scheduled work
@@ -232,23 +263,23 @@ export interface OrderPlan {
   // Lines whose order add-ons couldn't be loaded: their backing and glass are
   // missing from the quantities above, not known to be absent.
   unknownAddOnLines: number;
+  // Absent on copies saved before designed pieces were subtracted.
+  used?: UsedSummary;
 }
 
 interface PlanWeek { weekOf: string; lines: QueueLine[] }
 
 const round = (n: number) => Math.round(n * 100) / 100;
 
-export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[], thisWeek: string): OrderPlan {
+export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[], thisWeek: string, designedLines: QueueLine[] = []): OrderPlan {
   const idx = buildIndex(k);
   const suppliers = new Map(k.suppliers.map(s => [s.id, s.name]));
   const stock = new Map(k.stock.filter(s => s.location_id === k.locationId).map(s => [s.variant_id, s]));
 
-  const demand = new Map<number, Record<string, number>>();
-  const unmatched = new Map<string, Unmatched>();
-  const substitutions = new Map<string, Substitution>();
-  let matchedLines = 0, totalLines = 0, unknownAddOnLines = 0;
-
-  const addProduct = (weekOf: string, product: string, variant: string): boolean => {
+  // Explodes one order product into `sink` (variantId → quantity), noting
+  // products with no Katana match/recipe and stand-in recipes.
+  const tracker = () => ({ unmatched: new Map<string, Unmatched>(), substitutions: new Map<string, Substitution>() });
+  const addProduct = (t: ReturnType<typeof tracker>, sink: (id: number, q: number) => void, product: string, variant: string): boolean => {
     // Glass backing is the back pane of the Glass add-on's set — nothing
     // extra to build, so it's neither demand nor an unmatched product.
     if (/backing$/i.test(product) && /(^| \/ )glass$/i.test(variant.trim())) return true;
@@ -257,49 +288,79 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
     const reason = !v ? 'no Katana product' : !idx.recipes.has(v.id) ? 'no recipe in Katana' : null;
     if (reason) {
       const key = `${product}|${variant}|${reason}`;
-      const u = unmatched.get(key) ?? { product, variant, reason, count: 0 };
+      const u = t.unmatched.get(key) ?? { product, variant, reason, count: 0 };
       u.count++;
-      unmatched.set(key, u);
+      t.unmatched.set(key, u);
       return false;
     }
     if (m!.substituted) {
       const l = variantLabel(idx, v!);
       const katana = l.options ? `${l.name} · ${l.options}` : l.name;
       const key = `${product}|${variant}`;
-      const sub = substitutions.get(key) ?? { product, variant, katana, count: 0 };
+      const sub = t.substitutions.get(key) ?? { product, variant, katana, count: 0 };
       sub.count++;
-      substitutions.set(key, sub);
+      t.substitutions.set(key, sub);
     }
     const parts = new Map<number, number>();
     explode(idx, v!.id, 1, parts);
-    parts.forEach((q, id) => {
-      const row = demand.get(id) ?? {};
-      row[weekOf] = (row[weekOf] ?? 0) + q;
-      demand.set(id, row);
-    });
+    parts.forEach((q, id) => sink(id, q));
     return true;
   };
+  // A line plus its matched backing and glass add-ons.
+  const addLine = (t: ReturnType<typeof tracker>, sink: (id: number, q: number) => void, line: QueueLine): boolean => {
+    const ok = addProduct(t, sink, line.product, line.variant);
+    const { backingAddOn, glassAddOn } = line.materials ?? {};
+    if (backingAddOn) addProduct(t, sink, backingAddOn.productTitle, backingAddOn.variantTitle ?? '');
+    if (glassAddOn)   addProduct(t, sink, glassAddOn.productTitle, glassAddOn.variantTitle ?? '');
+    return ok;
+  };
 
+  // ── Already designed, not shipped: comes out of Katana stock first ──
+  const usedTrack = tracker();
+  const usedQty = new Map<number, number>();
+  const usedLineCount = new Map<number, number>();
+  let usedMatched = 0, usedUnknownAddOns = 0;
+  for (const line of designedLines) {
+    const touched = new Set<number>();
+    if (addLine(usedTrack, (id, q) => { usedQty.set(id, (usedQty.get(id) ?? 0) + q); touched.add(id); }, line)) usedMatched++;
+    touched.forEach(id => usedLineCount.set(id, (usedLineCount.get(id) ?? 0) + 1));
+    if (line.materials?.addOnsUnknown) usedUnknownAddOns++;
+  }
+
+  // ── Scheduled demand ──
+  const demandTrack = tracker();
+  const demand = new Map<number, Record<string, number>>();
+  let matchedLines = 0, totalLines = 0, unknownAddOnLines = 0;
   for (const w of weeks) {
+    const sink = (id: number, q: number) => {
+      const row = demand.get(id) ?? {};
+      row[w.weekOf] = (row[w.weekOf] ?? 0) + q;
+      demand.set(id, row);
+    };
     for (const line of w.lines) {
       totalLines++;
-      if (addProduct(w.weekOf, line.product, line.variant)) matchedLines++;
+      if (addLine(demandTrack, sink, line)) matchedLines++;
       if (line.materials?.addOnsUnknown) unknownAddOnLines++;
-      const { backingAddOn, glassAddOn } = line.materials ?? {};
-      if (backingAddOn) addProduct(w.weekOf, backingAddOn.productTitle, backingAddOn.variantTitle ?? '');
-      if (glassAddOn)   addProduct(w.weekOf, glassAddOn.productTitle, glassAddOn.variantTitle ?? '');
     }
   }
+  const { unmatched, substitutions } = demandTrack;
+
+  // Katana on hand (negative is a bookkeeping gap — counted as empty), less
+  // what designed pieces already hold.
+  const stockFor = (variantId: number) => {
+    const s = stock.get(variantId);
+    const raw = Number(s?.quantity_in_stock ?? 0);
+    const katanaStock = Math.max(0, raw);
+    const used = round(usedQty.get(variantId) ?? 0);
+    return { katanaStock, raw, used, available: Math.max(0, round(katanaStock - used)), overUsed: Math.max(0, round(used - katanaStock)) };
+  };
 
   const rows: PlanRow[] = [];
   demand.forEach((needed, variantId) => {
     const v = idx.variants.get(variantId);
     const item = v ? idx.items.get((v.product_id ?? v.material_id)!) : undefined;
     const s = stock.get(variantId);
-    // Negative stock is a Katana bookkeeping gap (used before it was
-    // received), not a real deficit — treat the shelf as empty.
-    const rawStock = Number(s?.quantity_in_stock ?? 0);
-    const inStock = Math.max(0, rawStock);
+    const { katanaStock, raw: rawStock, used: alreadyUsed, available: inStock } = stockFor(variantId);
     const onOrder = Number(s?.quantity_expected ?? 0);
 
     // Draw each week's use down from stock + incoming; any week that pushes
@@ -342,6 +403,8 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
       orderNowQty: round(orderNowQty),
       purchasePrice: Number(v?.purchase_price ?? 0),
       inStock,
+      katanaStock,
+      alreadyUsed,
       negativeStock: rawStock < 0 ? rawStock : null,
       onOrder,
       needed,
@@ -352,7 +415,32 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
     });
   });
 
-  rows.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name) || a.options.localeCompare(b.options, undefined, { numeric: true }));
+  const byCategory = (a: { category: string; name: string; options: string }, b: { category: string; name: string; options: string }) =>
+    a.category.localeCompare(b.category) || a.name.localeCompare(b.name) || a.options.localeCompare(b.options, undefined, { numeric: true });
+  rows.sort(byCategory);
+
+  const usedRows: UsedRow[] = [];
+  usedQty.forEach((_, variantId) => {
+    const v = idx.variants.get(variantId);
+    const item = v ? idx.items.get((v.product_id ?? v.material_id)!) : undefined;
+    if (isExcludedSupplier(item?.default_supplier_id ? suppliers.get(item.default_supplier_id) ?? null : null)) return;
+    const st = stockFor(variantId);
+    usedRows.push({
+      variantId,
+      sku: v?.sku ?? null,
+      ...(v ? variantLabel(idx, v) : { name: `Variant ${variantId}`, options: '' }),
+      category: item?.category_name ?? 'Uncategorized',
+      uom: item?.uom ?? '',
+      katanaStock: st.katanaStock,
+      negativeStock: st.raw < 0 ? st.raw : null,
+      used: st.used,
+      available: st.available,
+      overUsed: st.overUsed,
+      lines: usedLineCount.get(variantId) ?? 0,
+    });
+  });
+  usedRows.sort(byCategory);
+
   return {
     location,
     weeks: weeks.filter(w => w.lines.length > 0).map(w => w.weekOf),
@@ -363,6 +451,14 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
     matchedLines,
     totalLines,
     unknownAddOnLines,
+    used: {
+      rows: usedRows,
+      unmatched: [...usedTrack.unmatched.values()].sort((a, b) => b.count - a.count),
+      substitutions: [...usedTrack.substitutions.values()].sort((a, b) => b.count - a.count),
+      matchedLines: usedMatched,
+      totalLines: designedLines.length,
+      unknownAddOnLines: usedUnknownAddOns,
+    },
   };
 }
 
