@@ -19,9 +19,13 @@ export const PRESERVATION_STATUSES = new Set(['bouquetReceived', 'checkedOn', 'p
 // Already designed but not shipped: the frame (and its backing and glass) is
 // built into the piece, yet Katana keeps counting it in stock until the order
 // is fulfilled. These are subtracted from Katana stock.
+// Only the PF API's own status values: these also go into
+// /OrderProducts/Search's status filter, which rejects the whole request
+// (400) on any name it doesn't know (e.g. the staff app's frameApproved,
+// frameDisapproved, readyToShip).
 export const DESIGNED_STATUSES = new Set([
-  'frameCompleted', 'frameApproved', 'approved', 'disapproved', 'frameDisapproved',
-  'glued', 'readyToSeal', 'readyToPackage', 'readyToShip', 'readyToFulfill', 'preparingToBeShipped',
+  'frameCompleted', 'approved', 'disapproved',
+  'glued', 'readyToSeal', 'readyToPackage', 'readyToFulfill', 'preparingToBeShipped',
 ]);
 
 // Line items that ride along on an order but aren't anything Design builds —
