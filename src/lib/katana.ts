@@ -152,6 +152,12 @@ export async function loadKatana(locationName: string): Promise<KatanaData> {
       seen.add(po.id);
       return true;
     });
+    // Without line items there are no dates to go on; say so rather than
+    // treating every on-order quantity as undated.
+    if (openPOs.length && !openPOs.some(po => po.purchase_order_rows?.length)) {
+      console.warn('Katana purchase orders came back without rows; arrival dates unavailable');
+      openPOs = null;
+    }
   } catch (e) {
     console.warn('Katana purchase orders unavailable:', e);
   }
