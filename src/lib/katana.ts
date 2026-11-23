@@ -94,6 +94,26 @@ export interface KatanaStock {
   quantity_committed: string;
 }
 
+// Open purchase orders, for when on-order stock arrives. Row quantities are
+// in the row's purchase unit (× purchase_uom_conversion_rate = stock units).
+export interface KatanaPoRow {
+  variant_id:    number;
+  quantity:      number | string;
+  arrival_date:  string | null;
+  received_date: string | null;
+  purchase_uom_conversion_rate?: number | string | null;
+}
+
+export interface KatanaPo {
+  id:                    number;
+  order_no:              string;
+  status:                string;    // NOT_RECEIVED | PARTIALLY_RECEIVED | RECEIVED
+  location_id:           number;
+  expected_arrival_date: string | null;
+  deleted_at?:           string | null;
+  purchase_order_rows?:  KatanaPoRow[];
+}
+
 export interface KatanaData {
   products:  KatanaItem[];
   materials: KatanaItem[];
@@ -101,6 +121,9 @@ export interface KatanaData {
   suppliers: { id: number; name: string }[];
   stock:     KatanaStock[];
   locationId: number;
+  // Open POs at this location; null when they couldn't be loaded (on-order
+  // stock is then treated as arriving immediately, as before).
+  openPOs?:  KatanaPo[] | null;
 }
 
 // Everything needed to turn orders into material requirements for one
@@ -116,7 +139,29 @@ export async function loadKatana(locationName: string): Promise<KatanaData> {
   const bomRows   = await katanaGetAll<KatanaBomRow>('/bom_rows', CATALOG_REVALIDATE);
   const suppliers = await katanaGetAll<{ id: number; name: string }>('/suppliers', CATALOG_REVALIDATE);
   const stock     = await katanaGetAll<KatanaStock>(`/inventory?location_id=${location.id}`, STOCK_REVALIDATE, [KATANA_STOCK_TAG]);
-  return { products, materials, bomRows, suppliers, stock, locationId: location.id };
+  let openPOs: KatanaPo[] | null = null;
+  try {
+    const pos: KatanaPo[] = [];
+    for (const status of ['NOT_RECEIVED', 'PARTIALLY_RECEIVED']) {
+      pos.push(...await katanaGetAll<KatanaPo>(`/purchase_orders?status=${status}&location_id=${location.id}`, STOCK_REVALIDATE, [KATANA_STOCK_TAG]));
+    }
+    // Filter again in case Katana ignores a query parameter.
+    const seen = new Set<number>();
+    openPOs = pos.filter(po => {
+      if (seen.has(po.id) || po.deleted_at || po.status === 'RECEIVED' || po.location_id !== location.id) return false;
+      seen.add(po.id);
+      return true;
+    });
+    // Without line items there are no dates to go on; say so rather than
+    // treating every on-order quantity as undated.
+    if (openPOs.length && !openPOs.some(po => po.purchase_order_rows?.length)) {
+      console.warn('Katana purchase orders came back without rows; arrival dates unavailable');
+      openPOs = null;
+    }
+  } catch (e) {
+    console.warn('Katana purchase orders unavailable:', e);
+  }
+  return { products, materials, bomRows, suppliers, stock, locationId: location.id, openPOs };
 }
 
 // ── Purchase orders ──────────────────────────────────────────────────────────

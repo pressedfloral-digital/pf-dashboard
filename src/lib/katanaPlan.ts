@@ -189,6 +189,13 @@ export interface PlanRow {
   alreadyUsed?: number;               // built into designed, not-yet-shipped pieces
   negativeStock: number | null;       // Katana's raw figure when it's below zero
   onOrder:     number;                // Katana "expected" — open purchase / manufacturing orders
+  // When onOrder arrives, from open Katana PO rows (oldest first). Absent on
+  // copies saved before PO dates were read, or when POs couldn't be loaded.
+  arrivals?:   Arrival[];
+  undatedOnOrder?: number;            // on order with no PO arrival date (counted as here now)
+  // Already on order, but arriving after the schedule needs it: ask the
+  // supplier to send `qty` of it by `needBy`. null = arrivals are in time.
+  expedite?:   Expedite | null;
   needed:      Record<string, number>; // weekOf → quantity Design will use
   toOrder:     Record<string, number>; // weekOf → shortfall first hit that week
   totalNeeded: number;
@@ -197,6 +204,19 @@ export interface PlanRow {
   computedToOrder?: number;          // set when the quantity was edited by hand — what the recipes said
   removed?:    boolean;              // taken off the order list by hand
   edit?:       OrderEdit;            // who edited it and when
+}
+
+export interface Arrival {
+  date:    string;    // YYYY-MM-DD the PO row is expected
+  qty:     number;    // stock units still to arrive
+  poNo:    string;
+  overdue: boolean;   // expected before this week and still not received
+}
+
+export interface Expedite {
+  needBy: string;     // first Monday stock + what's arrived by then falls short
+  qty:    number;     // most of the on-order quantity needed earlier than it's due
+  pos:    Arrival[];  // the arrivals that come too late
 }
 
 // Hand edits to the order list, saved per location in schedule_settings
@@ -275,6 +295,22 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
   const idx = buildIndex(k);
   const suppliers = new Map(k.suppliers.map(s => [s.id, s.name]));
   const stock = new Map(k.stock.filter(s => s.location_id === k.locationId).map(s => [s.variant_id, s]));
+
+  // Open PO rows by variant, in stock units, soonest first.
+  const poArrivals = new Map<number, { date: string; qty: number; poNo: string }[]>();
+  for (const po of k.openPOs ?? []) {
+    for (const r of po.purchase_order_rows ?? []) {
+      if (r.received_date) continue;
+      const conv = Number(r.purchase_uom_conversion_rate) > 0 ? Number(r.purchase_uom_conversion_rate) : 1;
+      const qty = Number(r.quantity) * conv;
+      const date = (r.arrival_date ?? po.expected_arrival_date ?? '').slice(0, 10);
+      if (!(qty > 0) || !date) continue;
+      const list = poArrivals.get(r.variant_id) ?? [];
+      list.push({ date, qty, poNo: po.order_no });
+      poArrivals.set(r.variant_id, list);
+    }
+  }
+  poArrivals.forEach(list => list.sort((a, b) => a.date.localeCompare(b.date)));
 
   // Explodes one order product into `sink` (variantId → quantity), noting
   // products with no Katana match/recipe and stand-in recipes.
@@ -363,21 +399,53 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
     const { katanaStock, raw: rawStock, used: alreadyUsed, available: inStock } = stockFor(variantId);
     const onOrder = Number(s?.quantity_expected ?? 0);
 
+    // When the on-order quantity arrives. Katana's expected total is the
+    // truth; PO rows above it are partly received already, so the earliest
+    // ones are trimmed. Any of it with no PO row (e.g. a manufacturing order)
+    // counts as here now.
+    let arrivals: Arrival[] | undefined;
+    let undatedOnOrder: number | undefined;
+    if (k.openPOs) {
+      const rowsFor = poArrivals.get(variantId) ?? [];
+      let excess = rowsFor.reduce((t, a) => t + a.qty, 0) - onOrder;
+      arrivals = [];
+      for (const a of rowsFor) {
+        const trim = Math.min(a.qty, Math.max(0, excess));
+        excess -= trim;
+        if (a.qty - trim > 0) arrivals.push({ ...a, qty: round(a.qty - trim), overdue: a.date < thisWeek });
+      }
+      undatedOnOrder = round(Math.max(0, onOrder - arrivals.reduce((t, a) => t + a.qty, 0)));
+    }
+    // On hand by Monday `wk`: anything due on or before it (overdue counts as now).
+    const arrivedBy = (wk: string) => arrivals
+      ? (undatedOnOrder ?? 0) + arrivals.filter(a => a.date <= wk).reduce((t, a) => t + a.qty, 0)
+      : onOrder;
+
     // Draw each week's use down from stock + incoming; any week that pushes
-    // the balance further below zero needs that much more ordered.
+    // the balance further below zero needs that much more ordered. Separately,
+    // a week that stock plus what's *arrived by then* can't cover, though
+    // everything on order would, needs an open PO sped up instead.
     let balance = inStock + onOrder;
     let short = 0;
     let firstShortWeek: string | null = null;
     const toOrder: Record<string, number> = {};
+    let cumUse = 0;
+    let expedite: Expedite | null = null;
     for (const w of weeks) {
       const use = needed[w.weekOf] ?? 0;
       if (!use) continue;
       balance -= use;
+      cumUse += use;
       const nowShort = Math.max(0, -balance);
       if (nowShort > short) {
         toOrder[w.weekOf] = round(nowShort - short);
         firstShortWeek ??= w.weekOf;
         short = nowShort;
+      }
+      const timing = round(Math.max(0, cumUse - inStock - arrivedBy(w.weekOf)) - nowShort);
+      if (timing > 0 && arrivals) {
+        if (!expedite) expedite = { needBy: w.weekOf, qty: 0, pos: arrivals.filter(a => a.date > w.weekOf) };
+        expedite.qty = Math.max(expedite.qty, timing);
       }
     }
     Object.keys(needed).forEach(wk => { needed[wk] = round(needed[wk]); });
@@ -407,6 +475,9 @@ export function buildOrderPlan(k: KatanaData, location: string, weeks: PlanWeek[
       alreadyUsed,
       negativeStock: rawStock < 0 ? rawStock : null,
       onOrder,
+      arrivals,
+      undatedOnOrder,
+      expedite,
       needed,
       toOrder,
       totalNeeded: round(Object.values(needed).reduce((a, b) => a + b, 0)),
