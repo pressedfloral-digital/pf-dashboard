@@ -16,9 +16,28 @@ function fmtDate(iso: string): string {
 }
 
 // "12 due Jan 5 (PO-300) · 4 no date" for the On order cell's hover.
+// Units on POs past their arrival date, and the week stock runs short if
+// they don't come (before the next on-time PO arrives). Counted as here now
+// in the plan itself, so this only flags them.
+interface OverdueInfo { qty: number; pos: NonNullable<PlanRow['arrivals']>; shortFrom: string | null }
+function overdueInfo(r: PlanRow, weeks: string[]): OverdueInfo | null {
+  const pos = r.arrivals?.filter(a => a.overdue) ?? [];
+  if (!pos.length) return null;
+  const later = r.arrivals!.filter(a => !a.overdue);
+  let cum = 0, shortFrom: string | null = null;
+  for (const w of weeks) {
+    const use = r.needed[w] ?? 0;
+    if (!use) continue;
+    cum += use;
+    const arrived = (r.undatedOnOrder ?? 0) + later.filter(a => a.date <= w).reduce((t, a) => t + a.qty, 0);
+    if (cum > r.inStock + arrived + 1e-9) { shortFrom = w; break; }
+  }
+  return { qty: pos.reduce((t, a) => t + a.qty, 0), pos, shortFrom };
+}
+
 function arrivalsTitle(r: PlanRow): string | undefined {
   if (!r.arrivals) return r.onOrder ? 'Arrival dates unknown' : undefined;
-  const parts = r.arrivals.map(a => `${fmtQty(a.qty)} due ${fmtDate(a.date)}${a.overdue ? ' (overdue)' : ''} — ${a.poNo}`);
+  const parts = r.arrivals.map(a => `${fmtQty(a.qty)} due ${fmtDate(a.date)}${a.overdue ? ' (overdue, counted as here now)' : ''} — ${a.poNo.trim()}`);
   if (r.undatedOnOrder) parts.push(`${fmtQty(r.undatedOnOrder)} with no PO arrival date (counted as here now)`);
   return parts.join('\n') || undefined;
 }
@@ -40,12 +59,13 @@ function bySupplierThenName(a: PlanRow, b: PlanRow): number {
 function downloadCsv(plan: OrderPlan, weeks: string[], generatedAt: string) {
   const esc = (v: string | number) => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
   const rows: (string | number)[][] = [[
-    'Supplier', 'Lead time (weeks)', 'Order by', 'Need by', 'To order now', 'Component', 'Options', 'SKU', 'Category', 'Unit', 'In stock (Katana)', 'In designs not shipped', 'Available', 'On order', 'On order arrives', 'Expedite qty', 'Expedite by', 'Needed through end of plan',
+    'Supplier', 'Lead time (weeks)', 'Order by', 'Need by', 'To order now', 'Component', 'Options', 'SKU', 'Category', 'Unit', 'In stock (Katana)', 'In designs not shipped', 'Available', 'On order', 'On order arrives', 'On overdue POs', 'Short from if overdue POs don\'t come', 'Expedite qty', 'Expedite by', 'Needed through end of plan',
     ...weeks.map(w => `To order — week of ${w}`), 'Total to order', 'Purchase unit', 'Total to order (purchase units)',
   ]];
   [...plan.rows].sort(bySupplierThenName).forEach(r => rows.push([
     r.supplier ?? '', r.leadWeeks, r.orderBy ?? '', r.firstShortWeek ?? '', r.orderNowQty || '', r.name, r.options, r.sku ?? '', r.category, r.uom, r.katanaStock ?? r.inStock, r.alreadyUsed ?? 0, r.inStock, r.onOrder,
-    (r.arrivals ?? []).map(a => `${fmtQty(a.qty)} ${a.date} ${a.poNo}`).join('; '), r.expedite?.qty ?? '', r.expedite?.needBy ?? '', r.totalNeeded,
+    (r.arrivals ?? []).map(a => `${fmtQty(a.qty)} ${a.date} ${a.poNo}`).join('; '),
+    overdueInfo(r, plan.weeks)?.qty ?? '', overdueInfo(r, plan.weeks)?.shortFrom ?? '', r.expedite?.qty ?? '', r.expedite?.needBy ?? '', r.totalNeeded,
     ...weeks.map(w => r.toOrder[w] ?? ''), r.totalToOrder,
     r.purchaseUom ?? '', r.purchaseConversion && r.totalToOrder ? Math.ceil(r.totalToOrder / r.purchaseConversion) : '',
   ]));
@@ -105,6 +125,17 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
   const expedites = useMemo(() => plan.rows.filter(r => r.expedite && !r.removed)
     .sort((a, b) => a.expedite!.needBy.localeCompare(b.expedite!.needBy) || (a.supplier ?? '~').localeCompare(b.supplier ?? '~')), [plan.rows]);
   const arrivalsKnown = plan.rows.some(r => r.arrivals !== undefined);
+  // Waiting on overdue POs: soonest-needed first, then ones stock covers anyway.
+  const overdue = useMemo(() => plan.rows
+    .filter(r => !r.removed)
+    .map(r => ({ r, o: overdueInfo(r, weeks) }))
+    .filter((x): x is { r: PlanRow; o: OverdueInfo } => !!x.o)
+    .sort((a, b) => (a.o.shortFrom ?? '~').localeCompare(b.o.shortFrom ?? '~') || (a.r.supplier ?? '~').localeCompare(b.r.supplier ?? '~')),
+  [plan.rows, weeks]);
+  const overdueById = useMemo(() => new Map(overdue.map(x => [x.r.variantId, x.o])), [overdue]);
+  const [showOverdue, setShowOverdue] = useState(false);
+  const overdueNeeded = overdue.filter(x => x.o.shortFrom);
+  const overdueShown = showOverdue ? overdue : overdueNeeded;
   const lateCount = dueNow.filter(r => urgency(r.orderBy, thisWeek) === 'late').length;
   const shortNowCount = dueNow.filter(r => r.firstShortWeek && weeksUntilShort(r.firstShortWeek, thisWeek) <= 0).length;
   const dueSuppliers = [...new Set(dueNow.map(r => r.supplier ?? NO_SUPPLIER))];
@@ -251,6 +282,57 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
           </div>
           {expedites.some(r => r.totalToOrder > 0) && (
             <p className="text-[11px] mt-2 text-orange-900">Some of these also need more ordered; that&apos;s in the order list below, separately.</p>
+          )}
+        </div>
+      )}
+      {overdue.length > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <div className="font-semibold">
+            <HelpTip id="inv.overdue">
+              On overdue POs: {overdue.length} item{overdue.length === 1 ? '' : 's'}
+              {overdueNeeded.length > 0 && <>, {overdueNeeded.length} that run short without them</>}
+            </HelpTip>
+          </div>
+          <p className="text-xs mt-0.5 mb-2 text-amber-900">
+            Part of what&apos;s on order is on a PO past its Katana arrival date. The plan still counts it as arriving now; these are
+            the ones to chase with the supplier, or to mark received in Katana if they&apos;ve already come in.
+          </p>
+          {overdueShown.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-xs">
+                <thead className="text-amber-800/70">
+                  <tr>
+                    <th className="py-1 pr-3 text-left font-medium">Supplier</th>
+                    <th className="py-1 pr-3 text-left font-medium">Component</th>
+                    <th className="py-1 pr-3 text-right font-medium">Available</th>
+                    <th className="py-1 pr-3 text-left font-medium">Overdue</th>
+                    <th className="py-1 text-left font-medium">Short without them</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-amber-100">
+                  {overdueShown.map(({ r, o }) => (
+                    <tr key={r.variantId}>
+                      <td className="py-1 pr-3 whitespace-nowrap">{r.supplier ?? NO_SUPPLIER}</td>
+                      <td className="py-1 pr-3">{label(r)}{r.sku && <span className="text-amber-800/60"> · {r.sku}</span>}</td>
+                      <td className="py-1 pr-3 text-right whitespace-nowrap">{fmtQty(r.inStock)}</td>
+                      <td className="py-1 pr-3 whitespace-nowrap">
+                        {o.pos.map((a, i) => <div key={i}>{fmtQty(a.qty)} on {a.poNo.trim()}, due {fmtDate(a.date)}</div>)}
+                      </td>
+                      <td className="py-1 whitespace-nowrap">
+                        {!o.shortFrom ? <span className="text-amber-800/60">covered</span>
+                          : o.shortFrom <= thisWeek ? <span className="font-semibold text-rose-700">this week</span>
+                          : <span className="font-semibold">wk of {fmtWeek(o.shortFrom)}</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {overdue.length > overdueNeeded.length && (
+            <button onClick={() => setShowOverdue(s => !s)} className="mt-2 text-xs underline">
+              {showOverdue ? 'Only show ones that run short' : `Show all ${overdue.length}, including ${overdue.length - overdueNeeded.length} stock covers anyway`}
+            </button>
           )}
         </div>
       )}
@@ -449,6 +531,11 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
                       <td className="px-2 py-1.5 text-right font-medium text-slate-800" title={availableTitle(r)}>{fmtQty(r.inStock)}</td>
                       <td className={`px-2 py-1.5 text-right whitespace-nowrap ${r.expedite ? 'font-semibold text-orange-700' : 'text-slate-500'}`} title={arrivalsTitle(r)}>
                         {r.onOrder ? fmtQty(r.onOrder) : ''}{r.expedite && ' ⚑'}
+                        {overdueById.has(r.variantId) && (
+                          <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] font-semibold text-amber-800">
+                            {fmtQty(overdueById.get(r.variantId)!.qty)} late
+                          </span>
+                        )}
                       </td>
                       <td className="px-2 py-1.5 text-right text-slate-700">{fmtQty(r.totalNeeded)}</td>
                       {weeks.map(w => (

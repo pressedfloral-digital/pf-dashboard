@@ -173,6 +173,10 @@ export const DASHBOARD_HELP = {
     what:   'Components already on order in time to cover the total, but whose purchase order arrives after the Design schedule needs them. Ask the supplier to ship that many sooner.',
     source: 'Katana open purchase orders (row arrival dates) against available stock and the Design schedule.',
   },
+  'inv.overdue': {
+    what:   'Items with part of their on-order quantity on a purchase order past its arrival date. The plan counts it as arriving now; "Short without them" is the week stock runs out if it doesn\'t come before the next on-time PO.',
+    source: 'Katana open purchase orders (row arrival dates) against available stock and the Design schedule.',
+  },
   'inv.createPos': {
     what:   'Groups what needs ordering by supplier so you can create purchase orders.',
     source: 'Katana (purchase orders are created there).',
