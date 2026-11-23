@@ -11,6 +11,18 @@ function fmtQty(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
+function fmtDate(iso: string): string {
+  return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+// "12 due Jan 5 (PO-300) · 4 no date" for the On order cell's hover.
+function arrivalsTitle(r: PlanRow): string | undefined {
+  if (!r.arrivals) return r.onOrder ? 'Arrival dates unknown' : undefined;
+  const parts = r.arrivals.map(a => `${fmtQty(a.qty)} due ${fmtDate(a.date)}${a.overdue ? ' (overdue)' : ''} — ${a.poNo}`);
+  if (r.undatedOnOrder) parts.push(`${fmtQty(r.undatedOnOrder)} with no PO arrival date (counted as here now)`);
+  return parts.join('\n') || undefined;
+}
+
 // "12 inches (≈ 1 Roll)" when Katana has a purchase unit to convert to.
 function withPurchaseUnit(r: PlanRow, qty: number): string {
   const base = `${fmtQty(qty)}${r.uom && r.uom !== 'each' && r.uom !== 'pcs' ? ` ${r.uom}` : ''}`;
@@ -28,11 +40,12 @@ function bySupplierThenName(a: PlanRow, b: PlanRow): number {
 function downloadCsv(plan: OrderPlan, weeks: string[], generatedAt: string) {
   const esc = (v: string | number) => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
   const rows: (string | number)[][] = [[
-    'Supplier', 'Lead time (weeks)', 'Order by', 'Need by', 'To order now', 'Component', 'Options', 'SKU', 'Category', 'Unit', 'In stock (Katana)', 'In designs not shipped', 'Available', 'On order', 'Needed through end of plan',
+    'Supplier', 'Lead time (weeks)', 'Order by', 'Need by', 'To order now', 'Component', 'Options', 'SKU', 'Category', 'Unit', 'In stock (Katana)', 'In designs not shipped', 'Available', 'On order', 'On order arrives', 'Expedite qty', 'Expedite by', 'Needed through end of plan',
     ...weeks.map(w => `To order — week of ${w}`), 'Total to order', 'Purchase unit', 'Total to order (purchase units)',
   ]];
   [...plan.rows].sort(bySupplierThenName).forEach(r => rows.push([
-    r.supplier ?? '', r.leadWeeks, r.orderBy ?? '', r.firstShortWeek ?? '', r.orderNowQty || '', r.name, r.options, r.sku ?? '', r.category, r.uom, r.katanaStock ?? r.inStock, r.alreadyUsed ?? 0, r.inStock, r.onOrder, r.totalNeeded,
+    r.supplier ?? '', r.leadWeeks, r.orderBy ?? '', r.firstShortWeek ?? '', r.orderNowQty || '', r.name, r.options, r.sku ?? '', r.category, r.uom, r.katanaStock ?? r.inStock, r.alreadyUsed ?? 0, r.inStock, r.onOrder,
+    (r.arrivals ?? []).map(a => `${fmtQty(a.qty)} ${a.date} ${a.poNo}`).join('; '), r.expedite?.qty ?? '', r.expedite?.needBy ?? '', r.totalNeeded,
     ...weeks.map(w => r.toOrder[w] ?? ''), r.totalToOrder,
     r.purchaseUom ?? '', r.purchaseConversion && r.totalToOrder ? Math.ceil(r.totalToOrder / r.purchaseConversion) : '',
   ]));
@@ -88,6 +101,10 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
   const week = picked ?? firstShort;
 
   const dueNow = short.filter(r => r.orderNowQty > 0);
+  // On order but arriving after the schedule needs it, soonest need first.
+  const expedites = useMemo(() => plan.rows.filter(r => r.expedite && !r.removed)
+    .sort((a, b) => a.expedite!.needBy.localeCompare(b.expedite!.needBy) || (a.supplier ?? '~').localeCompare(b.supplier ?? '~')), [plan.rows]);
+  const arrivalsKnown = plan.rows.some(r => r.arrivals !== undefined);
   const lateCount = dueNow.filter(r => urgency(r.orderBy, thisWeek) === 'late').length;
   const shortNowCount = dueNow.filter(r => r.firstShortWeek && weeksUntilShort(r.firstShortWeek, thisWeek) <= 0).length;
   const dueSuppliers = [...new Set(dueNow.map(r => r.supplier ?? NO_SUPPLIER))];
@@ -193,6 +210,53 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
           {groupBy !== 'supplier' && (
             <button onClick={() => setGroupBy('supplier')} className="ml-auto text-xs underline"><HelpTip id="inv.createPos">Create POs by supplier</HelpTip></button>
           )}
+        </div>
+      )}
+
+      {expedites.length > 0 && (
+        <div className="rounded-xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-950">
+          <div className="font-semibold">
+            <HelpTip id="inv.expedite">Expedite: {expedites.length} item{expedites.length === 1 ? '' : 's'} on order but arriving too late</HelpTip>
+          </div>
+          <p className="text-xs mt-0.5 mb-2 text-orange-900">
+            Enough is on order, but its Katana arrival date is after Design needs it. Ask the supplier to send at least this many by that Monday.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-xs">
+              <thead className="text-orange-800/70">
+                <tr>
+                  <th className="py-1 pr-3 text-left font-medium">Supplier</th>
+                  <th className="py-1 pr-3 text-left font-medium">Component</th>
+                  <th className="py-1 pr-3 text-right font-medium">Send at least</th>
+                  <th className="py-1 pr-3 text-left font-medium">By</th>
+                  <th className="py-1 text-left font-medium">Currently due</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-orange-100">
+                {expedites.map(r => (
+                  <tr key={r.variantId}>
+                    <td className="py-1 pr-3 whitespace-nowrap">{r.supplier ?? NO_SUPPLIER}</td>
+                    <td className="py-1 pr-3">{label(r)}{r.sku && <span className="text-orange-800/60"> · {r.sku}</span>}</td>
+                    <td className="py-1 pr-3 text-right font-semibold whitespace-nowrap">{withPurchaseUnit(r, r.expedite!.qty)}</td>
+                    <td className="py-1 pr-3 whitespace-nowrap">
+                      {r.expedite!.needBy <= thisWeek ? <span className="font-semibold text-rose-700">this week</span> : `wk of ${fmtWeek(r.expedite!.needBy)}`}
+                    </td>
+                    <td className="py-1 whitespace-nowrap">
+                      {r.expedite!.pos.map((a, i) => <div key={i}>{fmtQty(a.qty)} on {a.poNo}, {fmtDate(a.date)}</div>)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {expedites.some(r => r.totalToOrder > 0) && (
+            <p className="text-[11px] mt-2 text-orange-900">Some of these also need more ordered; that&apos;s in the order list below, separately.</p>
+          )}
+        </div>
+      )}
+      {!arrivalsKnown && plan.rows.some(r => r.onOrder > 0) && (
+        <div className="text-xs text-slate-500">
+          Katana purchase order dates couldn&apos;t be loaded, so on-order stock is counted as arriving now and late orders aren&apos;t flagged.
         </div>
       )}
 
@@ -383,7 +447,9 @@ export default function OrderPlanView({ plan: basePlan, generatedAt, edits: save
                       </td>
                       <td className="px-2 py-1.5 text-right text-violet-700">{r.alreadyUsed ? `−${fmtQty(r.alreadyUsed)}` : ''}</td>
                       <td className="px-2 py-1.5 text-right font-medium text-slate-800" title={availableTitle(r)}>{fmtQty(r.inStock)}</td>
-                      <td className="px-2 py-1.5 text-right text-slate-500">{r.onOrder ? fmtQty(r.onOrder) : ''}</td>
+                      <td className={`px-2 py-1.5 text-right whitespace-nowrap ${r.expedite ? 'font-semibold text-orange-700' : 'text-slate-500'}`} title={arrivalsTitle(r)}>
+                        {r.onOrder ? fmtQty(r.onOrder) : ''}{r.expedite && ' ⚑'}
+                      </td>
                       <td className="px-2 py-1.5 text-right text-slate-700">{fmtQty(r.totalNeeded)}</td>
                       {weeks.map(w => (
                         <td

@@ -169,6 +169,10 @@ export const DASHBOARD_HELP = {
     what:   'Items whose order-by date is this week or already passed, given each supplier\'s lead time.',
     source: 'Katana stock vs. the Design schedule, with supplier lead times set in the dashboard code.',
   },
+  'inv.expedite': {
+    what:   'Components already on order in time to cover the total, but whose purchase order arrives after the Design schedule needs them. Ask the supplier to ship that many sooner.',
+    source: 'Katana open purchase orders (row arrival dates) against available stock and the Design schedule.',
+  },
   'inv.createPos': {
     what:   'Groups what needs ordering by supplier so you can create purchase orders.',
     source: 'Katana (purchase orders are created there).',
@@ -182,7 +186,7 @@ export const DASHBOARD_HELP = {
   'inv.col.inStock':      { what: 'On hand at this location according to Katana (negative counts as 0). Includes pieces already built into designs that haven\'t shipped.', source: 'Katana MRP stock.' },
   'inv.col.inDesigns':    { what: 'Already built into pieces that are designed but not shipped (No Response through Ready to Fulfill). Katana still counts them until the order is fulfilled.', source: 'PF API order statuses × Katana recipes, including each order\'s backing and glass.' },
   'inv.col.available':    { what: 'What\'s really free to use: Katana stock minus what\'s already in designs. The order plan works from this.', source: 'Katana stock − In designs.' },
-  'inv.col.onOrder':      { what: 'Already on an open purchase order and not received yet.', source: 'Katana MRP purchase orders.' },
+  'inv.col.onOrder':      { what: 'Already on an open purchase order and not received yet. Hover to see when each PO is due; ⚑ means it arrives too late.', source: 'Katana MRP purchase orders and their arrival dates.' },
   'inv.col.orderBy':      { what: 'Latest week to place the order so it arrives in time, using the supplier\'s lead time.', source: 'Calculated from the schedule and lead times.' },
   'inv.col.usePerWk':     { what: 'Average used per week in the current schedule.', source: 'Katana recipes × the Design schedule.' },
   'inv.col.coveredUntil': { what: 'Week stock plus on-order runs out at the current pace.', source: 'Katana stock ÷ weekly use.' },
