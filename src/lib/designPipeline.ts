@@ -26,8 +26,12 @@ export interface WeeklyReportItem {
 }
 
 export interface PipelineLine {
-  key:  string;   // `${orderNumber}|${variantTitle}`, same as order_status_history.order_product_key
-  num:  string;   // Shopify order number
+  // Same as order_status_history.order_product_key (see status-snapshot.ts):
+  // `${orderNumber}|${variantTitle}`, with `|1`, `|2`… appended for the 2nd,
+  // 3rd… identical line on the same order in the same status.
+  key:     string;
+  baseKey: string;  // `${orderNumber}|${variantTitle}` without the counter
+  num:     string;  // Shopify order number
   item: WeeklyReportItem;
 }
 
@@ -49,7 +53,8 @@ async function fetchMonth(path: string): Promise<WeeklyReportItem[] | null> {
 }
 
 /** Preservation, Design and designed-not-shipped lines across all
- *  locations, deduped by key.
+ *  locations. Identical lines on one order (two of the same boutonniere)
+ *  are separate items and each kept.
  *  `failedMonths` > 0 means some months' orders are missing from `lines`. */
 export async function loadPipelineLines(): Promise<{ lines: PipelineLine[]; failedMonths: number; totalMonths: number }> {
   const today = new Date();
@@ -64,7 +69,9 @@ export async function loadPipelineLines(): Promise<{ lines: PipelineLine[]; fail
   const reports: (WeeklyReportItem[] | null)[] = [];
   for (const path of paths) reports.push(await fetchMonth(path));
 
-  const seen = new Set<string>();
+  // WeeklyReport has no line-item id, so identical lines are told apart by a
+  // counter, numbered the same way status-snapshot.ts numbers them.
+  const counter = new Map<string, number>();
   const lines: PipelineLine[] = [];
   for (const items of reports) {
     for (const item of items ?? []) {
@@ -73,10 +80,11 @@ export async function loadPipelineLines(): Promise<{ lines: PipelineLine[]; fail
       if (isNonDesignProduct(item.productTitle ?? '')) continue;
       const num = String(item.orderNumber ?? item.shopifyOrderNumber ?? '');
       if (!num) continue;
-      const key = `${num}|${item.variantTitle ?? ''}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      lines.push({ key, num, item });
+      const baseKey = `${num}|${item.variantTitle ?? ''}`;
+      const cKey = `${baseKey}|${status}`;
+      const cnt = counter.get(cKey) ?? 0;
+      counter.set(cKey, cnt + 1);
+      lines.push({ key: cnt === 0 ? baseKey : `${baseKey}|${cnt}`, baseKey, num, item });
     }
   }
   return { lines, failedMonths: reports.filter(r => r === null).length, totalMonths: paths.length };

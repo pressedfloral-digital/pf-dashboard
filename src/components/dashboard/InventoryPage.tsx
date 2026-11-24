@@ -32,6 +32,8 @@ interface InventoryResponse {
     lines: number; inDesignQueue: number; inPreservation: number;
     intakeFromEventDate: number; missingLocation: number;
   };
+  // Absent on copies saved before these were listed.
+  missingLocationLines?: { orderNumber: string; product: string; variant: string; status: string }[];
   // Absent on copies saved before backing/glass were cached.
   addOns?: {
     orders: number; unknownOrders: number; unknownLines: number;
@@ -235,12 +237,42 @@ export default function InventoryPage() {
             {data.totals.lines.toLocaleString()} order lines ({data.totals.inDesignQueue} in Design queue, {data.totals.inPreservation} in Preservation)
             {data.designedThisWeek > 0 && <> · {Math.round(data.designedThisWeek)} already designed this week</>}
             {data.totals.intakeFromEventDate > 0 && <> · {data.totals.intakeFromEventDate} with no bouquet-received date (event date used)</>}
-            {data.totals.missingLocation > 0 && <> · {data.totals.missingLocation} lines with no location skipped</>}
             {(data.addOns?.unknownLines ?? 0) > 0 && (
               <> · <span className="text-rose-600 font-medium">{data.addOns!.unknownLines} lines ({data.addOns!.unknownOrders} orders) whose backing &amp; glass couldn&apos;t be loaded</span> — shown as &ldquo;{ADDONS_UNKNOWN}&rdquo;, not counted as none</>
             )}
             {data.unscheduledCount > 0 && <> · {data.unscheduledCount} not scheduled{data.through ? <> by the week of {fmtWeek(data.through)}</> : ' in the plan window'}</>}
           </div>
+
+          {data.totals.missingLocation > 0 && (
+            <details className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <summary className="cursor-pointer font-medium">
+                {data.totals.missingLocation} order lines in Preservation, Design or designed-but-unshipped have no location in the production app, so
+                they aren&apos;t counted for Utah or Georgia. Set their location in the app to include them.
+              </summary>
+              {data.missingLocationLines?.length ? (
+                <table className="mt-2 w-full max-w-3xl">
+                  <thead>
+                    <tr className="text-left text-amber-800">
+                      <th className="py-0.5 pr-3 font-medium">Order</th>
+                      <th className="py-0.5 pr-3 font-medium">Product</th>
+                      <th className="py-0.5 pr-3 font-medium">Variant</th>
+                      <th className="py-0.5 font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.missingLocationLines.map((l, i) => (
+                      <tr key={i} className="border-t border-amber-100">
+                        <td className="py-0.5 pr-3 tabular-nums">#{l.orderNumber}</td>
+                        <td className="py-0.5 pr-3">{l.product}</td>
+                        <td className="py-0.5 pr-3">{l.variant}</td>
+                        <td className="py-0.5">{STATUS_LABELS[l.status] ?? l.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : <p className="mt-1">Refresh to list them.</p>}
+            </details>
+          )}
 
           {/* ── One week: totals + orders ── */}
           <div className="space-y-3">
