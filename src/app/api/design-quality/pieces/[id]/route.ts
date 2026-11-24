@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { requireGrader, fillPieces, isGraded, type DesignerRow, type PieceRow } from '@/lib/designQuality';
+import { requireGrader, fillPieces, isGraded, type DesignerRow, type PieceRow, errorMessage } from '@/lib/designQuality';
 import { RUBRIC_KEYS, isValidScore } from '@/lib/designQualityRubric';
 
 const KEYS = new Set(RUBRIC_KEYS);
@@ -77,7 +77,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     if (error) throw error;
     return NextResponse.json({ piece: data });
   } catch (e) {
-    return NextResponse.json({ error: String((e as { message?: string })?.message ?? e) }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(e) }, { status: 500 });
   }
 }
 
@@ -116,6 +116,6 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     await fillPieces({ ...d, candidate_frames: d.candidate_frames.filter(f => f.orderProductUuid !== piece.order_product_uuid) }, others);
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json({ error: String((e as { message?: string })?.message ?? e) }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(e) }, { status: 500 });
   }
 }

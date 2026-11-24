@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { requireGrader, fillPieces, isGraded, type DesignerRow, type PieceRow } from '@/lib/designQuality';
+import { requireGrader, fillPieces, isGraded, type DesignerRow, type PieceRow, errorMessage } from '@/lib/designQuality';
 import { MAX_PIECES } from '@/lib/designQualityRubric';
 
 // PATCH /api/design-quality/designers/:id  { targetCount?, excluded? }
@@ -53,6 +53,6 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     if (error) throw error;
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json({ error: String((e as { message?: string })?.message ?? e) }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(e) }, { status: 500 });
   }
 }

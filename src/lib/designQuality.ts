@@ -30,6 +30,15 @@ export async function requireGrader(): Promise<Grader | NextResponse> {
   return { userId, name: data.full_name || data.email || 'Unknown', role: data.role };
 }
 
+/** Error text for the API response — plain English when the tables aren't set up yet. */
+export function errorMessage(e: unknown): string {
+  const msg = String((e as { message?: string })?.message ?? e);
+  if (/design_quality_(designers|pieces)/.test(msg) && /schema cache|does not exist/.test(msg)) {
+    return 'Design Quality isn’t set up in the database yet — run supabase/migrations/20261124000000_design_quality_grading.sql in Supabase first.';
+  }
+  return msg;
+}
+
 export interface DesignerRow {
   id: number;
   week_of: string;

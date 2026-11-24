@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   RUBRIC, RUBRIC_KEYS, RUBRIC_MAX, MAX_PIECES, pieceTotal, scoredCount, type CriterionScore,
 } from '@/lib/designQualityRubric';
+import DesignQualityResults from './DesignQualityResults';
 
 // ── Types (mirror /api/design-quality) ────────────────────────────────────────
 
@@ -84,7 +85,29 @@ const isPieceDone = (p: Piece) => !!p.completed_at;
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+// Two sides: Results (the All KPIs-style view for leadership) and Grading
+// (where the grader picks the week's frames and scores them).
 export default function DesignQualityPage() {
+  const [view, setView] = useState<'results' | 'grading'>('results');
+  return (
+    <div className="space-y-6">
+      <div className="flex gap-1 rounded-lg bg-slate-100 p-1 w-fit">
+        {([['results', 'Results'], ['grading', 'Grading']] as const).map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setView(id)}
+            className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              view === id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >{label}</button>
+        ))}
+      </div>
+      {view === 'results' ? <DesignQualityResults /> : <GradingView />}
+    </div>
+  );
+}
+
+function GradingView() {
   const [weekOf, setWeekOf] = useState<string | null>(null);
   const [data, setData] = useState<WeekData | null>(null);
   const [loading, setLoading] = useState(true);

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { requireGrader, loadWeek, fillPieces, type DesignerRow, type PieceRow } from '@/lib/designQuality';
+import { requireGrader, loadWeek, fillPieces, type DesignerRow, type PieceRow, errorMessage } from '@/lib/designQuality';
 import { isMondayIso, lastCompletedWeekOf, loadDesignerWeeks } from '@/lib/designQualitySelection';
 import { MAX_PIECES, piecesForHours } from '@/lib/designQualityRubric';
 
@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
     const [week, weeks] = await Promise.all([loadWeek(weekOf), generatedWeeks()]);
     return NextResponse.json({ ...week, defaultWeek: lastCompletedWeekOf(), generatedWeeks: weeks });
   } catch (e) {
-    return NextResponse.json({ error: String((e as { message?: string })?.message ?? e) }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(e) }, { status: 500 });
   }
 }
 
@@ -94,6 +94,6 @@ export async function POST(req: NextRequest) {
     const week = await loadWeek(weekOf);
     return NextResponse.json({ ...week, added, refreshed, generatedWeeks: await generatedWeeks(), defaultWeek: lastCompletedWeekOf() });
   } catch (e) {
-    return NextResponse.json({ error: String((e as { message?: string })?.message ?? e) }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(e) }, { status: 500 });
   }
 }
