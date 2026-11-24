@@ -12,6 +12,8 @@ import { assignmentDates, createSingleFlight, sumCounts, validateBatch, zeroCoun
 import { bloomStockKeyFromTitle, type BloomStockDesignRow } from '@/lib/bloomStock';
 
 export type AssignmentDepartment = 'preservation' | 'design' | 'fulfillment';
+/** Departments the weekly Historicals sync writes: the three stages plus Resin. */
+export type ActualsCountKey = keyof AssignmentCounts;
 
 const ASSIGNMENT_DEPARTMENTS: AssignmentDepartment[] = ['preservation', 'design', 'fulfillment'];
 
@@ -43,6 +45,8 @@ export interface AssignmentCounts {
   preservation: number;
   design: number;
   fulfillment: number;
+  /** Resin pieces the person made (held the design stage of), by that stage's date. */
+  resin: number;
 }
 
 export interface AssignmentCountRow {
@@ -187,7 +191,10 @@ function resolveRequestedStaff(
 export interface DailyAssignmentCountRow {
   staff: string;
   userUuid: string;
-  days: Record<string, AssignmentCounts>;
+  /** Preservation, Design and Fulfillment, with resin pieces already taken out. */
+  days: Record<string, Counts>;
+  /** Resin pieces credited to the person each day — see resinCreditsByAccountDay. */
+  resinDays: Record<string, number>;
 }
 
 const batchFlight = createSingleFlight<BatchResponse>(5 * 60 * 1000);
@@ -221,12 +228,18 @@ export async function computeDailyAssignmentCounts(
       fulfillment:  Math.max(0, count.fulfillment - credit.fulfillment),
     };
   };
+  // Resin counts a piece once, for whoever made it: the design-stage credit
+  // taken out of Design above. The same piece's preservation and packing
+  // credits are only removed from those departments, never added here.
+  const resinMade = (key: string) => resin.get(key)?.design ?? 0;
   const rows = targets.map(target => ({
     staff: target.requestedName,
     userUuid: target.accounts[0].uuid,
     days: Object.fromEntries(dates.map(date => [date, sumCounts(target.accounts.map(account =>
       withoutResin(`${account.uuid.toLowerCase()}/${date}`),
     ))])),
+    resinDays: Object.fromEntries(dates.map(date => [date, target.accounts.reduce((sum, account) =>
+      sum + resinMade(`${account.uuid.toLowerCase()}/${date}`), 0)])),
   }));
   return { rows, unmatched, refreshedAt: result.refreshedAt };
 }
@@ -235,7 +248,14 @@ export async function computeDailyAssignmentCounts(
 export async function computeAssignmentCounts(start: string, end: string, requestedNames?: string[]) {
   const result = await computeDailyAssignmentCounts(start, end, requestedNames);
   return {
-    rows: result.rows.map(row => ({ staff: row.staff, userUuid: row.userUuid, counts: sumCounts(Object.values(row.days)) })),
+    rows: result.rows.map(row => ({
+      staff: row.staff,
+      userUuid: row.userUuid,
+      counts: {
+        ...sumCounts(Object.values(row.days)),
+        resin: Object.values(row.resinDays).reduce((a, b) => a + b, 0),
+      } satisfies AssignmentCounts,
+    })),
     unmatched: result.unmatched,
   };
 }
