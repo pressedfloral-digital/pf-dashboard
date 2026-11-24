@@ -74,19 +74,23 @@ export async function GET(req: NextRequest) {
         error: `the production app didn't return ${pipeline.failedMonths} of ${pipeline.totalMonths} months of orders, so the schedule would be incomplete. Try again in a minute.`,
       }, { status: 503 });
     }
-    let missingLocation = 0;
-    const here = pipeline.lines.filter(({ item }) => {
-      if (!item.location) { missingLocation++; return false; }
-      return item.location === location;
-    });
+    // Lines with no location in the PF app belong to neither location's
+    // schedule or stock; they're listed (on both) so someone can set it.
+    const missingLocationLines = pipeline.lines
+      .filter(({ item }) => !item.location)
+      .map(({ num, item }) => ({ orderNumber: num, product: item.productTitle ?? '', variant: item.variantTitle ?? '', status: item.status ?? '' }))
+      .sort((a, b) => a.orderNumber.localeCompare(b.orderNumber, undefined, { numeric: true }));
+    const here = pipeline.lines.filter(({ item }) => item.location === location);
     // Already designed, not shipped: their materials come out of stock
     // instead of being scheduled.
     const raw = here.filter(({ item }) => !DESIGNED_STATUSES.has(item.status ?? ''));
     const designedRaw = here.filter(({ item }) => DESIGNED_STATUSES.has(item.status ?? ''));
 
     // ── 2. Bouquet-received dates (intake week) ────────────────────────────
+    // A 2nd identical line's history may be under the plain key (it reached
+    // Bouquet Received alone), so look up both and prefer the exact one.
     const receivedAt: Record<string, string> = {};
-    const keys = raw.map(r => r.key);
+    const keys = [...new Set(raw.flatMap(r => [r.key, r.baseKey]))];
     for (let i = 0; i < keys.length; i += 200) {
       const { data, error } = await supabase
         .from('order_status_history')
@@ -100,8 +104,8 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const lines: QueueLine[] = raw.map(({ key, item, num }) => {
-      const received = receivedAt[key];
+    const lines: QueueLine[] = raw.map(({ key, baseKey, item, num }) => {
+      const received = receivedAt[key] ?? receivedAt[baseKey];
       const intakeDate = received ?? item.eventDate?.slice(0, 10) ?? item.originalOrderDate?.slice(0, 10) ?? thisWeek;
       const status = item.status ?? '';
       return {
@@ -237,8 +241,9 @@ export async function GET(req: NextRequest) {
         inDesignQueue: lines.filter(l => DESIGN_QUEUE_STATUSES.has(l.status)).length,
         inPreservation: lines.filter(l => PRESERVATION_STATUSES.has(l.status)).length,
         intakeFromEventDate: lines.filter(l => l.intakeSource === 'eventDate').length,
-        missingLocation,
+        missingLocation: missingLocationLines.length,
       },
+      missingLocationLines,
       addOns: {
         orders:        scheduledNums.length,
         unknownOrders: scheduledNums.filter(n => !addOnsByOrder[n]).length,
