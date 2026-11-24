@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { RUBRIC, RUBRIC_KEYS, RUBRIC_MAX, piecesForHours, pieceTotal } from '../src/lib/designQualityRubric.ts';
+import { choosePicks } from '../src/lib/designQualityPick.ts';
 import { aggregate, byDesigner, forLocation, missedLines, periodsFor, type ReportPiece } from '../src/lib/designQualityReport.ts';
 
 const full = Object.fromEntries(RUBRIC_KEYS.map(k => [k, 1]));
@@ -81,4 +82,25 @@ test('period windows', () => {
   const quarters = periodsFor('quarterly', '2027-01-05', '2026-08-03');
   assert.deepEqual(quarters.map(q => q.label), ['Q3 2026', 'Q4 2026', 'Q1 2027']);
   assert.equal(quarters[1].end, '2026-12-31');
+});
+
+test('picks prefer orders not already picked, and never repeat a product', () => {
+  const f = (order: string, uuid: string) => ({ orderNum: order, orderProductUuid: uuid });
+  const candidates = [f('100', 'a'), f('100', 'b'), f('200', 'c'), f('300', 'd')];
+  const identity = (n: number) => n - 1; // deterministic "shuffle" (keeps order)
+  // Order 100 has two frames: the second pick skips its sibling for a new order.
+  assert.deepEqual(choosePicks(candidates, [], 3, identity).map(p => p.orderProductUuid), ['a', 'c', 'd']);
+  for (let i = 0; i < 50; i++) {
+    const picks = choosePicks(candidates, [], 3);
+    assert.equal(new Set(picks.map(p => p.orderNum)).size, 3);
+  }
+  // A designer who already has order 200 gets a different order, never product c again.
+  for (let i = 0; i < 50; i++) {
+    const again = choosePicks(candidates, [f('200', 'c')], 1);
+    assert.equal(again.length, 1);
+    assert.notEqual(again[0].orderNum, '200');
+  }
+  // Same order only when nothing else is left.
+  assert.deepEqual(choosePicks([f('100', 'a'), f('100', 'b')], [], 2).map(p => p.orderNum), ['100', '100']);
+  assert.deepEqual(choosePicks(candidates, [], 0), []);
 });

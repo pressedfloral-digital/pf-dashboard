@@ -12,7 +12,6 @@
  * Hours are total hours worked across every department that week, from the
  * Rippling upload (team_member_week_actuals).
  */
-import { randomInt } from 'crypto';
 import { pfGet } from '@/lib/pf-api';
 import { supabase } from '@/lib/supabase';
 import { canonicalStaffName } from '@/lib/production-counts';
@@ -141,16 +140,6 @@ export async function loadDesignerWeeks(weekOf: string): Promise<DesignerWeek[]>
       };
     })
     .sort((a, b) => (a.location ?? '~').localeCompare(b.location ?? '~') || a.designerName.localeCompare(b.designerName));
-}
-
-/** Picks `count` distinct items uniformly at random (crypto RNG). */
-export function pickRandom<T>(items: T[], count: number): T[] {
-  const pool = [...items];
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = randomInt(i + 1);
-    [pool[i], pool[j]] = [pool[j], pool[i]];
-  }
-  return pool.slice(0, Math.max(0, Math.min(count, pool.length)));
 }
 
 /** Monday (YYYY-MM-DD) of the most recently finished Mon–Sun week, Denver time. */

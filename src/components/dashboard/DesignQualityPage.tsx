@@ -510,8 +510,9 @@ function PieceEditor({
     // Serialize saves so a fast run of clicks lands in order.
     queue.current = queue.current.then(async () => {
       try {
+        // keepalive lets a save started as the page closes still finish.
         const { piece: saved } = await api<{ piece: Piece }>(`/api/design-quality/pieces/${piece.id}`, {
-          method: 'PATCH', body: JSON.stringify({ ...body, addSeconds }),
+          method: 'PATCH', body: JSON.stringify({ ...body, addSeconds }), keepalive: true,
         });
         setSaveError(null);
         setLocal(prev => ({ ...prev, seconds_spent: saved.seconds_spent, completed_at: saved.completed_at, graded_by_name: saved.graded_by_name }));
@@ -535,8 +536,41 @@ function PieceEditor({
     save({ scores: { [key]: next }, ...(next === null && local.completed_at ? { complete: false } : {}) });
   };
 
+  // Notes save shortly after typing stops — and right away when the box
+  // loses focus, the page is hidden/closed, or the grader leaves the frame —
+  // so a note is never lost for want of clicking somewhere else first.
+  const pendingNotes = useRef<{ notes?: string; criterionNotes: Record<string, string> }>({ criterionNotes: {} });
+  const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushNotes = useCallback(() => {
+    if (noteTimer.current) { clearTimeout(noteTimer.current); noteTimer.current = null; }
+    const { notes, criterionNotes } = pendingNotes.current;
+    const hasCriterion = Object.keys(criterionNotes).length > 0;
+    if (notes === undefined && !hasCriterion) return;
+    pendingNotes.current = { criterionNotes: {} };
+    save({ ...(notes !== undefined ? { notes } : {}), ...(hasCriterion ? { criterionNotes } : {}) });
+  }, [save]);
+  const queueNote = (patch: { notes?: string; criterionKey?: string; text?: string }) => {
+    if (patch.notes !== undefined) pendingNotes.current.notes = patch.notes;
+    if (patch.criterionKey) pendingNotes.current.criterionNotes[patch.criterionKey] = patch.text ?? '';
+    if (noteTimer.current) clearTimeout(noteTimer.current);
+    noteTimer.current = setTimeout(flushNotes, 800);
+  };
+  const flushRef = useRef(flushNotes);
+  useEffect(() => { flushRef.current = flushNotes; }, [flushNotes]);
+  useEffect(() => {
+    const onHide = () => flushRef.current();
+    window.addEventListener('pagehide', onHide);
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      window.removeEventListener('pagehide', onHide);
+      document.removeEventListener('visibilitychange', onHide);
+      flushRef.current(); // leaving this frame (another piece, or back to the list)
+    };
+  }, []);
+
   const setCriterionNote = (key: string, text: string) => {
     setLocal(prev => ({ ...prev, criterion_notes: { ...prev.criterion_notes, [key]: text } }));
+    queueNote({ criterionKey: key, text });
   };
 
   const total = pieceTotal(local.scores);
@@ -645,9 +679,7 @@ function PieceEditor({
                       <textarea
                         value={local.criterion_notes[c.key] ?? ''}
                         onChange={e => setCriterionNote(c.key, e.target.value)}
-                        onBlur={e => {
-                          if ((piece.criterion_notes[c.key] ?? '') !== e.target.value) save({ criterionNotes: { [c.key]: e.target.value } });
-                        }}
+                        onBlur={flushNotes}
                         rows={2}
                         placeholder="What to improve (shown with the grade)…"
                         className="mt-2 w-full rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:border-indigo-400 focus:outline-none"
@@ -666,8 +698,8 @@ function PieceEditor({
         <textarea
           id={`notes-${piece.id}`}
           value={local.notes ?? ''}
-          onChange={e => setLocal(prev => ({ ...prev, notes: e.target.value }))}
-          onBlur={e => { if ((piece.notes ?? '') !== e.target.value) save({ notes: e.target.value }); }}
+          onChange={e => { const notes = e.target.value; setLocal(prev => ({ ...prev, notes })); queueNote({ notes }); }}
+          onBlur={flushNotes}
           rows={3}
           placeholder="Overall feedback for this frame…"
           className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:border-indigo-400 focus:outline-none"
@@ -689,7 +721,7 @@ function PieceEditor({
           >Reopen</button>
         ) : (
           <button
-            onClick={() => save({ complete: true })}
+            onClick={() => { flushNotes(); save({ complete: true }); }}
             disabled={disabled || !allScored || saving}
             title={allScored ? undefined : 'Score every line first'}
             className="px-4 py-2 rounded-md bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"

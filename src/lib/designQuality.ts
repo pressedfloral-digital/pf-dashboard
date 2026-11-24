@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabase } from '@/lib/supabase';
 import type { QualifyingFrame } from '@/lib/designQualitySelection';
-import { pickRandom } from '@/lib/designQualitySelection';
+import { choosePicks } from '@/lib/designQualityPick';
 
 // Design Quality grades are visible to, and entered by, admins, general
 // managers and managers. Designers ('user' role) and viewers never see them.
@@ -76,14 +76,18 @@ export function isGraded(p: Pick<PieceRow, 'completed_at' | 'scores'>): boolean 
 
 /**
  * Brings a designer's picked pieces up to target_count by drawing random,
- * not-yet-picked frames from their candidates into the lowest free slots.
+ * not-yet-picked frames from their candidates (preferring orders not already
+ * picked — see choosePicks) into the lowest free slots.
  * Returns how many were added.
  */
 export async function fillPieces(designer: DesignerRow, existing: PieceRow[]): Promise<number> {
   const need = designer.target_count - existing.length;
   if (need <= 0) return 0;
-  const taken = new Set(existing.map(p => p.order_product_uuid));
-  const picks = pickRandom(designer.candidate_frames.filter(f => !taken.has(f.orderProductUuid)), need);
+  const picks = choosePicks(
+    designer.candidate_frames,
+    existing.map(p => ({ orderNum: p.order_num, orderProductUuid: p.order_product_uuid })),
+    need,
+  );
   if (!picks.length) return 0;
   const usedSlots = new Set(existing.map(p => p.slot));
   const freeSlots: number[] = [];
