@@ -12,6 +12,7 @@ import UserManagementPage from './UserManagementPage';
 import MyDashboardClient from './MyDashboardClient';
 import LaborCostPage from './LaborCostPage';
 import InventoryPage from './InventoryPage';
+import DesignQualityPage from './DesignQualityPage';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { HelpTip, HelpTipProvider, HelpToggle } from './HelpTip';
 
@@ -28,7 +29,7 @@ interface LocationCounts {
 }
 
 export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
-  const [mainTab, setMainTab] = useState<'dashboard' | 'scheduling' | 'inventory' | 'scorecards' | 'kpis' | 'growth' | 'labor' | 'team'>('dashboard');
+  const [mainTab, setMainTab] = useState<'dashboard' | 'scheduling' | 'inventory' | 'scorecards' | 'kpis' | 'designQuality' | 'growth' | 'labor' | 'team'>('dashboard');
   // Redirect user role to personal dashboard handled server-side
   const { user, loading: userLoading, error: userError, retry: retryUser } = useCurrentUser();
 
@@ -92,6 +93,9 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
     return <MyDashboardClient profile={user.profile} />;
   }
 
+  // Matches the roles requireGrader() allows in src/lib/designQuality.ts.
+  const canGradeDesign = ['admin', 'general_manager', 'manager'].includes(user.profile.role);
+
   return (
     <HelpTipProvider>
     <div className="space-y-6">
@@ -104,6 +108,7 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
           ...((user?.permissions.canViewScheduling ?? false) ? [['inventory', 'Inventory'] as const] : []),
           ...((user?.permissions.canViewScorecards ?? false) ? [['scorecards',  'Scorecards'] as const] : []),
           ...((user?.permissions.canViewScorecards ?? false) ? [['kpis', 'All KPIs'] as const] : []),
+          ...(canGradeDesign ? [['designQuality', 'Design Quality'] as const] : []),
           ...((user?.permissions.canViewScheduling ?? false) ? [['growth', 'Growth & Distribution'] as const] : []),
           ...(user?.profile.role === 'admin'      ? [['labor', 'Labor Cost'] as const] : []),
           ...(user?.permissions.canManageUsers    ? [['team', 'Team Access'] as const] : []),
@@ -157,6 +162,8 @@ export function DashboardClient({ pipeline }: { pipeline: PipelineCount[] }) {
       {mainTab === 'scorecards' && user.permissions.canViewScorecards && <ScorecardTab />}
       {/* ── ALL KPIs TAB ────────────────────────────────────────────────────────── */}
       {mainTab === 'kpis' && user.permissions.canViewScorecards && <AllKpisPage />}
+      {/* ── DESIGN QUALITY TAB (managers/admins; API enforces it too) ─────── */}
+      {mainTab === 'designQuality' && canGradeDesign && <DesignQualityPage />}
       {/* ── GROWTH & DISTRIBUTION TAB ────────────────────────────────────────── */}
       {mainTab === 'growth' && user.permissions.canViewScheduling && <GrowthDistributionPage />}
       {/* ── LABOR COST TAB (admins only; API enforces it too) ─────────────── */}

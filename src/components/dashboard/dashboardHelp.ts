@@ -31,6 +31,10 @@ export const DASHBOARD_HELP = {
     what:   'Every department KPI side by side against its target, over rolling time windows.',
     source: 'Weekly actuals and labor uploads saved in Supabase; targets are set in the dashboard code.',
   },
+  'tab.designQuality': {
+    what:   'Weekly Design Quality grading: random frames per designer (1 under 20 hrs, 2 for 20–30, 3 for 30+) scored on the 23-point rubric.',
+    source: 'Frames that first reached No Response that week, from the PF API; hours from the Rippling upload; grades saved in Supabase.',
+  },
   'tab.growth': {
     what:   'Sales by state, which location each state routes to, and the forecast for planned routing moves.',
     source: 'Shopify sales by state, plus routing rules and forecast snapshots saved in Supabase.',
